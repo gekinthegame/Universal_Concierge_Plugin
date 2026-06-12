@@ -1,0 +1,3235 @@
+//! Layer 1 — Concierge Core Binding (contract only in Phase 0).
+//!
+//! These are the stable operations of the Concierge memory layer, as listed in
+//! the plan. Phase 0 declares the trait and its supporting types so the rest of
+//! the workspace can compile and depend on a fixed shape. Phase 1 provides the
+//! first implementation by shelling out to the `mem` CLI (with a seam to link
+//! the Rust crate directly later).
+
+use std::collections::{BTreeMap, BTreeSet};
+use std::path::PathBuf;
+
+use rand_core::{OsRng, RngCore};
+
+use crate::config::Config;
+use crate::error::{Error, Result};
+use crate::identity::{AgentId, Identity};
+use crate::contacts::Contacts;
+use crate::dm_outbox::{DmOutbox, OutboundDm};
+use crate::sites::{SiteRecord, Sites};
+use crate::messaging::{message_order, MessageEnvelope, RoomBook};
+use crate::publishing::{
+    available_backends, backend_exists, share_via_selected_backend, BackendInfo,
+};
+use crate::social::SocialBook;
+
+/// Content identifier.
+///
+/// Stored as its string form for now; Phase 1 may replace the inner type with a
+/// parsed CIDv1 once the binding links `mem` directly. Records are never mutated
+/// after write, so a `Cid` is a stable, portable reference.
+#[derive(
+    Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
+pub struct Cid(pub String);
+
+/// Either a content address or a human-facing name to resolve first.
+#[derive(Debug, Clone)]
+pub enum CidOrName {
+    Cid(Cid),
+    Name(String),
+}
+
+/// An IPLD node to be written. Opaque in Phase 0; Phase 1 defines the concrete
+/// node taxonomy (`Prompt`, `Response`, `ToolResult`, `Checkpoint`, …) and its
+/// deterministic DAG-CBOR encoding.
+#[derive(Debug, Clone)]
+pub struct Node {
+    pub kind: String,
+    pub fields_json: String,
+}
+
+/// The result of a `get`: a live record or a tombstone receipt. A tombstoned
+/// lookup returns a receipt rather than an error from `get`'s perspective —
+/// callers decide how to surface it.
+#[derive(Debug, Clone)]
+pub enum Record {
+    Live {
+        cid: Cid,
+        kind: String,
+        body_json: String,
+    },
+    Tombstone {
+        cid: Cid,
+        receipt_json: String,
+    },
+}
+
+/// Garbage-collection policy (e.g. keep N checkpoints, drop unreferenced blobs).
+#[derive(Debug, Clone, Default)]
+pub struct GcPolicy {
+    pub keep_checkpoints: Option<u32>,
+}
+
+/// What a `gc` run did.
+#[derive(Debug, Clone, Default)]
+pub struct GcReport {
+    pub removed: u64,
+    pub kept: u64,
+}
+
+/// A record of a successful publish — the local receipt trail, kept beside the
+/// store (`.concierge/publish-receipts.jsonl`), never inside the DAG.
+/// `gateway_url` is where the root can be fetched by CID once it propagates.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct PublishReceipt {
+    pub root: String,
+    pub backend: String,
+    pub unix_time: u64,
+    pub gateway_url: String,
+    /// AgentID that signed this share (Phase 5.5); empty if unsigned.
+    #[serde(default)]
+    pub agent_id: String,
+    /// Hex Ed25519 signature over the root CID; empty if unsigned.
+    #[serde(default)]
+    pub signature: String,
+    /// For a website publish (Planet Pattern): the site's stable IPNS name (`k51…`).
+    #[serde(default)]
+    pub ipns_name: Option<String>,
+    /// For a website publish: the site name this receipt is for.
+    #[serde(default)]
+    pub site_name: Option<String>,
+}
+
+/// Store / DAG metrics for the explorer's stats rail.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct StoreStats {
+    pub names: usize,
+    pub blocks: usize,
+    pub reachable: usize,
+    pub orphans: usize,
+    pub tombstones: usize,
+}
+
+/// A verified share that surfaced in the local "shared with me" view.
+#[derive(Debug, Clone)]
+pub struct SharedWithMeEntry {
+    pub agent_id: String,
+    pub nickname: Option<String>,
+    pub root: Cid,
+    pub signature: String,
+    pub pointer_cid: Cid,
+}
+
+/// The stable Concierge memory operations every harness mounts through.
+///
+/// The host adapter never calls these directly with IPLD knowledge — it emits
+/// [`crate::Event`]s and the plugin maps them onto these primitives.
+pub trait CoreBinding {
+    /// Write an IPLD node, returning its content address.
+    fn put_node(&self, node: &Node) -> Result<Cid>;
+
+    /// Write a raw blob with a media type, returning its content address.
+    fn put_blob(&self, bytes: &[u8], media_type: &str) -> Result<Cid>;
+
+    /// Bind a human-facing name to a CID (idempotent re-binding allowed).
+    fn bind(&self, name: &str, cid: &Cid) -> Result<()>;
+
+    /// Resolve a name to its currently bound CID.
+    fn resolve(&self, name: &str) -> Result<Cid>;
+
+    /// Fetch a record (or tombstone receipt) by CID or name.
+    fn get(&self, key: &CidOrName) -> Result<Record>;
+
+    /// Write a checkpoint over `root`, chaining `parent` if present.
+    fn checkpoint(&self, label: &str, root: &Cid, parent: Option<&Cid>) -> Result<Cid>;
+
+    /// Enumerate every CID reachable from `root` (used by CAR export and share).
+    fn walk(&self, root: &Cid) -> Result<Vec<Cid>>;
+
+    /// Run garbage collection under the given policy.
+    fn gc(&self, policy: &GcPolicy) -> Result<GcReport>;
+
+    /// Record an event record into its UTC `date`'s HAMT index and (re)bind the
+    /// day root `day-YYYY-MM-DD` → `DayIndex` (Phase A.5 day tier). `event_key` is
+    /// the event's stable id within the day (the HAMT key). Events stay full
+    /// records; this only changes how they're reached, so the names index grows
+    /// ~1/day instead of ~1/event. Returns the new `DayIndex` CID.
+    fn record_event_in_day(&self, date: &str, event_key: &str, record: &Cid) -> Result<Cid>;
+
+    /// Whether `event_key` is already recorded in `date`'s day HAMT. Cross-run
+    /// idempotency: a re-ingest of an already-recorded event is a no-op, so the
+    /// hook can re-read a growing session file each turn without reprocessing.
+    fn day_contains(&self, date: &str, event_key: &str) -> Result<bool>;
+
+    /// (Re)build the month/year manifest tiers from the bound `day-*` roots:
+    /// `store → year → month → day` (Phase A.5, DECISIONS.md 0014.8). The tiers
+    /// are derived/rebuildable, so this runs once per ingest run rather than per
+    /// event — months link their days, years link their months, and re-running is
+    /// idempotent (content-addressed → identical CIDs). `month-YYYY-MM` /
+    /// `year-YYYY` are (re)bound to the manifests.
+    fn roll_up_calendar(&self) -> Result<()>;
+}
+
+/// The UTC calendar day (`YYYY-MM-DD`) for a Unix timestamp — the day-bucket key
+/// used by [`CoreBinding::record_event_in_day`] and the explorer's calendar
+/// grouping. Callers with an RFC 3339 timestamp can slice its first 10 chars.
+pub fn utc_date(unix_secs: u64) -> String {
+    mem::tombstones::iso8601(unix_secs)[0..10].to_string()
+}
+
+/// Today's UTC date — the fallback for events that arrive without a timestamp
+/// (e.g. markdown backfill sets `ts = ""`).
+pub fn utc_today() -> String {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    utc_date(now)
+}
+
+fn cid_to_bytes(cid: &Cid) -> Result<Vec<u8>> {
+    let parsed: cid::Cid = cid
+        .0
+        .parse()
+        .map_err(|e| Error::Io(format!("invalid CID {}: {e}", cid.0)))?;
+    Ok(parsed.to_bytes())
+}
+
+fn latest_share_name(agent_id: &str) -> String {
+    format!("latest-share-{agent_id}")
+}
+
+fn shared_with_me_name(agent_id: &str) -> String {
+    format!("shared-with-me-{agent_id}")
+}
+
+fn room_latest_name(room: &str) -> String {
+    format!("room-latest-{room}")
+}
+
+/// Index name mapping a message's **install-independent id** (its Ed25519
+/// signature — deterministic per RFC 8032) to its local block CID. Messages link
+/// to parents by this id, so threads cohere across installs even though `mem`
+/// stamps a per-install `created_at` (which makes block CIDs install-specific).
+fn message_id_name(sig: &str) -> String {
+    format!("msg-{sig}")
+}
+
+/// Pull a [`MessageEnvelope`] out of a `mem` record whose `body.text` carries it.
+fn parse_message_envelope(body_json: &str) -> Result<MessageEnvelope> {
+    let value: serde_json::Value = serde_json::from_str(body_json)
+        .map_err(|e| Error::Io(format!("parse message record: {e}")))?;
+    let text = value
+        .get("body")
+        .and_then(|b| b.get("text"))
+        .and_then(|t| t.as_str())
+        .ok_or_else(|| Error::Io("message record missing body.text".to_string()))?;
+    serde_json::from_str(text).map_err(|e| Error::Io(format!("parse message envelope: {e}")))
+}
+
+/// Render a tombstone receipt in the same shape `mem cat` printed for a pruned
+/// CID, so the in-process [`CoreBinding::get`] returns an identical
+/// `Record::Tombstone` body.
+fn format_receipt(cid: &Cid, t: &mem::tombstones::Tombstone) -> String {
+    let see = match t.superseded_by {
+        Some(next) => next.to_string(),
+        None => "(nothing — orphan)".to_string(),
+    };
+    format!(
+        "{} was pruned\n  died:   {} ({})\n  reason: {}\n  see:    {}",
+        cid.0,
+        mem::tombstones::iso8601(t.pruned_at),
+        t.pruned_at,
+        t.reason,
+        see
+    )
+}
+
+/// Parse a plugin [`Cid`] (string form) into the `cid` crate's typed `Cid`, as
+/// the CAR codec and `iroh-car` expect.
+fn to_ipld_cid(cid: &Cid) -> Result<cid::Cid> {
+    cid.0
+        .parse()
+        .map_err(|e| Error::Io(format!("invalid CID {}: {e}", cid.0)))
+}
+
+fn bytes_to_cid(bytes: &[u8]) -> Result<Cid> {
+    let parsed = <cid::Cid as std::convert::TryFrom<Vec<u8>>>::try_from(bytes.to_vec())
+        .map_err(|e| Error::Io(format!("invalid CID bytes: {e}")))?;
+    Ok(Cid(parsed.to_string()))
+}
+
+fn cid_to_json(cid: &Cid) -> Result<serde_json::Value> {
+    let bytes = cid_to_bytes(cid)?;
+    Ok(serde_json::Value::Array(
+        bytes
+            .into_iter()
+            .map(|b| serde_json::Value::Number(serde_json::Number::from(b)))
+            .collect(),
+    ))
+}
+
+fn json_to_cid(value: &serde_json::Value) -> Result<Cid> {
+    let bytes = value
+        .as_array()
+        .ok_or_else(|| Error::Io("CID link must be a JSON byte array".to_string()))?
+        .iter()
+        .map(|n| {
+            let b = n
+                .as_u64()
+                .ok_or_else(|| Error::Io("CID link byte must be an integer".to_string()))?;
+            if b > u8::MAX as u64 {
+                return Err(Error::Io("CID link byte out of range".to_string()));
+            }
+            Ok(b as u8)
+        })
+        .collect::<Result<Vec<u8>>>()?;
+    bytes_to_cid(&bytes)
+}
+
+/// Encode a [`Cid`] into the JSON link form `mem` expects for CID-typed fields
+/// (a byte array). Adapters use this to build link-bearing nodes — e.g. a
+/// `FileRef`'s `content` — and write them through [`CoreBinding::put_node`],
+/// without re-implementing the CID→bytes encoding the binding already owns.
+pub fn cid_link(cid: &Cid) -> Result<serde_json::Value> {
+    cid_to_json(cid)
+}
+
+/// Decode the JSON link form `mem` uses for CID-typed fields back into a
+/// [`Cid`]. CLI commands use this to read checkpoint roots from record JSON
+/// without duplicating the byte-array decoding rules.
+pub fn cid_from_link(value: &serde_json::Value) -> Result<Cid> {
+    json_to_cid(value)
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+struct MemRecord {
+    #[allow(dead_code)]
+    schema_version: u16,
+    #[allow(dead_code)]
+    created_at: u64,
+    #[allow(dead_code)]
+    source: serde_json::Value,
+    #[allow(dead_code)]
+    edges: Vec<MemEdge>,
+    body: MemNode,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+struct MemEdge {
+    #[allow(dead_code)]
+    rel: serde_json::Value,
+    #[allow(dead_code)]
+    to: serde_json::Value,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum MemNode {
+    Memory {
+        #[allow(dead_code)]
+        text: String,
+        #[allow(dead_code)]
+        kind: String,
+    },
+    UserPrefs {
+        #[allow(dead_code)]
+        entries: Vec<(String, String)>,
+    },
+    Plan {
+        #[allow(dead_code)]
+        title: String,
+        #[allow(dead_code)]
+        prose: String,
+        #[serde(default)]
+        spec: Option<serde_json::Value>,
+    },
+    Decision {
+        #[allow(dead_code)]
+        question: String,
+        #[allow(dead_code)]
+        choice: String,
+        #[allow(dead_code)]
+        rationale: String,
+    },
+    Prompt {
+        #[allow(dead_code)]
+        text: String,
+        #[allow(dead_code)]
+        #[serde(default)]
+        model: Option<String>,
+    },
+    Response {
+        #[allow(dead_code)]
+        text: String,
+        #[allow(dead_code)]
+        model: String,
+    },
+    ToolResult {
+        #[allow(dead_code)]
+        tool: String,
+        #[allow(dead_code)]
+        input: String,
+        #[allow(dead_code)]
+        output: String,
+        #[allow(dead_code)]
+        ok: bool,
+    },
+    Blob {
+        #[allow(dead_code)]
+        bytes: Vec<u8>,
+        #[allow(dead_code)]
+        #[serde(default)]
+        media_type: Option<String>,
+    },
+    FileRef {
+        #[allow(dead_code)]
+        path: String,
+        #[allow(dead_code)]
+        #[serde(default)]
+        size: Option<u64>,
+        #[allow(dead_code)]
+        #[serde(default)]
+        media_type: Option<String>,
+        #[allow(dead_code)]
+        #[serde(default)]
+        mtime: Option<u64>,
+        content: serde_json::Value,
+    },
+    Task {
+        #[allow(dead_code)]
+        title: String,
+        #[allow(dead_code)]
+        prose: String,
+        #[serde(default)]
+        parent: Option<serde_json::Value>,
+    },
+    Conversation {
+        turns: Vec<serde_json::Value>,
+        #[serde(default)]
+        parent: Option<serde_json::Value>,
+    },
+    Skill {
+        #[allow(dead_code)]
+        name: String,
+        #[allow(dead_code)]
+        body: String,
+        #[serde(default)]
+        supersedes: Option<serde_json::Value>,
+    },
+    Checkpoint {
+        #[allow(dead_code)]
+        label: String,
+        root: serde_json::Value,
+        #[serde(default)]
+        parent: Option<serde_json::Value>,
+    },
+    DirectoryManifest {
+        #[allow(dead_code)]
+        root_path: String,
+        entries: Vec<MemDirectoryEntry>,
+    },
+    IngestRun {
+        #[allow(dead_code)]
+        source_path: String,
+        manifest: serde_json::Value,
+        #[allow(dead_code)]
+        file_count: u64,
+        #[allow(dead_code)]
+        byte_count: u64,
+        #[allow(dead_code)]
+        ignored_count: u64,
+        #[allow(dead_code)]
+        plugin_records: u64,
+        #[allow(dead_code)]
+        plugin_failures: u64,
+        #[allow(dead_code)]
+        per_file_plugin_records: std::collections::BTreeMap<String, u64>,
+        #[allow(dead_code)]
+        per_file_plugin_failures: std::collections::BTreeMap<String, u64>,
+    },
+    Symbol {
+        #[allow(dead_code)]
+        path: String,
+        #[allow(dead_code)]
+        name: String,
+        #[allow(dead_code)]
+        kind: String,
+        #[allow(dead_code)]
+        language: String,
+        #[allow(dead_code)]
+        signature: String,
+        #[allow(dead_code)]
+        body: String,
+        #[allow(dead_code)]
+        start_line: u32,
+        #[allow(dead_code)]
+        end_line: u32,
+    },
+    ExtractedText {
+        #[allow(dead_code)]
+        path: String,
+        #[allow(dead_code)]
+        text: String,
+        #[allow(dead_code)]
+        #[serde(default)]
+        media_type: Option<String>,
+    },
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+struct MemDirectoryEntry {
+    #[allow(dead_code)]
+    path: String,
+    file_ref: serde_json::Value,
+}
+
+impl MemNode {
+    fn links(&self) -> Result<Vec<Cid>> {
+        let mut out = Vec::new();
+        let mut push_link = |value: &serde_json::Value| -> Result<()> {
+            out.push(json_to_cid(value)?);
+            Ok(())
+        };
+        match self {
+            MemNode::Plan { spec: Some(v), .. } => push_link(v)?,
+            MemNode::Plan { spec: None, .. } => {}
+            MemNode::FileRef { content, .. } => push_link(content)?,
+            MemNode::Task {
+                parent: Some(v), ..
+            } => push_link(v)?,
+            MemNode::Task { parent: None, .. } => {}
+            MemNode::Conversation { turns, parent } => {
+                for v in turns {
+                    push_link(v)?;
+                }
+                if let Some(v) = parent {
+                    push_link(v)?;
+                }
+            }
+            MemNode::Skill {
+                supersedes: Some(v),
+                ..
+            } => push_link(v)?,
+            MemNode::Skill {
+                supersedes: None, ..
+            } => {}
+            MemNode::Checkpoint { root, parent, .. } => {
+                push_link(root)?;
+                if let Some(v) = parent {
+                    push_link(v)?;
+                }
+            }
+            MemNode::DirectoryManifest { entries, .. } => {
+                for entry in entries {
+                    push_link(&entry.file_ref)?;
+                }
+            }
+            MemNode::IngestRun { manifest, .. } => push_link(manifest)?,
+            _ => {}
+        }
+        Ok(out)
+    }
+}
+
+/// Phase 1 implementation: shell out to the installed `mem` CLI.
+///
+/// `mem` keys its `.concierge` store off the current working directory, so the
+/// plugin gets store isolation by running the CLI in a distinct project root.
+/// Phase 1 keeps the binding thin and explicit: wrapper methods shape the CLI
+/// into the stable core API, while a direct crate-link seam remains available
+/// later if we need richer calls.
+#[derive(Debug, Clone)]
+pub struct MemCli {
+    working_dir: PathBuf,
+    pub(crate) security_session_id: String,
+}
+
+impl MemCli {
+    fn new_security_session_id() -> String {
+        let mut bytes = [0u8; 16];
+        OsRng.fill_bytes(&mut bytes);
+        bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+    }
+
+    /// Open an in-process binding to the `mem` store, scoped to `working_dir`
+    /// (the parent of the `.concierge` store). The `mem` library is linked
+    /// directly (Phase A) — no subprocess.
+    pub fn new(working_dir: impl Into<PathBuf>) -> Self {
+        Self {
+            working_dir: working_dir.into(),
+            security_session_id: Self::new_security_session_id(),
+        }
+    }
+
+    /// The directory this binding is scoped to (the parent of `.concierge`).
+    /// Used by the egress guard to locate the security overlay, and by the GUI's
+    /// capture loop to derive the store path and the ingest base dir.
+    pub fn working_dir(&self) -> &std::path::Path {
+        &self.working_dir
+    }
+
+    /// Load the project config, defaulting to the plan's Phase 1 values if no
+    /// config file exists yet.
+    pub fn config(&self) -> Result<Config> {
+        if !self.working_dir.try_exists().unwrap_or(false) || !self.working_dir.is_dir() {
+            return Err(Error::StoreNotFound(self.working_dir.display().to_string()));
+        }
+        Config::load_from_project_root(&self.working_dir).map_err(|e| Error::Io(e.to_string()))
+    }
+
+
+    fn put_json_value(&self, value: serde_json::Value) -> Result<Cid> {
+        let obj = value
+            .as_object()
+            .ok_or_else(|| Error::Io("node JSON must be a JSON object".to_string()))?;
+        if !obj.contains_key("type") {
+            return Err(Error::Io("node JSON is missing a `type` field".to_string()));
+        }
+        // In-process (Phase A): deserialize straight into mem's typed node and
+        // write through the linked store. No `mem put -` subprocess, so blob nodes
+        // no longer risk the OS argv limit and there is no spawn/pipe overhead.
+        let node: mem::node::Node = serde_json::from_value(value)
+            .map_err(|e| Error::CidNotFound(format!("invalid node json: {e}")))?;
+        let store = self.open_store()?;
+        let cid = store
+            .put_node(node, mem::node::Source::User)
+            .map_err(|e| Error::Io(format!("put node: {e}")))?;
+        Ok(Cid(cid.to_string()))
+    }
+
+    /// Like [`put_json_value`](Self::put_json_value), but stamps a **deterministic**
+    /// `created_at` rather than the wall clock — for derived, rebuildable nodes
+    /// (the calendar manifests) whose CID must be stable across re-derivation.
+    fn put_json_value_at(&self, value: serde_json::Value, created_at: u64) -> Result<Cid> {
+        let obj = value
+            .as_object()
+            .ok_or_else(|| Error::Io("node JSON must be a JSON object".to_string()))?;
+        if !obj.contains_key("type") {
+            return Err(Error::Io("node JSON is missing a `type` field".to_string()));
+        }
+        let node: mem::node::Node = serde_json::from_value(value)
+            .map_err(|e| Error::CidNotFound(format!("invalid node json: {e}")))?;
+        let store = self.open_store()?;
+        let cid = store
+            .put_node_at(node, mem::node::Source::User, created_at)
+            .map_err(|e| Error::Io(format!("put node: {e}")))?;
+        Ok(Cid(cid.to_string()))
+    }
+
+    fn parse_live_record(&self, stdout: &str, cid: Cid) -> Result<Record> {
+        let value: serde_json::Value = serde_json::from_str(stdout)
+            .map_err(|e| Error::Io(format!("could not parse `mem cat` record JSON: {e}")))?;
+        let body = value
+            .get("body")
+            .ok_or_else(|| Error::Io("record JSON missing body".to_string()))?;
+        let kind = body
+            .get("type")
+            .and_then(|t| t.as_str())
+            .unwrap_or("unknown")
+            .to_string();
+        Ok(Record::Live {
+            cid,
+            kind,
+            body_json: stdout.to_string(),
+        })
+    }
+
+    /// The immediate (non-recursive) links of a single block — what it points at,
+    /// **without requiring those targets to be present**. Sync uses this to walk a
+    /// graph downward as blocks arrive (`walk` can't: it recurses into not-yet-
+    /// fetched children). Returns empty for a leaf or a block that does not decode
+    /// as a linked node (e.g. opaque ciphertext).
+    pub fn block_links(&self, cid: &Cid) -> Result<Vec<Cid>> {
+        match self.get(&CidOrName::Cid(cid.clone())) {
+            Ok(Record::Live { body_json, .. }) => Ok(self.record_links(&body_json).unwrap_or_default()),
+            _ => Ok(Vec::new()),
+        }
+    }
+
+    fn record_links(&self, stdout: &str) -> Result<Vec<Cid>> {
+        let value: serde_json::Value = serde_json::from_str(stdout)
+            .map_err(|e| Error::Io(format!("could not parse record JSON for walk: {e}")))?;
+        let edges = value
+            .get("edges")
+            .and_then(|v| v.as_array())
+            .cloned()
+            .unwrap_or_default();
+        let record: MemRecord = serde_json::from_value(value.clone())
+            .map_err(|e| Error::Io(format!("could not decode record body: {e}")))?;
+        let mut links = record.body.links()?;
+        if value
+            .get("source")
+            .and_then(|source| source.get("kind"))
+            .and_then(|kind| kind.as_str())
+            == Some("derived")
+        {
+            if let Some(from) = value
+                .get("source")
+                .and_then(|source| source.get("from"))
+                .and_then(|from| from.as_array())
+            {
+                for link in from {
+                    links.push(json_to_cid(link)?);
+                }
+            }
+        }
+        for edge in edges {
+            let to = edge
+                .get("to")
+                .ok_or_else(|| Error::Io("edge missing `to` link".to_string()))?;
+            links.push(json_to_cid(to)?);
+        }
+        links.sort();
+        links.dedup();
+        Ok(links)
+    }
+
+    fn walk_inner(
+        &self,
+        root: &Cid,
+        visited: &mut BTreeSet<Cid>,
+        out: &mut Vec<Cid>,
+    ) -> Result<()> {
+        if !visited.insert(root.clone()) {
+            return Ok(());
+        }
+        let record = self.get(&CidOrName::Cid(root.clone()))?;
+        match record {
+            Record::Live { body_json, .. } => {
+                out.push(root.clone());
+                for child in self.record_links(&body_json)? {
+                    self.walk_inner(&child, visited, out)?;
+                }
+                Ok(())
+            }
+            Record::Tombstone { receipt_json, .. } => Err(Error::Tombstoned(receipt_json)),
+        }
+    }
+
+    /// Absolute path to the content-addressed block directory (`.concierge/blocks`).
+    fn blocks_dir(&self) -> Result<PathBuf> {
+        Ok(self
+            .working_dir
+            .join(self.config()?.store.root.join("blocks")))
+    }
+
+    /// Open the `mem` store in-process, rooted at the same `.concierge` path the
+    /// CLI used (`working_dir` + the config's store root). Built per call to
+    /// mirror the CLI's load→op→persist model — `NameIndex` writes atomically, so
+    /// concurrent writers stay safe (central-store discipline). `config()` already
+    /// fails with `StoreNotFound` when `working_dir` is absent.
+    fn open_store(&self) -> Result<mem::store::Store<mem::blockstore::LocalBlocks>> {
+        let root = self.working_dir.join(self.config()?.store.root);
+        let blocks = mem::blockstore::LocalBlocks::new(root.join("blocks"));
+        let names = mem::names::NameIndex::load(root.join("names.json"))
+            .map_err(|e| Error::Io(format!("open names index: {e}")))?;
+        Ok(mem::store::Store::new(blocks, names))
+    }
+
+    /// A `LocalBlocks` over this store's block dir, for the day-tier HAMT (which
+    /// operates on raw content-addressed blocks rather than the typed `Store`).
+    fn blockstore(&self) -> Result<mem::blockstore::LocalBlocks> {
+        Ok(mem::blockstore::LocalBlocks::new(self.blocks_dir()?))
+    }
+
+    /// The `(event_key, record CID)` pairs recorded in `date`'s day HAMT — for the
+    /// explorer to fan a day out to its events (Phase A.5). Empty if no day root is
+    /// bound for that date. Order is by key hash, not insertion.
+    pub fn day_events(&self, date: &str) -> Result<Vec<(String, Cid)>> {
+        let day_name = format!("day-{date}");
+        let Some(hamt_root) = self.day_hamt_root(&day_name)? else {
+            return Ok(Vec::new());
+        };
+        let blocks = self.blockstore()?;
+        let hamt: mem::hamt::Hamt<_, mem::cid::Cid> = mem::hamt::Hamt::load(&blocks, &hamt_root)
+            .map_err(|e| Error::Io(format!("load day hamt: {e}")))?;
+        let mut out = Vec::new();
+        hamt.for_each(|key, cid| {
+            out.push((String::from_utf8_lossy(key).into_owned(), Cid(cid.to_string())));
+            Ok(())
+        })
+        .map_err(|e| Error::Io(format!("hamt iterate: {e}")))?;
+        Ok(out)
+    }
+
+    /// The HAMT root CID inside the currently-bound `DayIndex` for `day_name`, or
+    /// `None` if no day root is bound yet.
+    fn day_hamt_root(&self, day_name: &str) -> Result<Option<mem::cid::Cid>> {
+        let day_cid = match self.resolve(day_name) {
+            Ok(cid) => cid,
+            Err(Error::NameUnbound(_)) => return Ok(None),
+            Err(e) => return Err(e),
+        };
+        let body_json = match self.get(&CidOrName::Cid(day_cid))? {
+            Record::Live { body_json, .. } => body_json,
+            Record::Tombstone { .. } => return Ok(None),
+        };
+        let value: serde_json::Value = serde_json::from_str(&body_json)
+            .map_err(|e| Error::Io(format!("parse day index: {e}")))?;
+        let events = value
+            .get("body")
+            .and_then(|body| body.get("events"))
+            .ok_or_else(|| Error::Io("day index missing events link".to_string()))?;
+        let core_cid = cid_from_link(events)?;
+        let parsed: mem::cid::Cid = core_cid
+            .0
+            .parse()
+            .map_err(|e| Error::CidNotFound(format!("invalid day hamt cid {}: {e}", core_cid.0)))?;
+        Ok(Some(parsed))
+    }
+
+    /// Read a block's raw bytes from the store by CID.
+    pub(crate) fn read_block(&self, cid: &Cid) -> Result<Vec<u8>> {
+        let path = self.blocks_dir()?.join(&cid.0);
+        std::fs::read(&path).map_err(|e| match e.kind() {
+            std::io::ErrorKind::NotFound => Error::CidNotFound(cid.0.clone()),
+            _ => Error::Io(format!("read block {}: {e}", cid.0)),
+        })
+    }
+
+    /// Store an already content-addressed raw block after verifying its CID.
+    /// Capability-encrypted blocks use this path so they remain interoperable
+    /// with CAR/Kubo while staying opaque to the plaintext `mem` decoder.
+    pub(crate) fn store_verified_raw_block(&self, cid: &Cid, bytes: &[u8]) -> Result<()> {
+        let parsed = to_ipld_cid(cid)?;
+        crate::car::verify_block(&parsed, bytes)?;
+        let blocks_dir = self.blocks_dir()?;
+        std::fs::create_dir_all(&blocks_dir)
+            .map_err(|error| Error::Io(format!("create blocks dir: {error}")))?;
+        let path = blocks_dir.join(&cid.0);
+        if path
+            .try_exists()
+            .map_err(|error| Error::Io(format!("inspect raw block {}: {error}", cid.0)))?
+        {
+            let existing = std::fs::read(&path)
+                .map_err(|error| Error::Io(format!("read raw block {}: {error}", cid.0)))?;
+            if existing != bytes {
+                return Err(Error::SecurityPolicy(format!(
+                    "existing block bytes do not match verified CID {}",
+                    cid.0
+                )));
+            }
+            return Ok(());
+        }
+        std::fs::write(&path, bytes)
+            .map_err(|error| Error::Io(format!("write raw block {}: {error}", cid.0)))
+    }
+
+    /// Export the subgraph reachable from `root` as CARv1 bytes (root in the
+    /// header). Blocks are the store's own bytes, so their CIDs are preserved.
+    pub(crate) fn export_car(&self, root: &Cid) -> Result<Vec<u8>> {
+        let cids = self.walk(root)?;
+        let mut blocks = Vec::with_capacity(cids.len());
+        for cid in &cids {
+            blocks.push((to_ipld_cid(cid)?, self.read_block(cid)?));
+        }
+        crate::car::build_car(&to_ipld_cid(root)?, &blocks)
+    }
+
+    /// Write the exact reviewed plaintext-CAR plan while holding the
+    /// cross-process policy lock through the filesystem egress.
+    pub fn write_reviewed_plaintext_car(
+        &self,
+        reviewed: &crate::egress::EgressPlan,
+        path: &std::path::Path,
+    ) -> Result<u64> {
+        if reviewed.operation != crate::egress::EgressOperation::PlaintextCarExport {
+            return Err(Error::EgressPlanChanged(
+                "reviewed plan is not a plaintext CAR export".to_string(),
+            ));
+        }
+        if reviewed.backend != "local-file" || reviewed.backend_target != path.display().to_string()
+        {
+            return Err(Error::EgressPlanChanged(
+                "reviewed plaintext export destination changed".to_string(),
+            ));
+        }
+        self.execute_approved_egress(reviewed, |approved| {
+            let car = self.export_car(&approved.root)?;
+            std::fs::write(path, &car)
+                .map_err(|error| Error::Io(format!("write plaintext CAR: {error}")))?;
+            Ok(car.len() as u64)
+        })
+    }
+
+    /// The CIDs and total block byte size a CAR for `root` would contain — the
+    /// dry-run / manifest preview, computed without writing anything.
+    /// Same reachable set as [`Binding::walk`] (the record-link closure, erroring
+    /// on a tombstone or missing block within it) but fetched with one batched
+    /// `get_many` per BFS level instead of one lookup per node. The set
+    /// is identical; only the order differs, which is safe because every consumer
+    /// (manifest digest, byte total, block shipping) is order-independent.
+    pub(crate) fn walk_batched(&self, root: &Cid) -> Result<Vec<Cid>> {
+        let mut visited: BTreeSet<Cid> = BTreeSet::new();
+        let mut out: Vec<Cid> = Vec::new();
+        visited.insert(root.clone());
+        let mut frontier: Vec<Cid> = vec![root.clone()];
+        while !frontier.is_empty() {
+            let level = std::mem::take(&mut frontier);
+            let fetched = self.get_many(&level)?;
+            for cid in &level {
+                match fetched.get(&cid.0) {
+                    Some(Record::Live { body_json, .. }) => {
+                        out.push(cid.clone());
+                        for child in self.record_links(body_json)? {
+                            if visited.insert(child.clone()) {
+                                frontier.push(child);
+                            }
+                        }
+                    }
+                    Some(Record::Tombstone { receipt_json, .. }) => {
+                        return Err(Error::Tombstoned(receipt_json.clone()));
+                    }
+                    // `get_many` omits a CID it could not read; `walk` would have
+                    // surfaced that as a hard error, so preserve the strictness.
+                    None => return Err(Error::CidNotFound(cid.0.clone())),
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    pub fn export_car_manifest(&self, root: &Cid) -> Result<(Vec<Cid>, u64)> {
+        let cids = self.walk_batched(root)?;
+        let mut total: u64 = 0;
+        for cid in &cids {
+            total += self.read_block(cid)?.len() as u64;
+        }
+        Ok((cids, total))
+    }
+
+    /// Import CARv1 bytes: **verify every block's CID**, write the blocks into
+    /// the store, bind the root under `name`, and return the root CID. A tampered
+    /// block aborts the import before anything is written or bound.
+    pub fn import_car(&self, car: &[u8], name: &str) -> Result<Cid> {
+        let (roots, blocks) = crate::car::read_car_verified(car)?;
+        let root = roots
+            .first()
+            .ok_or_else(|| Error::Io("CAR has no root in its header".to_string()))?;
+        self.import_verified_car(root, &blocks, name)
+    }
+
+    /// Import a signed share: verify the signer before accepting the root.
+    pub fn import_signed_car(
+        &self,
+        car: &[u8],
+        name: &str,
+        agent_id: &str,
+        signature: &str,
+    ) -> Result<Cid> {
+        let (roots, blocks) = crate::car::read_car_verified(car)?;
+        let root = roots
+            .first()
+            .ok_or_else(|| Error::Io("CAR has no root in its header".to_string()))?;
+        let root_cid = Cid(root.to_string());
+
+        let book = self.social_book()?;
+        if !book.is_following(agent_id) {
+            return Err(Error::Io(format!(
+                "unknown signer `{agent_id}` is not on the follow list"
+            )));
+        }
+        if !self.verify_share(&root_cid, agent_id, signature)? {
+            return Err(Error::Io(format!(
+                "share signature did not verify for `{agent_id}`"
+            )));
+        }
+
+        let imported_root = self.import_verified_car(root, &blocks, name)?;
+        self.record_shared_with_me(agent_id, &imported_root, signature)?;
+        Ok(imported_root)
+    }
+
+    /// The publishing backends compiled into this build, with their
+    /// requirements manifest for display.
+    pub fn list_backends(&self) -> Result<Vec<BackendInfo>> {
+        Ok(available_backends(&self.config()?))
+    }
+
+    /// Every name → CID binding in the store (the names browser source).
+    pub fn names(&self) -> Result<Vec<(String, Cid)>> {
+        let store = self.open_store()?;
+        Ok(store
+            .names()
+            .map(|(name, cid)| (name.to_string(), Cid(cid.to_string())))
+            .collect())
+    }
+
+    /// The direct outbound links of a record (its edges + structural link fields)
+    /// — the clickable references in the record viewer.
+    pub fn outbound_links(&self, cid: &Cid) -> Result<Vec<Cid>> {
+        match self.get(&CidOrName::Cid(cid.clone()))? {
+            Record::Live { body_json, .. } => self.record_links(&body_json),
+            Record::Tombstone { .. } => Ok(Vec::new()),
+        }
+    }
+
+    /// The direct outbound links of a record whose JSON is already in hand — the
+    /// same result as [`Self::outbound_links`] but with no `mem` round-trip.
+    /// Callers that have just fetched a record (e.g. via [`Self::get_many`]) use
+    /// this to avoid re-`get`ting it.
+    pub fn links_from_record_json(&self, record_json: &str) -> Result<Vec<Cid>> {
+        self.record_links(record_json)
+    }
+
+    /// Fetch many records against a single in-process store. The block/name
+    /// indexes load once and each CID is looked up directly, so building a
+    /// whole-store graph costs one store open instead of one spawn per node.
+    /// Tombstoned CIDs are returned alongside live ones; CIDs that fail to
+    /// parse/look up are dropped. Order is not guaranteed, so the result is keyed
+    /// by CID string.
+    pub fn get_many(&self, cids: &[Cid]) -> Result<std::collections::HashMap<String, Record>> {
+        use std::collections::HashMap;
+        if cids.is_empty() {
+            return Ok(HashMap::new());
+        }
+        let store = self.open_store()?;
+        let mut out = HashMap::with_capacity(cids.len());
+        for cid in cids {
+            let Ok(parsed) = cid.0.parse::<mem::cid::Cid>() else {
+                continue; // unparseable CID: omit (matches the old "error" entry)
+            };
+            match store.lookup(&parsed) {
+                Ok(mem::store::Lookup::Present(record)) => {
+                    let Ok(body_json) = serde_json::to_string_pretty(&record) else {
+                        continue;
+                    };
+                    if let Ok(parsed_record) = self.parse_live_record(&body_json, cid.clone()) {
+                        out.insert(cid.0.clone(), parsed_record);
+                    }
+                }
+                Ok(mem::store::Lookup::Pruned(t)) => {
+                    let receipt_json = format_receipt(cid, &t);
+                    out.insert(
+                        cid.0.clone(),
+                        Record::Tombstone {
+                            cid: cid.clone(),
+                            receipt_json,
+                        },
+                    );
+                }
+                Err(_) => {} // missing / undecodable: omitted from the map
+            }
+        }
+        Ok(out)
+    }
+
+    /// Store / DAG metrics for the explorer's stats rail.
+    pub fn store_stats(&self) -> Result<StoreStats> {
+        let names = self.names()?;
+        let blocks_dir = self.blocks_dir()?;
+        let blocks = std::fs::read_dir(&blocks_dir)
+            .map(|rd| {
+                rd.filter(|e| e.as_ref().map(|e| e.path().is_file()).unwrap_or(false))
+                    .count()
+            })
+            .unwrap_or(0);
+        // Reachable = the union of every named root's subgraph, computed at the
+        // block level in-process (no record bodies, no spawn) — orders of
+        // magnitude cheaper than the old `self.walk` per name. Every bound name
+        // is a root.
+        let store = self.open_store()?;
+        let mut reachable: BTreeSet<String> = BTreeSet::new();
+        for (_name, root) in &names {
+            if let Ok(parsed) = root.0.parse::<mem::cid::Cid>() {
+                if let Ok(blocks) = store.reachable(&parsed) {
+                    for block in blocks {
+                        reachable.insert(block.to_string());
+                    }
+                }
+            }
+        }
+        let tomb_path = self
+            .working_dir
+            .join(self.config()?.store.root.join("tombstones.json"));
+        let tombstones = std::fs::read_to_string(&tomb_path)
+            .ok()
+            .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
+            .map(|v| match v {
+                serde_json::Value::Array(a) => a.len(),
+                serde_json::Value::Object(o) => o.len(),
+                _ => 0,
+            })
+            .unwrap_or(0);
+        Ok(StoreStats {
+            names: names.len(),
+            blocks,
+            reachable: reachable.len(),
+            orphans: blocks.saturating_sub(reachable.len()),
+            tombstones,
+        })
+    }
+
+    /// Configure a backend (writes `[publishing].backend` to the local config).
+    pub fn add_backend(&self, name: &str) -> Result<()> {
+        if !backend_exists(name) {
+            return Err(Error::BackendDown(format!(
+                "backend `{name}` is not compiled in"
+            )));
+        }
+        let mut cfg = self.config()?;
+        cfg.publishing.backend = name.to_string();
+        cfg.save_to_project_root(&self.working_dir)
+            .map_err(Error::Io)
+    }
+
+    /// Legacy ambiguous `share` never publishes. Phase A requires callers to use
+    /// an explicit reviewed `publish-public` operation.
+    pub fn share(&self, target: &str) -> Result<PublishReceipt> {
+        let _ = target;
+        Err(Error::ExplicitPublicPublishRequired)
+    }
+
+    /// Execute one explicitly reviewed public publication.
+    pub fn publish_public(&self, reviewed: &crate::egress::EgressPlan) -> Result<PublishReceipt> {
+        if reviewed.operation != crate::egress::EgressOperation::PublicPublish {
+            return Err(Error::EgressPlanChanged(
+                "reviewed plan is not a public publication".to_string(),
+            ));
+        }
+        self.execute_approved_egress(reviewed, |approved| {
+            let cfg = self.config()?;
+            let mut receipt = share_via_selected_backend(self, approved, &cfg)?;
+            // Sign the shared root with the AgentID: authenticity (*who* shared it) on
+            // top of the CID's integrity (*what* was shared). Phase 5.5 / Decision 0007.
+            let identity = self.identity()?;
+            receipt.agent_id = identity.agent_id().0;
+            receipt.signature = identity.sign(approved.root.0.as_bytes());
+            self.append_receipt(&receipt)?;
+            self.record_latest_share(&receipt, &approved.root)?;
+            Ok(receipt)
+        })
+    }
+
+    /// Where the published-site registry lives.
+    fn sites_path(&self) -> Result<PathBuf> {
+        Ok(self.store_dir()?.join("sites.json"))
+    }
+
+    /// Wait (briefly) for the public publishing node's API to come up.
+    fn wait_for_public_node(&self) -> Result<()> {
+        for _ in 0..40 {
+            if crate::node::public_node_running() {
+                return Ok(());
+            }
+            std::thread::sleep(std::time::Duration::from_millis(250));
+        }
+        Err(Error::BackendDown(
+            "public IPFS node did not come up in time".to_string(),
+        ))
+    }
+
+    /// **Publish a folder as a website** (the Planet Pattern). A password-gated
+    /// egress act (Decision 0026): the AI/user *stages* the folder; this is the
+    /// deliberate, authenticated publish. Ensures the public node is up, mints (or
+    /// reuses) the site's stable IPNS key, `add`s the folder as a real UnixFS
+    /// directory a gateway will serve, points IPNS at the new CID, and records a
+    /// signed receipt + the site registry. Runs against the PUBLIC node, never the
+    /// private mesh node. Updating a site is the same call (same name → same IPNS).
+    pub fn publish_site(
+        &self,
+        name: &str,
+        folder: &str,
+        kind: &str,
+        password: &str,
+    ) -> Result<PublishReceipt> {
+        self.verify_password(password)?;
+        let folder_path = std::path::Path::new(folder);
+        if !folder_path.is_dir() {
+            return Err(Error::Io(format!("not a folder: {folder}")));
+        }
+        // Stage the front-end (gallery/player generate index.html; site needs one).
+        crate::site::write_index(folder_path, crate::site::SiteKind::parse(kind), name)?;
+        let store = self.store_dir()?;
+        let repo = crate::node::public_repo_for(&store);
+        crate::node::launch_public_node(&store)?;
+        self.wait_for_public_node()?;
+        let ipns = crate::node::ipns_key_gen(&repo, name)?;
+        let cid = crate::node::unixfs_add_dir(&repo, folder_path)?;
+        let published = crate::node::ipns_publish(&repo, &cid, name)?;
+        let identity = self.identity()?;
+        let receipt = PublishReceipt {
+            root: cid.clone(),
+            backend: "ipfs-public".to_string(),
+            unix_time: now_secs(),
+            gateway_url: format!("https://ipfs.io/ipns/{published}"),
+            agent_id: identity.agent_id().0,
+            signature: identity.sign(cid.as_bytes()),
+            ipns_name: Some(published.clone()),
+            site_name: Some(name.to_string()),
+        };
+        self.append_receipt(&receipt)?;
+        // Reuse the existing IPNS address if the site was published before.
+        let path = self.sites_path()?;
+        let mut sites = Sites::load(&path).map_err(Error::Io)?;
+        let ipns = sites.sites.get(name).map(|s| s.ipns.clone()).unwrap_or(ipns);
+        sites.sites.insert(
+            name.to_string(),
+            SiteRecord {
+                name: name.to_string(),
+                ipns,
+                dir: folder.to_string(),
+                last_cid: Some(cid),
+                published_at: now_secs() as i64,
+            },
+        );
+        sites.save(&path).map_err(Error::Io)?;
+        Ok(receipt)
+    }
+
+    /// The published sites this install knows.
+    pub fn site_list(&self) -> Result<Vec<SiteRecord>> {
+        Ok(Sites::load(&self.sites_path()?)
+            .map_err(Error::Io)?
+            .sites
+            .into_values()
+            .collect())
+    }
+
+    /// Forget a site from the registry (does not unpin or revoke the IPNS key).
+    pub fn site_unpublish(&self, name: &str) -> Result<()> {
+        let path = self.sites_path()?;
+        let mut sites = Sites::load(&path).map_err(Error::Io)?;
+        if sites.sites.remove(name).is_some() {
+            sites.save(&path).map_err(Error::Io)?;
+        }
+        Ok(())
+    }
+
+    /// Export a site's IPNS private key to `out_path` for backup/portability.
+    pub fn export_site_key(&self, name: &str, out_path: &std::path::Path) -> Result<()> {
+        let repo = crate::node::public_repo_for(&self.store_dir()?);
+        crate::node::ipns_key_export(&repo, name, out_path)
+    }
+
+    /// Read the local publish-receipt trail. The visual explorer uses this as
+    /// the read-only source of truth for whether a root has a recorded pin.
+    pub fn publish_receipts(&self) -> Result<Vec<PublishReceipt>> {
+        let path = self
+            .working_dir
+            .join(self.config()?.store.root.join("publish-receipts.jsonl"));
+        if !path.exists() {
+            return Ok(Vec::new());
+        }
+        let text = std::fs::read_to_string(&path)
+            .map_err(|e| Error::Io(format!("read receipt trail: {e}")))?;
+        text.lines()
+            .filter(|line| !line.trim().is_empty())
+            .map(|line| {
+                serde_json::from_str(line)
+                    .map_err(|e| Error::Io(format!("parse publish receipt: {e}")))
+            })
+            .collect()
+    }
+
+    /// Load (or first-time generate + persist) this install's AgentID identity.
+    pub fn identity(&self) -> Result<Identity> {
+        let key_path = self.working_dir.join(self.config()?.identity.key_path);
+        Identity::load_or_create(&key_path).map_err(|e| Error::Io(format!("identity: {e}")))
+    }
+
+    /// This install's public AgentID — stable across restarts.
+    pub fn agent_id(&self) -> Result<AgentId> {
+        Ok(self.identity()?.agent_id())
+    }
+
+    /// Verify a signed share: does `signature` over `root` come from `agent_id`?
+    pub fn verify_share(&self, root: &Cid, agent_id: &str, signature: &str) -> Result<bool> {
+        crate::identity::verify(&AgentId(agent_id.to_string()), root.0.as_bytes(), signature)
+            .map_err(Error::Io)
+    }
+
+    /// Verified shares from followed AgentIDs, ready to display or fetch.
+    pub fn shared_with_me(&self) -> Result<Vec<SharedWithMeEntry>> {
+        let book = self.social_book()?;
+        let mut out = Vec::new();
+        for agent_id in &book.following {
+            let nickname = book.nickname_of(agent_id).cloned();
+            let name = shared_with_me_name(agent_id);
+            let cid = match self.resolve(&name) {
+                Ok(cid) => cid,
+                Err(Error::NameUnbound(_)) => continue,
+                Err(e) => return Err(e),
+            };
+            let record = self.get(&CidOrName::Cid(cid.clone()))?;
+            let Record::Live { body_json, .. } = record else {
+                continue;
+            };
+            let (pointer_agent_id, root, signature) = parse_share_pointer(&body_json)?;
+            if pointer_agent_id != *agent_id {
+                continue;
+            }
+            let verified = self.verify_share(&root, agent_id, &signature)?;
+            if verified {
+                out.push(SharedWithMeEntry {
+                    agent_id: agent_id.clone(),
+                    nickname,
+                    root,
+                    signature,
+                    pointer_cid: cid,
+                });
+            }
+        }
+        Ok(out)
+    }
+
+    fn social_path(&self) -> Result<PathBuf> {
+        Ok(self
+            .working_dir
+            .join(self.config()?.store.root.join("social.json")))
+    }
+
+    /// The local petname + follow book.
+    pub fn social_book(&self) -> Result<SocialBook> {
+        SocialBook::load(&self.social_path()?).map_err(Error::Io)
+    }
+
+    /// Follow an AgentID (persisted to the local book; also the inbound allowlist).
+    pub fn follow(&self, agent_id: &str) -> Result<()> {
+        let path = self.social_path()?;
+        let mut book = SocialBook::load(&path).map_err(Error::Io)?;
+        book.follow(agent_id);
+        book.save(&path).map_err(Error::Io)
+    }
+
+    /// Give an AgentID a local petname.
+    pub fn set_nickname(&self, agent_id: &str, nickname: &str) -> Result<()> {
+        let path = self.social_path()?;
+        let mut book = SocialBook::load(&path).map_err(Error::Io)?;
+        book.set_nickname(agent_id, nickname);
+        book.save(&path).map_err(Error::Io)
+    }
+
+    fn room_book_path(&self) -> Result<PathBuf> {
+        Ok(self
+            .working_dir
+            .join(self.config()?.store.root.join("rooms.json")))
+    }
+
+    /// The per-room participation policies (the AI-send lever + mutes).
+    pub fn room_book(&self) -> Result<RoomBook> {
+        RoomBook::load(&self.room_book_path()?).map_err(Error::Io)
+    }
+
+    /// Put a typed node whose **provenance is `from`** — recorded as a derived
+    /// `Source`, so `walk`/`record_links` follow the links back to the sub-graph
+    /// it was derived from (e.g. a §4 synthesis linking its source thread). Unlike
+    /// `put_node` (which records `Source::User`), this attaches real, gravity-
+    /// counted edges to the originating CIDs.
+    pub fn put_node_derived(&self, node: &Node, from: &[Cid]) -> Result<Cid> {
+        let mut value: serde_json::Value = serde_json::from_str(&node.fields_json)
+            .map_err(|e| Error::Io(format!("node fields_json is not valid JSON: {e}")))?;
+        let obj = value
+            .as_object_mut()
+            .ok_or_else(|| Error::Io("node fields_json must be a JSON object".to_string()))?;
+        obj.insert(
+            "type".to_string(),
+            serde_json::Value::String(node.kind.clone()),
+        );
+        let typed: mem::node::Node = serde_json::from_value(value)
+            .map_err(|e| Error::CidNotFound(format!("invalid node json: {e}")))?;
+        let mut links = Vec::with_capacity(from.len());
+        for cid in from {
+            let parsed: mem::cid::Cid = cid
+                .0
+                .parse()
+                .map_err(|e| Error::CidNotFound(format!("invalid cid {}: {e}", cid.0)))?;
+            links.push(parsed);
+        }
+        let store = self.open_store()?;
+        let cid = store
+            .put_node(typed, mem::node::Source::Derived { from: links })
+            .map_err(|e| Error::Io(format!("put derived node: {e}")))?;
+        Ok(Cid(cid.to_string()))
+    }
+
+    /// Set a room's AI-send lever: `"off"` (Human-only), `"on"`, or `"on_mention"`.
+    pub fn set_room_ai_send(&self, room: &str, value: &str) -> Result<()> {
+        let path = self.room_book_path()?;
+        let mut book = RoomBook::load(&path).map_err(Error::Io)?;
+        book.set_ai_send(room, value);
+        book.save(&path).map_err(Error::Io)
+    }
+
+    /// Mute an AgentID in a room (receiver-side; muted messages stay in the DAG).
+    pub fn mute_in_room(&self, room: &str, agent_id: &str) -> Result<()> {
+        let path = self.room_book_path()?;
+        let mut book = RoomBook::load(&path).map_err(Error::Io)?;
+        book.mute(room, agent_id);
+        book.save(&path).map_err(Error::Io)
+    }
+
+    /// Post a signed message to a room, returning its CID. Enforces the AI-send
+    /// lever (send-side): an `ai` install cannot post to a Human-only room.
+    pub fn post_message(&self, room: &str, payload: &str) -> Result<Cid> {
+        let cfg = self.config()?;
+        let policy = self.room_book()?.policy(room);
+        if !policy.may_send(&cfg.identity.kind, payload) {
+            return Err(Error::Io(format!(
+                "muted: room `{room}` is Human-only and this install is `{}`",
+                cfg.identity.kind
+            )));
+        }
+        let identity = self.identity()?;
+        let parent = match self.resolve(&room_latest_name(room)) {
+            Ok(cid) => Some(cid),
+            Err(Error::NameUnbound(_)) => None,
+            Err(e) => return Err(e),
+        };
+        // Link by the parent's *signature* (its install-independent message id),
+        // not its block CID, so threads cohere across installs.
+        let (clock, next) = match &parent {
+            Some(p) => {
+                let parent_env = self.read_message(p)?;
+                (parent_env.clock + 1, vec![parent_env.sig])
+            }
+            None => (1, Vec::new()),
+        };
+        let mut env = MessageEnvelope {
+            id: room.to_string(),
+            payload: payload.to_string(),
+            next,
+            refs: Vec::new(),
+            clock,
+            key: identity.agent_id().0,
+            sig: String::new(),
+        };
+        env.sig = identity.sign(&env.signing_bytes());
+        let text = serde_json::to_string(&env).map_err(|e| Error::Io(e.to_string()))?;
+        let cid = self.put_node(&Node {
+            kind: "memory".to_string(),
+            fields_json: serde_json::json!({ "text": text, "kind": "reference" }).to_string(),
+        })?;
+        self.bind(&message_id_name(&env.sig), &cid)?;
+        self.bind(&room_latest_name(room), &cid)?;
+        Ok(cid)
+    }
+
+    /// Read a message by CID, **verifying its signature**: a forged or tampered
+    /// message (author's key doesn't sign it) is rejected.
+    pub fn read_message(&self, cid: &Cid) -> Result<MessageEnvelope> {
+        let record = self.get(&CidOrName::Cid(cid.clone()))?;
+        let Record::Live { body_json, .. } = record else {
+            return Err(Error::Io("message is tombstoned".to_string()));
+        };
+        let env = parse_message_envelope(&body_json)?;
+        let ok = crate::identity::verify(&AgentId(env.key.clone()), &env.signing_bytes(), &env.sig)
+            .map_err(Error::Io)?;
+        if !ok {
+            return Err(Error::Io(format!(
+                "message signature does not verify for author {}",
+                env.key
+            )));
+        }
+        Ok(env)
+    }
+
+    /// Accept an **inbound** signed message from a peer (gossipsub / relay): verify
+    /// the author's signature, store it idempotently, and advance the room head if
+    /// this message is at least as new as the current head. The room is the
+    /// envelope's `id`. Returns the stored block CID (the existing one if we have
+    /// already seen this message). The wire form is the bare envelope JSON — the
+    /// same `text` `post_message` stores and the transport publishes.
+    pub fn accept_message(&self, env_json: &str) -> Result<Cid> {
+        let env: MessageEnvelope = serde_json::from_str(env_json)
+            .map_err(|e| Error::Io(format!("parse inbound message: {e}")))?;
+        let ok = crate::identity::verify(&AgentId(env.key.clone()), &env.signing_bytes(), &env.sig)
+            .map_err(Error::Io)?;
+        if !ok {
+            return Err(Error::Io(format!(
+                "inbound message signature does not verify for author {}",
+                env.key
+            )));
+        }
+        // Idempotent: a message is identified by its signature, so re-delivery
+        // (gossipsub fan-out, reconnect replay) maps to the same stored node.
+        let id_name = message_id_name(&env.sig);
+        if let Ok(existing) = self.resolve(&id_name) {
+            return Ok(existing);
+        }
+        let room = env.id.clone();
+        let text = serde_json::to_string(&env).map_err(|e| Error::Io(e.to_string()))?;
+        let cid = self.put_node(&Node {
+            kind: "memory".to_string(),
+            fields_json: serde_json::json!({ "text": text, "kind": "reference" }).to_string(),
+        })?;
+        self.bind(&id_name, &cid)?;
+        // Advance the room head if this message is at least as new as ours, so the
+        // thread view (which walks back from the head) includes it.
+        let advance = match self.resolve(&room_latest_name(&room)) {
+            Ok(head) => self
+                .read_message(&head)
+                .map(|h| env.clock >= h.clock)
+                .unwrap_or(true),
+            Err(Error::NameUnbound(_)) => true,
+            Err(e) => return Err(e),
+        };
+        if advance {
+            self.bind(&room_latest_name(&room), &cid)?;
+        }
+        Ok(cid)
+    }
+
+    /// Where the direct-message consent allowlist + held requests live.
+    fn contacts_path(&self) -> Result<PathBuf> {
+        Ok(self.store_dir()?.join("contacts.json"))
+    }
+
+    /// Is `username` (a hex AgentID) an approved contact whose messages we accept?
+    pub fn is_contact(&self, username: &str) -> bool {
+        self.contacts_path()
+            .ok()
+            .and_then(|path| Contacts::load(&path).ok())
+            .map(|contacts| contacts.approved.contains(username))
+            .unwrap_or(false)
+    }
+
+    /// Approve `username` so their messages land in threads (idempotent). Called
+    /// when *we* initiate a conversation (initiating implies trust).
+    pub fn add_contact(&self, username: &str) -> Result<()> {
+        let path = self.contacts_path()?;
+        let mut contacts = Contacts::load(&path).map_err(Error::Io)?;
+        if contacts.approved.insert(username.to_string()) {
+            contacts.save(&path).map_err(Error::Io)?;
+        }
+        Ok(())
+    }
+
+    /// The consent gate for **inbound** messages (the "only an approved concierge"
+    /// rule). Verifies authorship, then: a message from us or an approved contact
+    /// is accepted into its thread (`"accepted"`); a message from an unknown
+    /// author is held as a request the user must accept/decline (`"pending"`) — a
+    /// public username is never enough to land a message.
+    pub fn receive_message(&self, env_json: &str) -> Result<&'static str> {
+        let env: MessageEnvelope = serde_json::from_str(env_json)
+            .map_err(|e| Error::Io(format!("parse inbound message: {e}")))?;
+        let ok = crate::identity::verify(&AgentId(env.key.clone()), &env.signing_bytes(), &env.sig)
+            .map_err(Error::Io)?;
+        if !ok {
+            return Err(Error::Io(format!(
+                "inbound message signature does not verify for author {}",
+                env.key
+            )));
+        }
+        let me = self.identity()?.agent_id().0;
+        if env.key == me || self.is_contact(&env.key) {
+            self.accept_message(env_json)?;
+            return Ok("accepted");
+        }
+        // Unknown sender: hold it as a request (de-duped by signature).
+        let path = self.contacts_path()?;
+        let mut contacts = Contacts::load(&path).map_err(Error::Io)?;
+        let queue = contacts.requests.entry(env.key.clone()).or_default();
+        if !queue.iter().any(|held| held.contains(&env.sig)) {
+            queue.push(env_json.to_string());
+        }
+        contacts.save(&path).map_err(Error::Io)?;
+        Ok("pending")
+    }
+
+    /// Pending message requests: `(sender username, held count, latest preview)`.
+    pub fn message_requests(&self) -> Result<Vec<(String, usize, String)>> {
+        let path = self.contacts_path()?;
+        let contacts = Contacts::load(&path).map_err(Error::Io)?;
+        let mut out = Vec::new();
+        for (username, queue) in &contacts.requests {
+            let preview = queue
+                .last()
+                .and_then(|json| serde_json::from_str::<MessageEnvelope>(json).ok())
+                .map(|env| env.payload)
+                .unwrap_or_default();
+            out.push((username.clone(), queue.len(), preview));
+        }
+        Ok(out)
+    }
+
+    /// Accept a request: approve the sender and flush every held message from them
+    /// into its thread. Returns how many were delivered.
+    pub fn accept_contact(&self, username: &str) -> Result<usize> {
+        let path = self.contacts_path()?;
+        let mut contacts = Contacts::load(&path).map_err(Error::Io)?;
+        contacts.approved.insert(username.to_string());
+        let held = contacts.requests.remove(username).unwrap_or_default();
+        contacts.save(&path).map_err(Error::Io)?;
+        let mut delivered = 0;
+        for env_json in &held {
+            if self.accept_message(env_json).is_ok() {
+                delivered += 1;
+            }
+        }
+        Ok(delivered)
+    }
+
+    /// Decline a request: drop every held message from `username` without
+    /// approving them (they stay blocked).
+    pub fn decline_contact(&self, username: &str) -> Result<()> {
+        let path = self.contacts_path()?;
+        let mut contacts = Contacts::load(&path).map_err(Error::Io)?;
+        contacts.requests.remove(username);
+        contacts.save(&path).map_err(Error::Io)?;
+        Ok(())
+    }
+
+    /// The sender-side store-and-forward outbox for undelivered direct messages.
+    fn dm_outbox_path(&self) -> Result<PathBuf> {
+        Ok(self.store_dir()?.join("outbox-dm.json"))
+    }
+
+    /// Queue a direct message for retry until the recipient acknowledges it,
+    /// keyed by its transport content `id` (idempotent — re-queuing is a no-op).
+    pub fn queue_outbound(&self, id: &str, recipient: &str, envelope: &str) -> Result<()> {
+        let path = self.dm_outbox_path()?;
+        let mut outbox = DmOutbox::load(&path).map_err(Error::Io)?;
+        outbox.pending.entry(id.to_string()).or_insert_with(|| OutboundDm {
+            recipient: recipient.to_string(),
+            envelope: envelope.to_string(),
+            queued_at: now_secs() as i64,
+        });
+        outbox.prune(now_secs() as i64);
+        outbox.save(&path).map_err(Error::Io)
+    }
+
+    /// Undelivered direct messages to retry: `(content id, recipient, envelope)`.
+    pub fn pending_outbound(&self) -> Result<Vec<(String, String, String)>> {
+        let path = self.dm_outbox_path()?;
+        let mut outbox = DmOutbox::load(&path).map_err(Error::Io)?;
+        let before = outbox.pending.len();
+        outbox.prune(now_secs() as i64);
+        if outbox.pending.len() != before {
+            let _ = outbox.save(&path);
+        }
+        Ok(outbox
+            .pending
+            .iter()
+            .map(|(id, dm)| (id.clone(), dm.recipient.clone(), dm.envelope.clone()))
+            .collect())
+    }
+
+    /// Clear an outbound message once its recipient acknowledged receipt.
+    pub fn mark_outbound_delivered(&self, id: &str) -> Result<()> {
+        let path = self.dm_outbox_path()?;
+        let mut outbox = DmOutbox::load(&path).map_err(Error::Io)?;
+        if outbox.pending.remove(id).is_some() {
+            outbox.save(&path).map_err(Error::Io)?;
+        }
+        Ok(())
+    }
+
+    /// Assemble a room's thread in chronological order by walking parent links
+    /// back from the room head, verifying every message. Muted authors are hidden
+    /// (receiver-side) but still traversed — **mute ≠ deafen**.
+    pub fn room_thread(&self, room: &str) -> Result<Vec<(Cid, MessageEnvelope)>> {
+        let book = self.room_book()?;
+        let mut out = Vec::new();
+        let mut visited = BTreeSet::new();
+        let root = match self.resolve(&room_latest_name(room)) {
+            Ok(cid) => Some(cid),
+            Err(Error::NameUnbound(_)) => None,
+            Err(e) => return Err(e),
+        };
+        if let Some(cid) = root {
+            self.collect_thread(room, &book, &cid, &mut visited, &mut out)?;
+        }
+        out.sort_by(|a, b| message_order(&a.1, &b.1).then_with(|| a.0.cmp(&b.0)));
+        Ok(out)
+    }
+
+    /// Raw stored message-envelope JSON for every message in a room — what the
+    /// transport publishes to peers, byte-for-byte (so CIDs and signatures match).
+    pub fn room_message_envelopes(&self, room: &str) -> Result<Vec<String>> {
+        Ok(self
+            .room_message_envelopes_with_cids(room)?
+            .into_iter()
+            .map(|(_, envelope)| envelope)
+            .collect())
+    }
+
+    /// Stored message CIDs paired with their exact signed envelope JSON. Public
+    /// transports use the CID to build and execute a `PublicRoomAttach` plan.
+    pub fn room_message_envelopes_with_cids(&self, room: &str) -> Result<Vec<(Cid, String)>> {
+        let mut out = Vec::new();
+        for (cid, _) in self.room_thread(room)? {
+            if let Record::Live { body_json, .. } = self.get(&CidOrName::Cid(cid.clone()))? {
+                if let Ok(value) = serde_json::from_str::<serde_json::Value>(&body_json) {
+                    if let Some(text) = value
+                        .get("body")
+                        .and_then(|b| b.get("text"))
+                        .and_then(|t| t.as_str())
+                    {
+                        out.push((cid, text.to_string()));
+                    }
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    /// Store a message received over the transport: **verify its signature**, gate
+    /// it by the follow-list (unless `trust_all`), then persist it preserving the
+    /// exact bytes (so its CID matches the sender's) and advance the room head.
+    /// Returns the stored CID, or `None` if rejected (bad signature / unfollowed).
+    pub fn store_inbound_message(
+        &self,
+        envelope_json: &str,
+        trust_all: bool,
+    ) -> Result<Option<Cid>> {
+        let env: MessageEnvelope = serde_json::from_str(envelope_json)
+            .map_err(|e| Error::Io(format!("inbound message parse: {e}")))?;
+        let verified = crate::identity::verify(
+            &AgentId(env.author().to_string()),
+            &env.signing_bytes(),
+            &env.sig,
+        )
+        .map_err(Error::Io)?;
+        if !verified {
+            return Ok(None);
+        }
+        if !trust_all {
+            let me = self.agent_id()?.0;
+            if env.author() != me && !self.social_book()?.is_following(env.author()) {
+                return Ok(None);
+            }
+        }
+        // Idempotent receive: a message's signature is its stable identity, so a
+        // re-received message (e.g. periodic republish) is stored once. (mem stamps
+        // `created_at`, so the *block* CID is install-specific; the signature is the
+        // install-independent message id.)
+        let id_name = message_id_name(&env.sig);
+        if let Ok(existing) = self.resolve(&id_name) {
+            return Ok(Some(existing));
+        }
+        let cid = self.put_node(&Node {
+            kind: "memory".to_string(),
+            fields_json: serde_json::json!({ "text": envelope_json, "kind": "reference" })
+                .to_string(),
+        })?;
+        self.bind(&id_name, &cid)?;
+        self.bind(&room_latest_name(env.room()), &cid)?;
+        Ok(Some(cid))
+    }
+
+    fn collect_thread(
+        &self,
+        room: &str,
+        book: &RoomBook,
+        cid: &Cid,
+        visited: &mut BTreeSet<Cid>,
+        out: &mut Vec<(Cid, MessageEnvelope)>,
+    ) -> Result<()> {
+        if !visited.insert(cid.clone()) {
+            return Ok(());
+        }
+        let env = self.read_message(cid)?;
+        for entry in &env.next {
+            // `next` entries are parent *message ids* (signatures); resolve each to
+            // its local block CID via the index. Fall back to treating the entry as
+            // a block CID directly (legacy/manually-built links), and skip any
+            // ancestor not present locally (a partial cross-install thread).
+            let parent_cid = self
+                .resolve(&message_id_name(entry))
+                .unwrap_or_else(|_| Cid(entry.clone()));
+            if matches!(
+                self.get(&CidOrName::Cid(parent_cid.clone())),
+                Ok(Record::Live { .. })
+            ) {
+                self.collect_thread(room, book, &parent_cid, visited, out)?;
+            }
+        }
+        if !book.is_muted(room, &env.key) {
+            out.push((cid.clone(), env));
+        }
+        Ok(())
+    }
+
+    /// Append a publish receipt to the local trail beside the store.
+    fn append_receipt(&self, receipt: &PublishReceipt) -> Result<()> {
+        use std::io::Write;
+        let path = self
+            .working_dir
+            .join(self.config()?.store.root.join("publish-receipts.jsonl"));
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| Error::Io(format!("create receipt dir: {e}")))?;
+        }
+        let line = serde_json::to_string(receipt).map_err(|e| Error::Io(e.to_string()))?;
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+            .map_err(|e| Error::Io(format!("open receipt trail: {e}")))?;
+        writeln!(file, "{line}").map_err(|e| Error::Io(format!("write receipt: {e}")))?;
+        Ok(())
+    }
+
+    fn import_verified_car(
+        &self,
+        root: &cid::Cid,
+        blocks: &[(cid::Cid, Vec<u8>)],
+        name: &str,
+    ) -> Result<Cid> {
+        let blocks_dir = self.blocks_dir()?;
+        std::fs::create_dir_all(&blocks_dir)
+            .map_err(|e| Error::Io(format!("create blocks dir: {e}")))?;
+        for (cid, data) in blocks {
+            std::fs::write(blocks_dir.join(cid.to_string()), data)
+                .map_err(|e| Error::Io(format!("write block {cid}: {e}")))?;
+        }
+        let root_cid = Cid(root.to_string());
+        self.bind(name, &root_cid)?;
+        Ok(root_cid)
+    }
+
+    fn record_latest_share(&self, receipt: &PublishReceipt, root: &Cid) -> Result<()> {
+        let payload = serde_json::json!({
+            "agent_id": receipt.agent_id,
+            "root": cid_to_json(root)?,
+            "signature": receipt.signature,
+            "published_at": receipt.unix_time,
+        });
+        let cid = self.put_node(&Node {
+            kind: "memory".to_string(),
+            fields_json: serde_json::to_string(&serde_json::json!({
+                "text": payload.to_string(),
+                "kind": "reference",
+            }))
+            .map_err(|e| Error::Io(format!("serialize share pointer: {e}")))?,
+        })?;
+        self.bind(&latest_share_name(&receipt.agent_id), &cid)
+    }
+
+    fn record_shared_with_me(&self, agent_id: &str, root: &Cid, signature: &str) -> Result<()> {
+        let payload = serde_json::json!({
+            "agent_id": agent_id,
+            "root": cid_to_json(root)?,
+            "signature": signature,
+            "received_at": now_secs(),
+        });
+        let cid = self.put_node(&Node {
+            kind: "memory".to_string(),
+            fields_json: serde_json::to_string(&serde_json::json!({
+                "text": payload.to_string(),
+                "kind": "reference",
+            }))
+            .map_err(|e| Error::Io(format!("serialize incoming share: {e}")))?,
+        })?;
+        self.bind(&shared_with_me_name(agent_id), &cid)
+    }
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct SharePointerBody {
+    agent_id: String,
+    root: serde_json::Value,
+    signature: String,
+}
+
+fn parse_share_pointer(body_json: &str) -> Result<(String, Cid, String)> {
+    let value: serde_json::Value = serde_json::from_str(body_json)
+        .map_err(|e| Error::Io(format!("parse share pointer JSON: {e}")))?;
+    let body = value
+        .get("body")
+        .ok_or_else(|| Error::Io("share pointer JSON missing body".to_string()))?;
+    let text = body
+        .get("text")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| Error::Io("share pointer JSON missing text".to_string()))?;
+    let pointer: SharePointerBody = serde_json::from_str(text)
+        .map_err(|e| Error::Io(format!("parse share pointer body: {e}")))?;
+    Ok((
+        pointer.agent_id,
+        cid_from_link(&pointer.root)?,
+        pointer.signature,
+    ))
+}
+
+fn now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+/// Days from the Unix epoch to a civil date (Howard Hinnant's algorithm).
+/// Deterministic; no wall clock.
+fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = (if y >= 0 { y } else { y - 399 }) / 400;
+    let yoe = y - era * 400;
+    let doy = (153 * (if m > 2 { m - 3 } else { m + 9 }) + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era * 146097 + doe - 719468
+}
+
+/// The deterministic `created_at` for a calendar manifest: midnight UTC of the
+/// **start of the period** it represents (a month `YYYY-MM` → its 1st; a year
+/// `YYYY` → Jan 1). A derived manifest's timestamp is a function of *which period
+/// it indexes*, not of when it happened to be rebuilt — so re-deriving it yields
+/// an identical CID (idempotent rollup).
+fn period_start_unix(label: &str) -> u64 {
+    let mut parts = label.split('-');
+    let year: i64 = parts.next().and_then(|s| s.parse().ok()).unwrap_or(1970);
+    let month: i64 = parts.next().and_then(|s| s.parse().ok()).unwrap_or(1);
+    (days_from_civil(year, month, 1).max(0) as u64) * 86_400
+}
+
+impl CoreBinding for MemCli {
+    fn put_node(&self, node: &Node) -> Result<Cid> {
+        let mut value: serde_json::Value = serde_json::from_str(&node.fields_json)
+            .map_err(|e| Error::Io(format!("node fields_json is not valid JSON: {e}")))?;
+        let obj = value
+            .as_object_mut()
+            .ok_or_else(|| Error::Io("node fields_json must be a JSON object".to_string()))?;
+        obj.insert(
+            "type".to_string(),
+            serde_json::Value::String(node.kind.clone()),
+        );
+        self.put_json_value(value)
+    }
+
+    fn put_blob(&self, bytes: &[u8], media_type: &str) -> Result<Cid> {
+        let mut map = serde_json::Map::new();
+        map.insert(
+            "type".to_string(),
+            serde_json::Value::String("blob".to_string()),
+        );
+        map.insert(
+            "bytes".to_string(),
+            serde_json::Value::Array(
+                bytes
+                    .iter()
+                    .copied()
+                    .map(|b| serde_json::Value::Number(serde_json::Number::from(b)))
+                    .collect(),
+            ),
+        );
+        map.insert(
+            "media_type".to_string(),
+            serde_json::Value::String(media_type.to_string()),
+        );
+        self.put_json_value(serde_json::Value::Object(map))
+    }
+
+    fn bind(&self, name: &str, cid: &Cid) -> Result<()> {
+        let parsed: mem::cid::Cid = cid
+            .0
+            .parse()
+            .map_err(|e| Error::CidNotFound(format!("invalid cid {}: {e}", cid.0)))?;
+        let mut store = self.open_store()?;
+        store
+            .bind(name, parsed)
+            .map_err(|e| Error::Io(format!("bind {name}: {e}")))
+    }
+
+    fn resolve(&self, name: &str) -> Result<Cid> {
+        let store = self.open_store()?;
+        store
+            .resolve(name)
+            .map(|cid| Cid(cid.to_string()))
+            .map_err(|_| Error::NameUnbound(name.to_string()))
+    }
+
+    fn get(&self, key: &CidOrName) -> Result<Record> {
+        let cid = match key {
+            CidOrName::Cid(c) => c.clone(),
+            CidOrName::Name(n) => self.resolve(n)?,
+        };
+        let parsed: mem::cid::Cid = cid
+            .0
+            .parse()
+            .map_err(|e| Error::CidNotFound(format!("invalid cid {}: {e}", cid.0)))?;
+        let store = self.open_store()?;
+        match store
+            .lookup(&parsed)
+            .map_err(|e| Error::CidNotFound(format!("{e}")))?
+        {
+            mem::store::Lookup::Present(record) => {
+                let body_json = serde_json::to_string_pretty(&record)
+                    .map_err(|e| Error::Io(format!("serialize record: {e}")))?;
+                self.parse_live_record(&body_json, cid)
+            }
+            mem::store::Lookup::Pruned(t) => {
+                let receipt_json = format_receipt(&cid, &t);
+                Ok(Record::Tombstone { cid, receipt_json })
+            }
+        }
+    }
+
+    fn checkpoint(&self, label: &str, root: &Cid, parent: Option<&Cid>) -> Result<Cid> {
+        let mut map = serde_json::Map::new();
+        map.insert(
+            "type".to_string(),
+            serde_json::Value::String("checkpoint".to_string()),
+        );
+        map.insert(
+            "label".to_string(),
+            serde_json::Value::String(label.to_string()),
+        );
+        map.insert("root".to_string(), cid_to_json(root)?);
+        map.insert(
+            "parent".to_string(),
+            match parent {
+                Some(cid) => cid_to_json(cid)?,
+                None => serde_json::Value::Null,
+            },
+        );
+        let checkpoint = self.put_json_value(serde_json::Value::Object(map))?;
+        self.lock_default_checkpoint(&checkpoint, label)?;
+        Ok(checkpoint)
+    }
+
+    fn walk(&self, root: &Cid) -> Result<Vec<Cid>> {
+        let mut visited = std::collections::BTreeSet::new();
+        let mut out = Vec::new();
+        self.walk_inner(root, &mut visited, &mut out)?;
+        Ok(out)
+    }
+
+    fn gc(&self, policy: &GcPolicy) -> Result<GcReport> {
+        let keep = policy
+            .keep_checkpoints
+            .unwrap_or(self.config()?.checkpoint.keep_checkpoints);
+        let store = self.open_store()?;
+        // `checkpoint_name` is mem's well-known chain-head pointer (default
+        // `latest`); core does not override it, matching the prior CLI behavior.
+        let report = store
+            .gc(&mem::gc::RetentionPolicy {
+                keep_checkpoints: keep as usize,
+                checkpoint_name: "latest".to_string(),
+            })
+            .map_err(|e| Error::Io(format!("gc: {e}")))?;
+        Ok(GcReport {
+            removed: (report.pruned_checkpoints.len() + report.pruned_orphans.len()) as u64,
+            kept: report.kept as u64,
+        })
+    }
+
+    fn record_event_in_day(&self, date: &str, event_key: &str, record: &Cid) -> Result<Cid> {
+        let day_name = format!("day-{date}");
+        let blocks = self.blockstore()?;
+        let record_cid: mem::cid::Cid = record
+            .0
+            .parse()
+            .map_err(|e| Error::CidNotFound(format!("invalid cid {}: {e}", record.0)))?;
+
+        // Load the day's existing HAMT (via the bound day root) or start fresh.
+        let mut hamt = match self.day_hamt_root(&day_name)? {
+            Some(hamt_root) => mem::hamt::Hamt::load(&blocks, &hamt_root)
+                .map_err(|e| Error::Io(format!("load day hamt: {e}")))?,
+            None => mem::hamt::Hamt::new(&blocks),
+        };
+        hamt.set(event_key.as_bytes(), record_cid)
+            .map_err(|e| Error::Io(format!("hamt set: {e}")))?;
+        let hamt_root = hamt
+            .flush()
+            .map_err(|e| Error::Io(format!("hamt flush: {e}")))?;
+
+        // Wrap the HAMT root in a DayIndex node and (re)bind the day root name.
+        let events_link = cid_link(&Cid(hamt_root.to_string()))?;
+        let day_node = Node {
+            kind: "day_index".to_string(),
+            fields_json: serde_json::json!({ "date": date, "events": events_link }).to_string(),
+        };
+        let day_cid = self.put_node(&day_node)?;
+        self.bind(&day_name, &day_cid)?;
+        Ok(day_cid)
+    }
+
+    fn day_contains(&self, date: &str, event_key: &str) -> Result<bool> {
+        let day_name = format!("day-{date}");
+        match self.day_hamt_root(&day_name)? {
+            None => Ok(false),
+            Some(hamt_root) => {
+                let blocks = self.blockstore()?;
+                let hamt: mem::hamt::Hamt<_, mem::cid::Cid> =
+                    mem::hamt::Hamt::load(&blocks, &hamt_root)
+                        .map_err(|e| Error::Io(format!("load day hamt: {e}")))?;
+                Ok(hamt
+                    .get(event_key.as_bytes())
+                    .map_err(|e| Error::Io(format!("hamt get: {e}")))?
+                    .is_some())
+            }
+        }
+    }
+
+    fn roll_up_calendar(&self) -> Result<()> {
+        // Group the bound day roots by month, then months by year.
+        let mut by_month: BTreeMap<String, Vec<(String, Cid)>> = BTreeMap::new();
+        for (name, cid) in self.names()? {
+            if let Some(date) = name.strip_prefix("day-") {
+                if date.len() >= 7 {
+                    by_month
+                        .entry(date[0..7].to_string())
+                        .or_default()
+                        .push((date.to_string(), cid));
+                }
+            }
+        }
+
+        // Each month: a manifest linking its (key-sorted) day roots.
+        let mut by_year: BTreeMap<String, Vec<(String, Cid)>> = BTreeMap::new();
+        for (month, mut days) in by_month {
+            days.sort();
+            let mut entries = Vec::with_capacity(days.len());
+            for (date, day_cid) in &days {
+                entries.push(serde_json::json!({ "label": date, "node": cid_link(day_cid)? }));
+            }
+            // Derived manifest: a deterministic, period-derived `created_at` (not the
+            // wall clock) so re-rolling produces the identical CID (idempotent).
+            let month_value =
+                serde_json::json!({ "type": "month_index", "month": month, "days": entries });
+            let month_cid = self.put_json_value_at(month_value, period_start_unix(&month))?;
+            self.bind(&format!("month-{month}"), &month_cid)?;
+            by_year
+                .entry(month[0..4].to_string())
+                .or_default()
+                .push((month, month_cid));
+        }
+
+        // Each year: a manifest linking its (key-sorted) month roots.
+        for (year, mut months) in by_year {
+            months.sort();
+            let mut entries = Vec::with_capacity(months.len());
+            for (month, month_cid) in &months {
+                entries.push(serde_json::json!({ "label": month, "node": cid_link(month_cid)? }));
+            }
+            let year_value =
+                serde_json::json!({ "type": "year_index", "year": year, "months": entries });
+            let year_cid = self.put_json_value_at(year_value, period_start_unix(&year))?;
+            self.bind(&format!("year-{year}"), &year_cid)?;
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::path::Path;
+
+    /// A unique scratch working dir under the OS temp dir, so `mem`'s
+    /// cwd-scoped `.concierge` store never touches the user's real store.
+    fn temp_workdir(tag: &str) -> PathBuf {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let mut p = std::env::temp_dir();
+        p.push(format!(
+            "concierge-core-{tag}-{}-{nanos}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&p).unwrap();
+        p
+    }
+
+    fn publish(mem: &MemCli, target: &str) -> Result<PublishReceipt> {
+        // Decision 0026: everything is fenced from egress by default, so the
+        // egress-unlock (set password + clear) is a precondition of publishing.
+        // Already-public or already-cleared roots clear idempotently.
+        if let Ok(root) = mem.resolve(target) {
+            let _ = mem.set_password("pw");
+            let _ = mem.clear_for_egress(&root, "test", "pw");
+        }
+        let plan = mem
+            .build_egress_plan_for_target(target, crate::egress::EgressOperation::PublicPublish)?;
+        mem.publish_public(&plan)
+    }
+
+    fn configure_fake_ipfs_backend(
+        mem: &MemCli,
+        dir: &Path,
+        expected_requests: usize,
+    ) -> (std::thread::JoinHandle<()>, String) {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind fake node");
+        let addr = listener.local_addr().expect("addr");
+        let api_url = format!("http://{addr}/api/v0");
+
+        let join = std::thread::spawn(move || {
+            for _ in 0..expected_requests {
+                let (mut stream, _) = listener.accept().expect("accept");
+                let mut request = Vec::new();
+                let mut buf = [0u8; 4096];
+                loop {
+                    let n = stream.read(&mut buf).expect("read request");
+                    if n == 0 {
+                        break;
+                    }
+                    request.extend_from_slice(&buf[..n]);
+                    if request.windows(4).any(|w| w == b"\r\n\r\n") {
+                        break;
+                    }
+                }
+                let headers_end = request
+                    .windows(4)
+                    .position(|w| w == b"\r\n\r\n")
+                    .expect("headers end")
+                    + 4;
+                let header_text = String::from_utf8_lossy(&request[..headers_end]);
+                let content_length = header_text
+                    .lines()
+                    .find_map(|line| {
+                        line.split_once(':').and_then(|(k, v)| {
+                            if k.eq_ignore_ascii_case("content-length") {
+                                v.trim().parse::<usize>().ok()
+                            } else {
+                                None
+                            }
+                        })
+                    })
+                    .expect("content length");
+                let already = request.len().saturating_sub(headers_end);
+                let remaining = content_length.saturating_sub(already);
+                if remaining > 0 {
+                    let mut body = vec![0u8; remaining];
+                    stream.read_exact(&mut body).expect("read body");
+                }
+                let response =
+                    b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}";
+                stream.write_all(response).expect("write response");
+            }
+        });
+
+        let mut cfg = mem.config().expect("config");
+        cfg.publishing.backend = "ipfs".to_string();
+        cfg.publishing.ipfs_api = api_url.clone();
+        cfg.save_to_project_root(dir).expect("save config");
+        (join, api_url)
+    }
+
+    #[test]
+    fn put_bind_resolve_get_roundtrip_survives_restart() {
+        let dir = temp_workdir("restart");
+
+        // "Process 1": write a node and bind a name to it.
+        let cid = {
+            let mem = MemCli::new(&dir);
+            let node = Node {
+                kind: "memory".to_string(),
+                fields_json: r#"{"text":"phase 1 lives","kind":"project"}"#.to_string(),
+            };
+            let cid = mem.put_node(&node).expect("put_node");
+            mem.bind("latest", &cid).expect("bind");
+            assert_eq!(mem.resolve("latest").expect("resolve same-process"), cid);
+            cid
+        };
+
+        // "Process 2": a brand-new binding over the same on-disk store. Because
+        // each call is a fresh `mem` process reading `.concierge`, this is a real
+        // restart — the Phase 1 exit criterion.
+        let mem2 = MemCli::new(&dir);
+        assert_eq!(
+            mem2.resolve("latest").expect("resolve after restart"),
+            cid,
+            "a bound name must resolve to the same CID after restart"
+        );
+        match mem2
+            .get(&CidOrName::Name("latest".to_string()))
+            .expect("get after restart")
+        {
+            Record::Live {
+                cid: got,
+                kind,
+                body_json,
+            } => {
+                assert_eq!(got, cid);
+                assert_eq!(kind, "memory");
+                assert!(body_json.contains("phase 1 lives"), "body must round-trip");
+            }
+            other => panic!("expected a live record, got {other:?}"),
+        }
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn resolve_unbound_name_is_typed_error() {
+        let dir = temp_workdir("unbound");
+        let mem = MemCli::new(&dir);
+        match mem.resolve("never-bound") {
+            Err(Error::NameUnbound(_)) => {}
+            other => panic!("expected NameUnbound, got {other:?}"),
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn missing_workdir_is_store_not_found() {
+        let dir = temp_workdir("missing-store");
+        let missing = dir.join("does-not-exist");
+        let mem = MemCli::new(&missing);
+        match mem.resolve("latest") {
+            Err(Error::StoreNotFound(_)) => {}
+            other => panic!("expected StoreNotFound, got {other:?}"),
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn put_blob_roundtrips_and_walk_sees_it() {
+        let dir = temp_workdir("blob");
+        let mem = MemCli::new(&dir);
+        let cid = mem.put_blob(b"hi", "text/plain").expect("put_blob");
+        match mem.get(&CidOrName::Cid(cid.clone())).expect("get blob") {
+            Record::Live {
+                cid: got,
+                kind,
+                body_json,
+            } => {
+                assert_eq!(got, cid);
+                assert_eq!(kind, "blob");
+                let value: serde_json::Value = serde_json::from_str(&body_json).unwrap();
+                assert_eq!(value["body"]["bytes"], serde_json::json!([104, 105]));
+                assert_eq!(value["body"]["media_type"], serde_json::json!("text/plain"));
+            }
+            other => panic!("expected live blob record, got {other:?}"),
+        }
+        assert_eq!(mem.walk(&cid).expect("walk blob"), vec![cid]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn day_tier_buckets_events_under_one_day_root() {
+        let dir = temp_workdir("day-tier");
+        let mem = MemCli::new(&dir);
+
+        let prompt = mem
+            .put_node(&Node {
+                kind: "prompt".into(),
+                fields_json: serde_json::json!({ "text": "hi" }).to_string(),
+            })
+            .expect("put prompt");
+        let response = mem
+            .put_node(&Node {
+                kind: "response".into(),
+                fields_json: serde_json::json!({ "text": "yo", "model": "unknown" }).to_string(),
+            })
+            .expect("put response");
+
+        let ts = 1_749_470_400u64; // a fixed point inside one UTC day
+        let date = mem::tombstones::iso8601(ts)[0..10].to_string();
+        let day_name = format!("day-{date}");
+
+        // Two events on the same day fold into ONE re-bound day root.
+        mem.record_event_in_day(&date, "evt-1", &prompt).expect("record evt-1");
+        let day_cid = mem.record_event_in_day(&date, "evt-2", &response).expect("record evt-2");
+        assert_eq!(mem.resolve(&day_name).expect("resolve day"), day_cid);
+
+        // The day's HAMT holds both events, keyed by their stable ids.
+        let blocks = mem.blockstore().unwrap();
+        let hamt_root = mem.day_hamt_root(&day_name).unwrap().expect("day hamt root");
+        let hamt: mem::hamt::Hamt<_, mem::cid::Cid> =
+            mem::hamt::Hamt::load(&blocks, &hamt_root).unwrap();
+        let prompt_cid: mem::cid::Cid = prompt.0.parse().unwrap();
+        let response_cid: mem::cid::Cid = response.0.parse().unwrap();
+        assert_eq!(hamt.get(b"evt-1").unwrap(), Some(prompt_cid));
+        assert_eq!(hamt.get(b"evt-2").unwrap(), Some(response_cid));
+
+        // The day fans out to its events for the explorer.
+        let mut events = mem.day_events(&date).expect("day events");
+        events.sort();
+        assert_eq!(
+            events,
+            vec![
+                ("evt-1".to_string(), prompt.clone()),
+                ("evt-2".to_string(), response.clone()),
+            ]
+        );
+
+        // A different UTC day gets its own root (not the same day index).
+        let date2 = mem::tombstones::iso8601(ts + 86_400)[0..10].to_string();
+        let next_day = mem
+            .record_event_in_day(&date2, "evt-3", &prompt)
+            .expect("record next day");
+        assert_ne!(next_day, day_cid);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn calendar_rollup_links_days_into_months_and_years() {
+        let dir = temp_workdir("calendar-rollup");
+        let mem = MemCli::new(&dir);
+        let rec = mem
+            .put_node(&Node {
+                kind: "prompt".into(),
+                fields_json: serde_json::json!({ "text": "x" }).to_string(),
+            })
+            .expect("put");
+
+        // Two June days + one July day.
+        mem.record_event_in_day("2026-06-09", "e1", &rec).unwrap();
+        mem.record_event_in_day("2026-06-10", "e2", &rec).unwrap();
+        mem.record_event_in_day("2026-07-01", "e3", &rec).unwrap();
+        mem.roll_up_calendar().unwrap();
+
+        // Helper: the `label`s a manifest links, in order.
+        let labels = |name: &str, field: &str| -> Vec<String> {
+            let body_json = match mem.get(&CidOrName::Name(name.to_string())).unwrap() {
+                Record::Live { body_json, .. } => body_json,
+                other => panic!("expected live manifest, got {other:?}"),
+            };
+            let v: serde_json::Value = serde_json::from_str(&body_json).unwrap();
+            v["body"][field]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|e| e["label"].as_str().unwrap().to_string())
+                .collect()
+        };
+
+        assert_eq!(labels("month-2026-06", "days"), ["2026-06-09", "2026-06-10"]);
+        assert_eq!(labels("month-2026-07", "days"), ["2026-07-01"]);
+        assert_eq!(labels("year-2026", "months"), ["2026-06", "2026-07"]);
+
+        // Re-running is idempotent (content-addressed): same year root CID.
+        let year_first = mem.resolve("year-2026").unwrap();
+        mem.roll_up_calendar().unwrap();
+        assert_eq!(mem.resolve("year-2026").unwrap(), year_first);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn calendar_manifests_use_a_deterministic_period_timestamp_not_the_wall_clock() {
+        // Regression: a derived month/year manifest must stamp a `created_at`
+        // derived from the *period it indexes* (midnight UTC of its start), not the
+        // wall clock — otherwise re-rolling a second later produces a new CID and the
+        // rollup is non-idempotent (the calendar flake).
+        let dir = temp_workdir("calendar-deterministic");
+        let mem = MemCli::new(&dir);
+        let rec = mem
+            .put_node(&Node { kind: "prompt".into(), fields_json: serde_json::json!({ "text": "x" }).to_string() })
+            .expect("put");
+        mem.record_event_in_day("2026-06-09", "e1", &rec).unwrap();
+        mem.roll_up_calendar().unwrap();
+
+        let created_at = |name: &str| -> u64 {
+            match mem.get(&CidOrName::Name(name.to_string())).unwrap() {
+                Record::Live { body_json, .. } => serde_json::from_str::<serde_json::Value>(&body_json)
+                    .unwrap()["created_at"].as_u64().unwrap(),
+                other => panic!("expected live manifest, got {other:?}"),
+            }
+        };
+        // Year 2026 → 2026-01-01T00:00:00Z; month 2026-06 → 2026-06-01T00:00:00Z.
+        assert_eq!(created_at("year-2026"), period_start_unix("2026"));
+        assert_eq!(created_at("year-2026"), 1_767_225_600, "Jan 1 2026 UTC");
+        assert_eq!(created_at("month-2026-06"), period_start_unix("2026-06"));
+        assert_eq!(created_at("month-2026-06"), 1_780_272_000, "Jun 1 2026 UTC");
+        // It is the period start, deterministically — never the wall clock.
+        assert!(created_at("year-2026") < now_secs(), "a fixed past timestamp, not 'now'");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn checkpoint_roundtrips_with_parent_and_walks_subgraph() {
+        let dir = temp_workdir("checkpoint");
+        let mem = MemCli::new(&dir);
+        let root = mem
+            .put_node(&Node {
+                kind: "memory".to_string(),
+                fields_json: r#"{"text":"phase 1 lives","kind":"project"}"#.to_string(),
+            })
+            .expect("put_node");
+        let checkpoint = mem.checkpoint("latest", &root, None).expect("checkpoint");
+
+        match mem
+            .get(&CidOrName::Cid(checkpoint.clone()))
+            .expect("get checkpoint")
+        {
+            Record::Live {
+                cid: got,
+                kind,
+                body_json,
+            } => {
+                assert_eq!(got, checkpoint);
+                assert_eq!(kind, "checkpoint");
+                let value: serde_json::Value = serde_json::from_str(&body_json).unwrap();
+                assert_eq!(value["body"]["label"], serde_json::json!("latest"));
+                assert_eq!(value["body"]["root"], cid_to_json(&root).unwrap());
+                assert!(value["body"]["parent"].is_null());
+            }
+            other => panic!("expected live checkpoint record, got {other:?}"),
+        }
+
+        let walked = mem.walk(&checkpoint).expect("walk checkpoint");
+        let walked: std::collections::BTreeSet<_> = walked.into_iter().collect();
+        assert!(walked.contains(&checkpoint));
+        assert!(walked.contains(&root));
+        assert_eq!(walked.len(), 2);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn gc_returns_a_parsed_summary() {
+        let dir = temp_workdir("gc");
+        let mem = MemCli::new(&dir);
+        let _orphan = mem
+            .put_node(&Node {
+                kind: "memory".to_string(),
+                fields_json: r#"{"text":"throwaway","kind":"project"}"#.to_string(),
+            })
+            .expect("put_node");
+
+        let report = mem.gc(&GcPolicy::default()).expect("gc");
+        assert_eq!(report.removed, 1);
+        assert_eq!(report.kept, 0);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Phase 4 exit criterion: a memory graph moves between machines without
+    /// losing identity. Export a subgraph from store A, import into a fresh
+    /// store B, and assert the root CID and the whole reachable set are identical.
+    #[test]
+    fn car_roundtrip_preserves_root_and_subgraph() {
+        let dir_a = temp_workdir("car-a");
+        let mem_a = MemCli::new(&dir_a);
+        let m1 = mem_a
+            .put_node(&Node {
+                kind: "memory".to_string(),
+                fields_json: r#"{"text":"shared artifact","kind":"project"}"#.to_string(),
+            })
+            .expect("put_node");
+        let cp = mem_a.checkpoint("snap", &m1, None).expect("checkpoint");
+        let mut walk_a = mem_a.walk(&cp).expect("walk a");
+        walk_a.sort();
+        assert!(walk_a.len() >= 2, "checkpoint reaches its root node");
+
+        let car = mem_a.export_car(&cp).expect("export_car");
+
+        // A fresh store on "another machine".
+        let dir_b = temp_workdir("car-b");
+        let mem_b = MemCli::new(&dir_b);
+        let root = mem_b.import_car(&car, "imported").expect("import_car");
+
+        assert_eq!(root, cp, "root CID is preserved across export/import");
+        assert_eq!(mem_b.resolve("imported").expect("resolve imported"), cp);
+        let mut walk_b = mem_b.walk(&cp).expect("walk b");
+        walk_b.sort();
+        assert_eq!(walk_b, walk_a, "the full subgraph moves intact");
+
+        let _ = std::fs::remove_dir_all(&dir_a);
+        let _ = std::fs::remove_dir_all(&dir_b);
+    }
+
+    #[test]
+    fn car_import_rejects_a_tampered_block() {
+        let dir_a = temp_workdir("car-tamper-a");
+        let mem_a = MemCli::new(&dir_a);
+        let m1 = mem_a
+            .put_node(&Node {
+                kind: "memory".to_string(),
+                fields_json: r#"{"text":"trust me","kind":"project"}"#.to_string(),
+            })
+            .expect("put_node");
+        let cp = mem_a.checkpoint("snap", &m1, None).expect("checkpoint");
+        let mut car = mem_a.export_car(&cp).expect("export_car");
+
+        // Flip a byte in the block region — its CID will no longer verify.
+        let last = car.len() - 1;
+        car[last] ^= 0xFF;
+
+        let dir_b = temp_workdir("car-tamper-b");
+        let mem_b = MemCli::new(&dir_b);
+        assert!(
+            mem_b.import_car(&car, "x").is_err(),
+            "a tampered CAR must be rejected, not silently imported"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir_a);
+        let _ = std::fs::remove_dir_all(&dir_b);
+    }
+
+    #[test]
+    fn signed_share_imports_only_for_followed_signers_and_surfaces_in_shared_with_me() {
+        let dir_a = temp_workdir("signed-share-a");
+        let mem_a = MemCli::new(&dir_a);
+        let (join, _api_url) = configure_fake_ipfs_backend(&mem_a, &dir_a, 1);
+        let root = mem_a
+            .put_node(&Node {
+                kind: "memory".to_string(),
+                fields_json: r#"{"text":"shared root","kind":"project"}"#.to_string(),
+            })
+            .expect("put_node");
+        mem_a.bind("latest", &root).expect("bind");
+        let car = mem_a.export_car(&root).expect("export car");
+        let receipt = publish(&mem_a, "latest").expect("publish");
+
+        let dir_b = temp_workdir("signed-share-b");
+        let mem_b = MemCli::new(&dir_b);
+        mem_b.follow(&receipt.agent_id).expect("follow signer");
+        let imported = mem_b
+            .import_signed_car(&car, "inbox", &receipt.agent_id, &receipt.signature)
+            .expect("import signed car");
+        assert_eq!(imported, root);
+
+        let shared = mem_b.shared_with_me().expect("shared with me");
+        assert_eq!(shared.len(), 1);
+        assert_eq!(shared[0].agent_id, receipt.agent_id);
+        assert_eq!(shared[0].root, root);
+        assert_eq!(shared[0].signature, receipt.signature);
+        assert_eq!(shared[0].nickname, None);
+
+        join.join().expect("fake node thread");
+        let _ = std::fs::remove_dir_all(&dir_a);
+        let _ = std::fs::remove_dir_all(&dir_b);
+    }
+
+    #[test]
+    fn signed_share_rejects_unknown_signer() {
+        let dir_a = temp_workdir("signed-share-reject-a");
+        let mem_a = MemCli::new(&dir_a);
+        let (join, _api_url) = configure_fake_ipfs_backend(&mem_a, &dir_a, 1);
+        let root = mem_a
+            .put_node(&Node {
+                kind: "memory".to_string(),
+                fields_json: r#"{"text":"root","kind":"project"}"#.to_string(),
+            })
+            .expect("put_node");
+        mem_a.bind("latest", &root).expect("bind");
+        let car = mem_a.export_car(&root).expect("export car");
+        let receipt = publish(&mem_a, "latest").expect("publish");
+
+        let dir_b = temp_workdir("signed-share-reject-b");
+        let mem_b = MemCli::new(&dir_b);
+        assert!(
+            matches!(
+                mem_b.import_signed_car(&car, "inbox", &receipt.agent_id, &receipt.signature),
+                Err(Error::Io(_))
+            ),
+            "imports from unknown signers must be rejected until they are on the follow list"
+        );
+
+        join.join().expect("fake node thread");
+        let _ = std::fs::remove_dir_all(&dir_a);
+        let _ = std::fs::remove_dir_all(&dir_b);
+    }
+
+    #[test]
+    fn signed_share_rejects_wrong_signature() {
+        let dir_a = temp_workdir("signed-share-wrong-a");
+        let mem_a = MemCli::new(&dir_a);
+        let (join, _api_url) = configure_fake_ipfs_backend(&mem_a, &dir_a, 1);
+        let root = mem_a
+            .put_node(&Node {
+                kind: "memory".to_string(),
+                fields_json: r#"{"text":"root","kind":"project"}"#.to_string(),
+            })
+            .expect("put_node");
+        mem_a.bind("latest", &root).expect("bind");
+        let car = mem_a.export_car(&root).expect("export car");
+        let receipt = publish(&mem_a, "latest").expect("publish");
+
+        let wrong_key_dir = temp_workdir("signed-share-wrong-key");
+        let wrong_key = wrong_key_dir.join("identity.key");
+        let wrong_identity = crate::identity::Identity::load_or_create(&wrong_key).expect("key");
+        let wrong_signature = wrong_identity.sign(root.0.as_bytes());
+
+        let dir_b = temp_workdir("signed-share-wrong-b");
+        let mem_b = MemCli::new(&dir_b);
+        mem_b.follow(&receipt.agent_id).expect("follow signer");
+        assert!(
+            matches!(
+                mem_b.import_signed_car(&car, "inbox", &receipt.agent_id, &wrong_signature),
+                Err(Error::Io(_))
+            ),
+            "imports with the wrong signature must be rejected"
+        );
+
+        join.join().expect("fake node thread");
+        let _ = std::fs::remove_dir_all(&dir_a);
+        let _ = std::fs::remove_dir_all(&dir_b);
+        let _ = std::fs::remove_dir_all(&wrong_key_dir);
+    }
+
+    #[test]
+    fn latest_share_pointer_updates_for_new_shares() {
+        let dir = temp_workdir("latest-pointer");
+        let mem = MemCli::new(&dir);
+        let (join, _api_url) = configure_fake_ipfs_backend(&mem, &dir, 2);
+        let agent_id = mem.agent_id().expect("agent id").0;
+
+        let first = mem
+            .put_node(&Node {
+                kind: "memory".to_string(),
+                fields_json: r#"{"text":"first","kind":"project"}"#.to_string(),
+            })
+            .expect("put first");
+        mem.bind("latest", &first).expect("bind first");
+        let receipt1 = publish(&mem, "latest").expect("publish first");
+        let pointer_name = format!("latest-share-{agent_id}");
+        let pointer1 = mem.resolve(&pointer_name).expect("pointer 1");
+
+        let second = mem
+            .put_node(&Node {
+                kind: "memory".to_string(),
+                fields_json: r#"{"text":"second","kind":"project"}"#.to_string(),
+            })
+            .expect("put second");
+        mem.bind("latest", &second).expect("bind second");
+        let receipt2 = publish(&mem, "latest").expect("publish second");
+        let pointer2 = mem.resolve(&pointer_name).expect("pointer 2");
+
+        assert_ne!(
+            pointer1, pointer2,
+            "the mutable latest pointer must advance"
+        );
+        let record = mem
+            .get(&CidOrName::Cid(pointer2.clone()))
+            .expect("pointer record");
+        let Record::Live { body_json, .. } = record else {
+            panic!("expected a live pointer record");
+        };
+        let (pointer_agent_id, root, signature) =
+            parse_share_pointer(&body_json).expect("parse pointer");
+        assert_eq!(pointer_agent_id, receipt2.agent_id);
+        assert_eq!(root, second);
+        assert_eq!(signature, receipt2.signature);
+        assert_eq!(receipt1.agent_id, receipt2.agent_id);
+        join.join().expect("fake node thread");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn car_manifest_counts_blocks_and_bytes() {
+        let dir = temp_workdir("car-manifest");
+        let mem = MemCli::new(&dir);
+        let m1 = mem
+            .put_node(&Node {
+                kind: "memory".to_string(),
+                fields_json: r#"{"text":"sized","kind":"project"}"#.to_string(),
+            })
+            .expect("put_node");
+        let cp = mem.checkpoint("snap", &m1, None).expect("checkpoint");
+
+        let (cids, bytes) = mem.export_car_manifest(&cp).expect("manifest");
+        assert_eq!(cids.len(), mem.walk(&cp).expect("walk").len());
+        assert!(bytes > 0);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn list_backends_includes_the_free_ipfs_backend() {
+        let dir = temp_workdir("backends");
+        let mem = MemCli::new(&dir);
+        let backends = mem.list_backends().expect("list backends");
+        assert!(
+            backends.iter().any(|backend| backend.name == "ipfs"),
+            "the free local Kubo backend should be compiled in: {backends:?}"
+        );
+        assert!(
+            backends
+                .iter()
+                .any(|backend| backend.requirements_summary().contains("IPFS_API")),
+            "backend requirements should be displayed"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn share_without_a_configured_backend_is_a_typed_error() {
+        let dir = temp_workdir("share-nobackend");
+        let mem = MemCli::new(&dir);
+        let cid = mem
+            .put_node(&Node {
+                kind: "memory".to_string(),
+                fields_json: r#"{"text":"unshared","kind":"project"}"#.to_string(),
+            })
+            .expect("put_node");
+        mem.bind("latest", &cid).expect("bind");
+        let mut cfg = mem.config().expect("config");
+        cfg.publishing.backend = "bogus".to_string();
+        cfg.save_to_project_root(&dir).expect("save config");
+        assert!(
+            matches!(publish(&mem, "latest"), Err(Error::BackendDown(_))),
+            "publishing with an unconfigured backend must surface as BackendDown"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn legacy_share_requires_explicit_public_publication() {
+        let dir = temp_workdir("legacy-share-refused");
+        let mem = MemCli::new(&dir);
+        assert!(matches!(
+            mem.share("latest"),
+            Err(Error::ExplicitPublicPublishRequired)
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn personal_checkpoint_roots_are_locked_by_default() {
+        let dir = temp_workdir("default-checkpoint-lock");
+        let mem = MemCli::new(&dir);
+        let root = mem
+            .put_node(&Node {
+                kind: "memory".to_string(),
+                fields_json: r#"{"text":"private by default","kind":"project"}"#.to_string(),
+            })
+            .expect("put");
+        let checkpoint = mem.checkpoint("session", &root, None).expect("checkpoint");
+        let lock = mem
+            .locks()
+            .expect("locks")
+            .into_iter()
+            .find(|lock| lock.root == checkpoint.0)
+            .expect("default checkpoint lock");
+        assert_eq!(lock.reason, crate::egress::LockReason::DefaultPersonal);
+        assert!(matches!(
+            mem.write_reviewed_plaintext_car(
+                &mem.build_egress_plan_for_target_and_backend(
+                    &root.0,
+                    crate::egress::EgressOperation::PlaintextCarExport,
+                    "local-file",
+                    &dir.join("blocked.car").display().to_string(),
+                    "plaintext-portable",
+                )
+                .expect("plan"),
+                &dir.join("blocked.car"),
+            ),
+            Err(Error::PublicationBlocked { .. })
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn reviewed_plaintext_export_is_exact_destination_and_guarded() {
+        let dir = temp_workdir("reviewed-plaintext-export");
+        let mem = MemCli::new(&dir);
+        let root = mem
+            .put_node(&Node {
+                kind: "memory".to_string(),
+                fields_json: r#"{"text":"portable","kind":"project"}"#.to_string(),
+            })
+            .expect("put");
+        // Decision 0026: fenced from egress by default — clear before exporting.
+        mem.set_password("pw").expect("password");
+        mem.clear_for_egress(&root, "test", "pw").expect("clear");
+        let output = dir.join("reviewed.car");
+        let plan = mem
+            .build_egress_plan_for_target_and_backend(
+                &root.0,
+                crate::egress::EgressOperation::PlaintextCarExport,
+                "local-file",
+                &output.display().to_string(),
+                "plaintext-portable",
+            )
+            .expect("plan");
+        assert!(matches!(
+            mem.write_reviewed_plaintext_car(&plan, &dir.join("changed.car")),
+            Err(Error::EgressPlanChanged(_))
+        ));
+        let bytes = mem
+            .write_reviewed_plaintext_car(&plan, &output)
+            .expect("reviewed export");
+        assert!(bytes > 0);
+        assert_eq!(std::fs::metadata(&output).unwrap().len(), bytes);
+        assert!(mem
+            .security_events()
+            .unwrap()
+            .iter()
+            .any(|event| event.action == "egress_approved" && event.root == root.0));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn share_with_a_down_node_is_a_backend_error() {
+        let dir = temp_workdir("share-nodedown");
+        let mem = MemCli::new(&dir);
+        let cid = mem
+            .put_node(&Node {
+                kind: "memory".to_string(),
+                fields_json: r#"{"text":"will not reach a node","kind":"project"}"#.to_string(),
+            })
+            .expect("put_node");
+        mem.bind("latest", &cid).expect("bind");
+        let mut cfg = mem.config().expect("config");
+        cfg.publishing.backend = "ipfs".to_string();
+        cfg.publishing.ipfs_api = "http://127.0.0.1:5999/api/v0".to_string();
+        cfg.save_to_project_root(&dir).expect("save config");
+        let result = publish(&mem, "latest");
+        assert!(
+            matches!(result, Err(Error::BackendDown(_))),
+            "a down node must surface as BackendDown, got {result:?}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn public_publish_aborts_if_the_backend_target_changes_after_review() {
+        let dir = temp_workdir("publish-target-change");
+        let mem = MemCli::new(&dir);
+        let root = mem
+            .put_node(&Node {
+                kind: "memory".to_string(),
+                fields_json: r#"{"text":"reviewed","kind":"project"}"#.to_string(),
+            })
+            .expect("put");
+        mem.bind("latest", &root).expect("bind");
+        let plan = mem
+            .build_egress_plan_for_target("latest", crate::egress::EgressOperation::PublicPublish)
+            .expect("plan");
+        let mut cfg = mem.config().expect("config");
+        cfg.publishing.ipfs_api = "http://127.0.0.1:5998/api/v0".to_string();
+        cfg.save_to_project_root(&dir).expect("save config");
+        assert!(matches!(
+            mem.publish_public(&plan),
+            Err(Error::EgressPlanChanged(_))
+        ));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn share_writes_a_local_receipt_and_posts_car_to_the_node() {
+        let dir = temp_workdir("share-node");
+        let mem = MemCli::new(&dir);
+        let cid = mem
+            .put_node(&Node {
+                kind: "memory".to_string(),
+                fields_json: r#"{"text":"publish me","kind":"project"}"#.to_string(),
+            })
+            .expect("put_node");
+        mem.bind("latest", &cid).expect("bind");
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind fake node");
+        let addr = listener.local_addr().expect("addr");
+        let api_url = format!("http://{addr}/api/v0");
+
+        let join = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept");
+            let mut request = Vec::new();
+            let mut buf = [0u8; 4096];
+            loop {
+                let n = stream.read(&mut buf).expect("read request");
+                if n == 0 {
+                    break;
+                }
+                request.extend_from_slice(&buf[..n]);
+                if request.windows(4).any(|w| w == b"\r\n\r\n") {
+                    break;
+                }
+            }
+            let request_text = String::from_utf8_lossy(&request);
+            assert!(
+                request_text.contains("POST /api/v0/dag/import?pin-roots=true HTTP/1.1"),
+                "unexpected request: {request_text}"
+            );
+            let headers_end = request
+                .windows(4)
+                .position(|w| w == b"\r\n\r\n")
+                .expect("headers end")
+                + 4;
+            let header_text = String::from_utf8_lossy(&request[..headers_end]);
+            let content_length = header_text
+                .lines()
+                .find_map(|line| {
+                    line.split_once(':').and_then(|(k, v)| {
+                        if k.eq_ignore_ascii_case("content-length") {
+                            v.trim().parse::<usize>().ok()
+                        } else {
+                            None
+                        }
+                    })
+                })
+                .expect("content length");
+            let already = request.len().saturating_sub(headers_end);
+            let remaining = content_length.saturating_sub(already);
+            if remaining > 0 {
+                let mut body = vec![0u8; remaining];
+                stream.read_exact(&mut body).expect("read body");
+            }
+            let response = b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}";
+            stream.write_all(response).expect("write response");
+        });
+
+        let mut cfg = mem.config().expect("config");
+        cfg.publishing.backend = "ipfs".to_string();
+        cfg.publishing.ipfs_api = api_url;
+        cfg.save_to_project_root(&dir).expect("save config");
+
+        let receipt = publish(&mem, "latest").expect("publish");
+        assert_eq!(receipt.backend, "ipfs");
+        assert_eq!(receipt.root, cid.0);
+        assert!(receipt.gateway_url.contains(&cid.0));
+
+        let receipt_trail = dir.join(".concierge").join("publish-receipts.jsonl");
+        let trail = std::fs::read_to_string(&receipt_trail).expect("receipt trail");
+        assert!(trail.contains(r#""backend":"ipfs""#));
+        let receipts = mem.publish_receipts().expect("read receipts");
+        assert_eq!(receipts.len(), 1);
+        assert_eq!(receipts[0].root, cid.0);
+        join.join().expect("fake node thread");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn agent_id_is_stable_across_restart_via_binding() {
+        let dir = temp_workdir("agentid");
+        let first = MemCli::new(&dir).agent_id().expect("agent id");
+        // A fresh binding over the same working dir = a restart; the key persists.
+        let second = MemCli::new(&dir)
+            .agent_id()
+            .expect("agent id after restart");
+        assert_eq!(
+            first, second,
+            "the AgentID must be the same node after a restart"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn follow_and_nickname_persist_via_binding() {
+        let dir = temp_workdir("social");
+        let mem = MemCli::new(&dir);
+        mem.follow("agent-xyz").expect("follow");
+        mem.set_nickname("agent-xyz", "Friend").expect("nickname");
+        let book = mem.social_book().expect("book");
+        assert!(book.is_following("agent-xyz"));
+        assert_eq!(book.nickname_of("agent-xyz"), Some(&"Friend".to_string()));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn post_and_read_message_roundtrips_and_verifies() {
+        let dir = temp_workdir("msg-roundtrip");
+        let mem = MemCli::new(&dir);
+        let cid = mem
+            .post_message("conservation", "protect the wetlands")
+            .expect("post");
+        let env = mem.read_message(&cid).expect("read + verify");
+        assert_eq!(env.payload, "protect the wetlands");
+        assert_eq!(env.id, "conservation");
+        assert_eq!(env.clock, 1);
+        assert_eq!(env.key, mem.agent_id().unwrap().0);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn room_thread_assembles_in_chronological_order() {
+        let dir = temp_workdir("msg-thread");
+        let mem = MemCli::new(&dir);
+        mem.post_message("r", "one").expect("1");
+        mem.post_message("r", "two").expect("2");
+        mem.post_message("r", "three").expect("3");
+        let thread = mem.room_thread("r").expect("thread");
+        let payloads: Vec<_> = thread.iter().map(|(_, e)| e.payload.clone()).collect();
+        assert_eq!(payloads, ["one", "two", "three"]);
+        assert_eq!(thread[0].1.clock, 1);
+        assert_eq!(
+            thread[2].1.clock, 3,
+            "Lamport clock increments along the chain"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn message_thread_coheres_across_installs() {
+        // Install A authors a 2-message chain; install B receives both envelopes
+        // and must reassemble the same thread — even though `mem`'s `created_at`
+        // gives the messages different *block* CIDs on each install. Linking is by
+        // signature, which is identical everywhere.
+        let dir_a = temp_workdir("xinstall-a");
+        let a = MemCli::new(&dir_a);
+        a.post_message("r", "first").expect("post 1");
+        a.post_message("r", "second").expect("post 2");
+        let envelopes = a.room_message_envelopes("r").expect("envelopes");
+        assert_eq!(envelopes.len(), 2);
+
+        let dir_b = temp_workdir("xinstall-b");
+        let b = MemCli::new(&dir_b);
+        for env_json in &envelopes {
+            assert!(
+                b.store_inbound_message(env_json, true)
+                    .expect("store")
+                    .is_some(),
+                "B accepts A's signed message"
+            );
+        }
+        let payloads: Vec<_> = b
+            .room_thread("r")
+            .expect("thread")
+            .into_iter()
+            .map(|(_, e)| e.payload)
+            .collect();
+        assert_eq!(
+            payloads,
+            ["first", "second"],
+            "B reassembles the chain via signature links, not install-specific CIDs"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir_a);
+        let _ = std::fs::remove_dir_all(&dir_b);
+    }
+
+    #[test]
+    fn room_thread_traverses_forked_next_links() {
+        let dir = temp_workdir("msg-fork");
+        let mem = MemCli::new(&dir);
+        let identity = mem.identity().expect("identity");
+        let author = identity.agent_id().0;
+
+        let base = MessageEnvelope {
+            id: "r".to_string(),
+            payload: "base".to_string(),
+            next: Vec::new(),
+            refs: Vec::new(),
+            clock: 1,
+            key: author.clone(),
+            sig: String::new(),
+        };
+        let mut base = base;
+        base.sig = identity.sign(&base.signing_bytes());
+        let base_cid = mem
+            .put_node(&Node {
+                kind: "memory".to_string(),
+                fields_json: serde_json::json!({
+                    "text": serde_json::to_string(&base).expect("serialize base"),
+                    "kind": "reference",
+                })
+                .to_string(),
+            })
+            .expect("put base");
+
+        let mut left = MessageEnvelope {
+            id: "r".to_string(),
+            payload: "left".to_string(),
+            next: vec![base_cid.0.clone()],
+            refs: Vec::new(),
+            clock: 2,
+            key: author.clone(),
+            sig: String::new(),
+        };
+        left.sig = identity.sign(&left.signing_bytes());
+        let left_cid = mem
+            .put_node(&Node {
+                kind: "memory".to_string(),
+                fields_json: serde_json::json!({
+                    "text": serde_json::to_string(&left).expect("serialize left"),
+                    "kind": "reference",
+                })
+                .to_string(),
+            })
+            .expect("put left");
+
+        let mut right = MessageEnvelope {
+            id: "r".to_string(),
+            payload: "right".to_string(),
+            next: vec![base_cid.0.clone()],
+            refs: Vec::new(),
+            clock: 3,
+            key: author.clone(),
+            sig: String::new(),
+        };
+        right.sig = identity.sign(&right.signing_bytes());
+        let right_cid = mem
+            .put_node(&Node {
+                kind: "memory".to_string(),
+                fields_json: serde_json::json!({
+                    "text": serde_json::to_string(&right).expect("serialize right"),
+                    "kind": "reference",
+                })
+                .to_string(),
+            })
+            .expect("put right");
+
+        let mut merge = MessageEnvelope {
+            id: "r".to_string(),
+            payload: "merge".to_string(),
+            next: vec![left_cid.0.clone(), right_cid.0.clone()],
+            refs: Vec::new(),
+            clock: 4,
+            key: author,
+            sig: String::new(),
+        };
+        merge.sig = identity.sign(&merge.signing_bytes());
+        let merge_cid = mem
+            .put_node(&Node {
+                kind: "memory".to_string(),
+                fields_json: serde_json::json!({
+                    "text": serde_json::to_string(&merge).expect("serialize merge"),
+                    "kind": "reference",
+                })
+                .to_string(),
+            })
+            .expect("put merge");
+        mem.bind("room-latest-r", &merge_cid).expect("bind merge");
+
+        let thread = mem.room_thread("r").expect("thread");
+        let payloads: Vec<_> = thread.iter().map(|(_, e)| e.payload.clone()).collect();
+        assert_eq!(payloads, ["base", "left", "right", "merge"]);
+        assert_eq!(thread.last().unwrap().1.payload, "merge");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn ai_send_lever_blocks_ai_in_a_humans_only_room() {
+        let dir = temp_workdir("msg-lever");
+        // Mark this install as an AI.
+        let cfg = Config {
+            identity: crate::config::IdentityConfig {
+                kind: "ai".to_string(),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        cfg.save_to_project_root(&dir).expect("save cfg");
+        let mem = MemCli::new(&dir);
+        mem.set_room_ai_send("townhall", "off")
+            .expect("humans-only");
+        assert!(
+            mem.post_message("townhall", "let me jump in").is_err(),
+            "an AI cannot post to a Human-only room"
+        );
+        assert!(
+            mem.post_message("open-room", "hello").is_ok(),
+            "an open room still accepts the AI"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn mention_gated_room_requires_an_at_mention_for_ai() {
+        let dir = temp_workdir("msg-mention");
+        let cfg = Config {
+            identity: crate::config::IdentityConfig {
+                kind: "ai".to_string(),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        cfg.save_to_project_root(&dir).expect("save cfg");
+        let mem = MemCli::new(&dir);
+        mem.set_room_ai_send("brainstorm", "on_mention")
+            .expect("mention mode");
+        assert!(
+            mem.post_message("brainstorm", "hello there").is_err(),
+            "an AI without an @ mention must be blocked"
+        );
+        assert!(
+            mem.post_message("brainstorm", "hello @brainstorm").is_ok(),
+            "an AI with an @ mention can speak in mention-gated mode"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn muted_author_is_hidden_in_thread_but_still_in_the_dag() {
+        let dir = temp_workdir("msg-mute");
+        let mem = MemCli::new(&dir);
+        let cid = mem.post_message("r", "from me").expect("post");
+        let me = mem.agent_id().unwrap().0;
+        mem.mute_in_room("r", &me).expect("mute");
+        assert!(
+            mem.room_thread("r").expect("thread").is_empty(),
+            "muted author is hidden in the thread view"
+        );
+        assert_eq!(
+            mem.read_message(&cid).expect("read by cid").payload,
+            "from me",
+            "but the message is still in the DAG (mute != deafen)"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}

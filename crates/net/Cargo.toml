@@ -1,0 +1,18 @@
+[package]
+name = "concierge-net"
+description = "Phase 5.7 transport — libp2p gossipsub rooms that move signed Message nodes between installs."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+concierge-core = { path = "../core" }
+futures = { workspace = true }
+libp2p = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+tokio = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

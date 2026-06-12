@@ -1,0 +1,42 @@
+[package]
+name = "concierge-core"
+description = "Universal Concierge Plugin — Layer 1 core binding + Layer 2 host-neutral event API."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+cid = { workspace = true }
+concierge-crypto = { path = "../crypto" }
+# Phase A: link `mem` in-process (replaces the `mem` CLI subprocess in binding.rs).
+mem = { path = "../mem" }
+ed25519-dalek = { workspace = true }
+hmac = { workspace = true }
+iroh-car = { workspace = true }
+libc = { workspace = true }
+multihash = { workspace = true }
+rand_core = { workspace = true }
+scrypt = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+tokio = { workspace = true }
+toml = { workspace = true }
+thiserror = { workspace = true }
+zeroize = { workspace = true }
+# Phase 8 §1: optional small on-node semantic embedder (Decision 0022 — the ONLY
+# model on the node, never a generative LLM). Off by default so the base build
+# stays light and ONNX-free; enable with `--features semantic-embed`.
+fastembed = { version = "4", optional = true }
+
+[features]
+default = []
+pinata = []
+# A real small embedding model (bge-small-en-v1.5) behind the Embedder trait.
+# Off by default so the base build carries no ONNX runtime; brute-force cosine
+# over the in-memory index + the persisted embed-cache covers personal-node scale.
+# (A LanceDB ANN backend would be the future feature for million-vector libraries.)
+semantic-embed = ["dep:fastembed"]
+
+[dev-dependencies]
+tempfile = { workspace = true }

@@ -1,0 +1,33 @@
+name: concierge-memory
+label: Concierge
+kind: standalone
+version: 0.1.0
+description: >
+  Records Hermes session, LLM, tool, and file events into Concierge IPLD memory
+  via the host-neutral JSONL contract. Observe-only — it uses Hermes's public
+  lifecycle hooks and makes zero changes to the agent's core loop.
+author: universal-concierge-plugin
+provides_hooks:
+  - on_session_start
+  - pre_llm_call
+  - post_llm_call
+  - pre_tool_call
+  - post_tool_call
+  - on_session_end
+optional_env:
+  - name: CONCIERGE_BIN
+    description: "Path to the concierge-plugin binary (default: concierge-plugin on PATH)"
+    prompt: "concierge-plugin binary path"
+    password: false
+  - name: CONCIERGE_WORKDIR
+    description: "Directory holding the .concierge store (default: current dir)"
+    prompt: "Concierge working directory"
+    password: false
+  - name: CONCIERGE_GUI_PORT
+    description: "Visual Memory Explorer port (default: 4173)"
+    prompt: "Concierge GUI port"
+    password: false
+  - name: CONCIERGE_GUI_NO_OPEN
+    description: "Set true only on headless installs to suppress browser opening"
+    prompt: "Suppress Concierge GUI browser opening"
+    password: false

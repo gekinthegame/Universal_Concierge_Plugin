@@ -1,0 +1,2363 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Concierge Plugin - Visual Memory Explorer</title>
+<style>
+  :root {
+    --black: #050510; --deep: #0a0b1a; --raised: #131429; --graphite: #1c1d38;
+    --gold: #d122e3; --deep-gold: #8a1299; --pale-gold: #f085fa; --patina: #00e5ff;
+    --vermilion: #ff2a55; --ink: #e0e6ff; --muted: #939abf; --faint: #565d8a;
+    --synapse: #a855f7;
+    --line: rgba(209, 34, 227, .18); --strong-line: rgba(209, 34, 227, .38);
+    --display: "Avenir Next", "Helvetica Neue", sans-serif;
+    --body: "Avenir Next", "Helvetica Neue", sans-serif;
+    --mono: "SFMono-Regular", Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; height: 100vh; overflow: hidden; display: flex; flex-direction: column; color: var(--ink); background:
+    radial-gradient(circle at 46% -20%, rgba(209,34,227,.12), transparent 35%),
+    linear-gradient(135deg, #070715, var(--black) 58%); font: 13px/1.45 var(--body); }
+  button, input, select { font: inherit; }
+  button { cursor: pointer; }
+  header { height: 68px; display: grid; grid-template-columns: 270px 270px 1fr; align-items: stretch;
+    background: rgba(8,9,7,.92); border-bottom: 1px solid var(--line); }
+  .brand-area, .mounted { border-right: 1px solid var(--line); padding: 2px 20px; display: flex; flex-direction: column; justify-content: center; }
+  .brand { color: var(--gold); font: 600 22px/1 var(--display); letter-spacing: .16em; text-transform: uppercase; }
+  .brand small { color: var(--patina); font: 9px var(--mono); letter-spacing: .22em; }
+  .store-select { margin-top: 7px; border: 0; color: var(--muted); background: transparent; font: 10px var(--mono); }
+  .eyebrow { color: var(--faint); font: 9px var(--mono); letter-spacing: .16em; text-transform: uppercase; }
+  .model { margin-top: 5px; display: flex; align-items: center; gap: 8px; color: var(--ink); font: 11px var(--mono); }
+  .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--patina); box-shadow: 0 0 8px var(--patina); }
+  .timeline { display: flex; align-items: center; gap: 6px; padding: 10px 18px; overflow-x: auto; }
+  .tick { flex: 0 0 auto; min-width: 12px; height: 24px; padding: 0; border: 0; border-left: 3px solid var(--graphite); background: transparent; position: relative; }
+  .tick:hover, .tick.active { border-left-color: var(--gold); }
+  .tick span { display: none; position: absolute; bottom: 30px; left: -4px; white-space: nowrap; z-index: 6;
+    color: var(--ink); background: var(--deep); border: 1px solid var(--gold); border-radius: 3px; padding: 4px 7px; font: 9px var(--mono); }
+  /* Hover tooltips pop ABOVE the bars; the always-open active checkpoint sits
+     BELOW so the two never overlap. */
+  .tick:hover span { display: block; }
+  .tick.active span { display: block; top: 30px; bottom: auto; }
+  main { flex: 1 1 auto; min-height: 0; display: grid; grid-template-columns: 92px minmax(0,1fr) 310px; gap: 8px; padding: 8px; }
+  .panel, .rail { background: rgba(22,23,19,.92); border: 1px solid var(--line); border-radius: 7px; overflow: hidden; }
+  .rail { padding: 8px; overflow-y: auto; display: flex; flex-direction: column; gap: 6px; }
+  .rail button { min-height: 42px; border: 1px solid transparent; border-radius: 4px; background: var(--graphite); color: var(--muted);
+    font: 9px var(--mono); letter-spacing: .08em; text-transform: uppercase; }
+  .rail button:hover, .rail button.active { color: var(--black); background: var(--gold); border-color: var(--pale-gold); }
+  .rail .rule { height: 1px; background: var(--line); margin: 3px 0; }
+  .center { display: grid; grid-template-rows: 47px minmax(0,1fr) auto; min-width: 0; }
+  .chat-bar { display: flex; gap: 8px; align-items: center; padding: 8px 10px; border-top: 1px solid var(--line); background: rgba(0,0,0,.24); }
+  .chat-bar .chat-to { flex: 0 0 168px; }
+  .chat-bar .chat-msg { flex: 1 1 auto; min-width: 0; }
+  .chat-bar .chat-send { flex: 0 0 auto; min-height: 34px; padding: 0 16px; border: 1px solid var(--patina); border-radius: 4px; background: var(--patina); color: var(--black); font: 10px var(--mono); letter-spacing: .08em; text-transform: uppercase; }
+  .chat-bar .chat-send:hover { box-shadow: 0 0 9px var(--patina); }
+  .chat-lock { flex: 0 0 auto; color: var(--patina); font: 12px var(--mono); opacity: .8; }
+  .chat-id { flex: 0 0 auto; display: flex; align-items: center; gap: 6px; cursor: pointer; padding: 5px 9px; border: 1px solid var(--line); border-radius: 4px; background: var(--deep); font: 9px var(--mono); color: var(--muted); letter-spacing: .04em; }
+  .chat-id:hover { border-color: var(--patina); color: var(--ink); }
+  .chat-id .id-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--graphite); flex: 0 0 auto; }
+  .chat-id.online .id-dot { background: var(--patina); box-shadow: 0 0 7px var(--patina); }
+  .requests { display: flex; flex-direction: column; gap: 7px; margin-bottom: 14px; }
+  .request-card { display: flex; align-items: center; gap: 10px; padding: 9px 11px; border: 1px solid var(--gold); border-radius: 6px; background: rgba(209,34,227,.05); }
+  .request-card .req-main { flex: 1; min-width: 0; }
+  .request-card .req-user { font: 9px var(--mono); color: var(--pale-gold); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .request-card .req-preview { font: 12px var(--body); color: var(--ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .request-card button { padding: 6px 12px; border-radius: 4px; font: 9px var(--mono); text-transform: uppercase; letter-spacing: .06em; cursor: pointer; flex: 0 0 auto; }
+  .req-accept { border: 1px solid var(--patina); background: var(--patina); color: var(--black); }
+  .req-decline { border: 1px solid var(--line); background: transparent; color: var(--faint); }
+  .tab-badge { display: inline-block; min-width: 15px; padding: 0 4px; margin-left: 5px; border-radius: 8px; background: var(--gold); color: var(--black); font: 9px var(--mono); text-align: center; }
+  #sites { display: flex; flex-direction: column; gap: 8px; margin-top: 6px; }
+  .site-card { display: flex; align-items: center; gap: 12px; padding: 11px 13px; border: 1px solid var(--line); border-radius: 7px; background: var(--deep); }
+  .site-card .site-main { flex: 1; min-width: 0; }
+  .site-card .site-name { font: 600 14px var(--display); letter-spacing: .03em; color: var(--pale-gold); }
+  .site-card .site-url { display: block; font: 11px var(--mono); color: var(--patina); text-decoration: none; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin: 2px 0; }
+  .site-card .site-url:hover { text-decoration: underline; }
+  .site-card .site-meta { font: 10px var(--mono); color: var(--faint); }
+  .canvas-status { font: 10px var(--mono); color: var(--muted); padding: 4px 10px; border: 1px solid var(--line); border-radius: 4px; }
+  .canvas-preview { flex: 1; min-width: 0; border: 1px solid var(--line); border-radius: 6px; background: #fff; }
+  .cv-split { flex: 1; display: flex; gap: 8px; min-height: 0; margin-top: 8px; }
+  .cv-src { flex: 1; min-width: 0; resize: none; background: var(--deep); color: var(--ink); border: 1px solid var(--line); border-radius: 6px; padding: 12px; font: 12px/1.55 var(--mono); }
+  .cv-src:focus { outline: none; border-color: var(--patina); }
+  .tool-button.on { background: var(--gold); color: var(--black); border-color: var(--pale-gold); }
+  .cv-files { flex: 0 0 200px; overflow: auto; background: var(--deep); border: 1px solid var(--line); border-radius: 6px; padding: 8px; font: 11px var(--mono); }
+  .cv-files .cv-file { padding: 3px 5px; color: var(--muted); border-radius: 3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .cv-files .cv-file.index { color: var(--pale-gold); }
+  .cv-files .empty { color: var(--faint); font: 11px var(--body); padding: 4px; }
+  .panel-head { display: flex; align-items: center; gap: 8px; padding: 0 14px; border-bottom: 1px solid var(--line); background: rgba(0,0,0,.18); }
+  .panel-title { margin-right: auto; color: var(--muted); font: 10px var(--mono); letter-spacing: .18em; text-transform: uppercase; }
+  .tab { border: 0; border-bottom: 2px solid transparent; padding: 14px 8px 11px; color: var(--faint); background: transparent; font: 9px var(--mono); text-transform: uppercase; }
+  .tab:hover, .tab.active { color: var(--gold); border-bottom-color: var(--gold); }
+  .reset-btn { border: 1px solid var(--line); border-radius: 3px; padding: 6px 12px; margin-right: 6px; color: var(--ink); background: var(--graphite); font: 9px var(--mono); letter-spacing: .06em; text-transform: uppercase; cursor: pointer; }
+  .reset-btn:hover { color: var(--gold); border-color: var(--gold); }
+  .view { display: none; height: 100%; overflow: auto; }
+  .view.active { display: block; }
+  #graph-view { position: relative; overflow: auto; background-image: linear-gradient(var(--graphite) 1px,transparent 1px),linear-gradient(90deg,var(--graphite) 1px,transparent 1px);
+    background-size: 22px 22px; }
+  /* The graph is a pan/zoom canvas, not selectable text — dragging must not
+     highlight the node labels. */
+  #graph-view, #graph, #graph * { user-select: none; -webkit-user-select: none; }
+  #graph { width: 100%; height: 100%; }
+  /* Upper-left badge: shown only while the private swarm is actually active (node live). */
+  .swarm-badge { position: absolute; top: 12px; left: 14px; z-index: 4; display: none; align-items: center; gap: 10px; pointer-events: none; }
+  body.node-live .swarm-badge { display: flex; }
+  .swarm-badge img { width: 48px; height: 48px; filter: drop-shadow(0 0 7px var(--patina)); }
+  .yarax-badge { position: absolute; top: 12px; right: 14px; z-index: 4; display: none; align-items: center; pointer-events: none; }
+  body.node-live .yarax-badge { display: flex; }
+  .yarax-badge img { height: 20px; width: auto; border-radius: 3px; filter: drop-shadow(0 0 5px var(--black)); }
+  .impeccable-badge { position: absolute; bottom: 12px; right: 14px; z-index: 4; display: flex; align-items: center; pointer-events: none; }
+  .impeccable-badge img { height: 26px; width: auto; border-radius: 3px; filter: drop-shadow(0 0 5px var(--black)); }
+  .swarm-badge span { color: var(--ink); font: 10px/1.3 var(--mono); letter-spacing: .1em; text-transform: uppercase; text-shadow: 0 0 6px var(--black); }
+  .graph-edge { stroke: var(--deep-gold); stroke-width: 1.2; opacity: .62; }
+  /* A glowing pulse that travels an edge inward to the brain when memory is used. */
+  .synapse-dot { fill: var(--synapse); filter: drop-shadow(0 0 5px var(--synapse)); pointer-events: none; }
+  .graph-label { fill: var(--faint); font: 8px var(--mono); }
+  .graph-node rect { fill: var(--deep); stroke: var(--deep-gold); stroke-width: 1; rx: 5; }
+  .graph-node:hover rect, .graph-node.active rect { stroke: var(--gold); stroke-width: 2; filter: drop-shadow(0 0 8px rgba(0,229,255,.32)); }
+  /* Decision 0026: fenced from egress is the DEFAULT (no special styling). We
+     highlight only the exceptions — roots cleared for export, and known-public. */
+  .graph-node.cleared-root rect { stroke: var(--vermilion); stroke-width: 3; }
+  .graph-node.partial-cleared rect { stroke: var(--vermilion); stroke-width: 2; stroke-dasharray: 6 4; opacity: .78; }
+  .graph-node.known-public rect { filter: drop-shadow(0 0 7px rgba(255,42,85,.58)); }
+  /* Guardian-quarantined: visible locally (transparent view) but clearly flagged
+     unsafe; excluded from retrieval/relay. */
+  .graph-node.quarantined rect { stroke: var(--vermilion); stroke-width: 3; stroke-dasharray: 3 3; opacity: .55; }
+  .graph-node.quarantined .graph-dot { stroke: var(--vermilion); stroke-dasharray: 2 2; opacity: .55; }
+  .graph-node.encrypted-private rect { stroke: var(--patina); stroke-width: 3; filter: drop-shadow(0 0 7px rgba(0,229,255,.55)); }
+  .graph-dot { fill: var(--deep); stroke: var(--deep-gold); stroke-width: 1.5; }
+  .graph-dot.store { fill: var(--graphite); stroke: var(--gold); stroke-width: 2; }
+  .graph-node:hover .graph-dot, .graph-node.active .graph-dot { stroke: var(--gold); stroke-width: 2.5; filter: drop-shadow(0 0 8px rgba(0,229,255,.4)); }
+  .graph-node.cleared-root .graph-dot { stroke: var(--vermilion); stroke-width: 2.5; }
+  .graph-node.partial-cleared .graph-dot { stroke: var(--vermilion); stroke-dasharray: 4 3; }
+  .graph-node.known-public .graph-dot { filter: drop-shadow(0 0 6px rgba(255,42,85,.55)); }
+  .graph-node.encrypted-private .graph-dot { stroke: var(--patina); stroke-width: 2.5; }
+  /* LED node styles */
+  .led-node .graph-dot.led {
+    fill: var(--graphite);
+    stroke: var(--gold);
+    stroke-width: 2;
+    transition: all 0.3s ease;
+  }
+  .led-node:hover .graph-dot.led, .led-node.active .graph-dot.led {
+    fill: var(--gold);
+    filter: drop-shadow(0 0 12px var(--gold));
+    stroke-width: 3;
+  }
+  .led-node.cleared-root .graph-dot.led {
+    stroke: var(--vermilion);
+    filter: drop-shadow(0 0 10px var(--vermilion));
+  }
+  .brain-icon {
+    filter: drop-shadow(0 0 10px var(--patina));
+    transition: all 0.3s ease;
+    cursor: pointer;
+  }
+  .led-node:hover .brain-icon, .led-node.active .brain-icon {
+    filter: drop-shadow(0 0 20px var(--gold));
+  }
+  /* The Sidekick's heartbeat: while the private node is running, a soft cyan halo
+     behind the brain pulses so the user *feels* it's alive. Animating opacity on a
+     blurred SVG circle is reliable cross-browser (Safari won't animate `filter` on
+     an SVG group). The halo is invisible (opacity 0) until the node is live. */
+  .brain-halo { fill: var(--synapse); opacity: 0; filter: blur(5px); pointer-events: none; }
+  @keyframes brain-alive { 0%, 100% { opacity: .14; } 50% { opacity: .6; } }
+  body.node-live .brain-halo { animation: brain-alive 1.7s ease-in-out infinite; }
+  .graph-plus { fill: var(--gold); font: 700 15px var(--mono); pointer-events: none; }
+  .modal-overlay { position: fixed; inset: 0; z-index: 20; display: flex; align-items: center; justify-content: center; background: rgba(5,5,4,.66); backdrop-filter: blur(2px); }
+  .modal-card { width: min(560px, 92vw); gap: 12px; padding: 20px; box-shadow: 0 18px 60px rgba(0,0,0,.5); }
+  .modal-title { color: var(--gold); font: 600 16px/1 var(--display); letter-spacing: .04em; }
+  .modal-actions { display: flex; gap: 8px; }
+  .modal-actions .pbtn { width: auto; flex: 1; }
+  .modal-card input[type=text] { background: var(--black); border: 1px solid var(--line); color: var(--ink); padding: 9px 10px; border-radius: 4px; font: 12px var(--mono); }
+  .graph-kind { fill: var(--gold); font: 10px var(--mono); text-transform: uppercase; }
+  .graph-preview { fill: var(--muted); font: 10px var(--body); }
+  .graph-cid { fill: var(--faint); font: 8px var(--mono); }
+  .graph-state { fill: var(--vermilion); font: 7px var(--mono); letter-spacing: .08em; }
+  .empty { color: var(--faint); font-style: italic; padding: 20px; }
+  .content { padding: 18px; max-width: 1050px; margin: 0 auto; }
+  .record-top { display: flex; align-items: center; gap: 9px; margin-bottom: 14px; }
+  .kind { color: var(--black); background: var(--gold); border-radius: 2px; padding: 3px 7px; font: 9px var(--mono); text-transform: uppercase; }
+  .cid { color: var(--patina); font: 10px var(--mono); word-break: break-all; }
+  pre { margin: 0; padding: 16px; overflow: auto; white-space: pre-wrap; word-break: break-word; color: var(--ink); background: var(--deep); border: 1px solid var(--line); border-radius: 5px; font: 11px/1.6 var(--mono); }
+  .media-preview { margin: 6px 0 18px; padding: 14px; background: var(--deep); border: 1px solid var(--line); border-radius: 6px; display: flex; flex-direction: column; gap: 10px; align-items: flex-start; }
+  .media-name { color: var(--pale-gold); font: 11px var(--mono); word-break: break-all; }
+  .media-img { max-width: 100%; max-height: 70vh; border-radius: 4px; border: 1px solid var(--line); background: #000; }
+  .media-video { max-width: 100%; max-height: 70vh; border-radius: 4px; background: #000; }
+  .media-frame { width: 100%; height: 72vh; border: 1px solid var(--line); border-radius: 4px; background: #fff; }
+  .media-text { width: 100%; max-height: 70vh; }
+  .media-icon { font-size: 40px; color: var(--deep-gold); }
+  .media-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+  .media-actions .pbtn { width: auto; padding: 8px 14px; text-decoration: none; display: inline-block; text-align: center; }
+  details.raw-record { margin: 0 0 6px; }
+  details.raw-record > summary { cursor: pointer; color: var(--deep-gold); font: 10px var(--mono); letter-spacing: .12em; text-transform: uppercase; padding: 6px 0; }
+  h2 { margin: 22px 0 9px; color: var(--deep-gold); font: 10px var(--mono); letter-spacing: .16em; text-transform: uppercase; }
+  .link, .name-row, .message { width: 100%; border: 1px solid var(--line); background: var(--deep); color: var(--ink); border-radius: 4px; text-align: left; }
+  .link { display: grid; grid-template-columns: 160px 1fr; gap: 10px; padding: 8px; margin: 5px 0; }
+  .link strong { color: var(--gold); font: 9px var(--mono); text-transform: uppercase; }
+  .name-grid { display: grid; grid-template-columns: repeat(auto-fit,minmax(260px,1fr)); gap: 7px; }
+  .name-row { padding: 10px; }
+  .name-row:hover { border-color: var(--gold); }
+  .name-row b { display: block; color: var(--pale-gold); font: 11px var(--mono); overflow: hidden; text-overflow: ellipsis; }
+  .name-row span { color: var(--faint); font: 9px var(--mono); }
+  /* NAMES as a human timeline: month -> day -> minute-by-minute records. */
+  .names-tree { display: flex; flex-direction: column; gap: 8px; }
+  .month-group { border: 1px solid var(--line); border-radius: 6px; background: var(--deep); overflow: hidden; }
+  .month-head, .day-head { width: 100%; display: flex; align-items: center; gap: 10px; border: 0; text-align: left; background: transparent; color: var(--ink); }
+  .month-head { padding: 13px 14px; background: rgba(209,34,227,.05); }
+  .month-head:hover { background: rgba(209,34,227,.1); }
+  .month-head.open { border-bottom: 1px solid var(--line); }
+  .month-label { font: 600 16px/1 var(--display); letter-spacing: .05em; color: var(--pale-gold); }
+  .disclosure { width: 12px; color: var(--gold); font: 10px var(--mono); }
+  .count { margin-left: auto; color: var(--faint); font: 9px var(--mono); letter-spacing: .08em; text-transform: uppercase; }
+  .month-body { padding: 7px 8px 8px; display: flex; flex-direction: column; gap: 5px; }
+  .day-group { border: 1px solid var(--line); border-radius: 5px; background: var(--raised); overflow: hidden; }
+  .day-head { padding: 10px 12px; }
+  .day-head:hover { background: rgba(209,34,227,.06); }
+  .day-head.open { border-bottom: 1px solid var(--line); }
+  .day-label { color: var(--gold); font: 12px var(--body); letter-spacing: .02em; }
+  .day-body { padding: 4px; display: flex; flex-direction: column; gap: 3px; }
+  .event-row { display: grid; grid-template-columns: 78px 104px 1fr auto; align-items: center; gap: 10px;
+    width: 100%; border: 1px solid transparent; border-radius: 4px; background: transparent; color: var(--ink); text-align: left; padding: 7px 9px; }
+  .event-row:hover { border-color: var(--gold); background: var(--deep); }
+  .event-row.locked { opacity: .7; }
+  .event-time { color: var(--patina); font: 10px var(--mono); white-space: nowrap; }
+  .event-kind { color: var(--deep-gold); font: 8px var(--mono); letter-spacing: .06em; text-transform: uppercase;
+    border: 1px solid var(--line); border-radius: 2px; padding: 2px 5px; text-align: center; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .event-desc { color: var(--ink); font: 12px var(--body); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .event-aliases { color: var(--patina); font: 9px var(--mono); }
+  .event-cid { color: var(--faint); font: 8px var(--mono); white-space: nowrap; }
+  .messenger-tools, .search-tools { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 14px; }
+  .search-hit { padding: 9px 11px; margin-bottom: 7px; border: 1px solid var(--line); border-radius: 4px; background: var(--deep); cursor: pointer; }
+  .search-hit:hover { border-color: var(--gold); }
+  .search-hit.related { border-style: dashed; opacity: .82; margin-left: 16px; }
+  .search-hit.related .hit-score { color: var(--patina); }
+  .search-hit .hit-head { display: flex; gap: 10px; align-items: baseline; font: 9px var(--mono); color: var(--faint); }
+  .search-hit .hit-kind { color: var(--patina); }
+  .search-hit .hit-score { color: var(--gold); }
+  .search-hit .hit-preview { margin-top: 4px; color: var(--muted); font: 10px var(--mono); white-space: pre-wrap; word-break: break-word; }
+  .search-summary { color: var(--faint); font: 9px var(--mono); margin-bottom: 10px; }
+  .input, .tool-button { border: 1px solid var(--line); border-radius: 4px; background: var(--deep); color: var(--ink); padding: 8px 10px; }
+  .input { flex: 1 1 240px; }
+  .tool-button { color: var(--muted); }
+  .tool-button.on { color: var(--black); background: var(--gold); }
+  .net-identity { display: flex; flex-wrap: wrap; gap: 14px; padding: 9px 11px; margin: 4px 0 10px; background: var(--deep); border: 1px solid var(--line); border-radius: 6px; font: 10px var(--mono); color: var(--muted); }
+  .net-identity b { color: var(--ink); }
+  .net-card { padding: 11px; margin: 8px 0; background: var(--deep); border: 1px solid var(--line); border-radius: 6px; }
+  .net-card h3 { margin: 0 0 6px; font: 12px var(--body); color: var(--ink); display: flex; align-items: center; gap: 8px; }
+  .net-card .net-meta { color: var(--faint); font: 9px var(--mono); }
+  .net-pill { padding: 2px 7px; border-radius: 3px; background: var(--graphite); color: var(--muted); font: 9px var(--mono); }
+  .net-pill.root { color: var(--black); background: var(--gold); }
+  .net-pill.ok { color: var(--black); background: var(--patina); }
+  .net-pill.stale { color: var(--vermilion); border: 1px solid var(--vermilion); }
+  .net-cap { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 5px 0; font: 9px var(--mono); color: var(--muted); }
+  .net-cap code { color: var(--ink); }
+  .net-revoked { margin-top: 7px; color: var(--vermilion); font: 9px var(--mono); word-break: break-all; }
+  .net-revoke-row { display: flex; gap: 6px; margin-top: 8px; }
+  .trust-tier { padding: 1px 6px; border-radius: 3px; font: 8px var(--mono); letter-spacing: .04em; }
+  .trust-tier.trust-local { color: var(--muted); background: var(--graphite); }
+  .trust-tier.trust-global_signed { color: var(--black); background: var(--patina); }
+  .trust-tier.trust-unverified { color: var(--vermilion); border: 1px solid var(--vermilion); }
+  .trust-follow { padding: 1px 6px; border-radius: 3px; font: 8px var(--mono); color: var(--black); background: var(--gold); }
+  .trust-importance { padding: 1px 6px; border-radius: 3px; font: 8px var(--mono); color: var(--ink); border: 1px solid var(--line); }
+  .moderator-badge { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; padding: 7px 9px; margin: 4px 0 9px; background: var(--deep); border: 1px solid var(--line); border-radius: 5px; font: 9px var(--mono); }
+  .moderator-badge span { padding: 2px 7px; border-radius: 3px; background: var(--graphite); color: var(--muted); }
+  .moderator-badge .mod-guardian { color: var(--black); background: var(--patina); }
+  .moderator-badge .mod-synth { color: var(--black); background: var(--gold); }
+  .moderator-badge .mod-muted { color: var(--vermilion); }
+  .message { padding: 11px; margin: 7px 0; }
+  .message-head { display: flex; gap: 8px; align-items: center; color: var(--muted); font: 9px var(--mono); }
+  .message-head button { border: 0; color: var(--patina); background: transparent; font: 9px var(--mono); }
+  .message p { margin: 7px 0 0; white-space: pre-wrap; }
+  .stats { height: 100%; padding: 14px; overflow-y: auto; display: flex; flex-direction: column; min-height: 0; }
+  /* Compact stat chips — the numbers are a glance, not the focus. */
+  .stat-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 5px; flex: 0 0 auto; }
+  .stat { padding: 5px 7px; background: var(--deep); border: 1px solid var(--line); border-radius: 4px; display: flex; flex-direction: column; gap: 1px; }
+  .stat b { color: var(--ink); font: 14px/1.1 var(--mono); }
+  .stat.warn b { color: var(--vermilion); }
+  .stat span { color: var(--faint); font: 7px var(--mono); letter-spacing: .06em; text-transform: uppercase; }
+  /* Node console: a live terminal of what the node is doing. */
+  .console-head { display: flex; align-items: center; gap: 7px; margin: 11px 0 5px; }
+  .console-head .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--faint); }
+  body.node-live .console-head .dot { background: var(--synapse); box-shadow: 0 0 6px var(--synapse); }
+  .console-head .lbl { color: var(--muted); font: 9px var(--mono); letter-spacing: .16em; text-transform: uppercase; }
+  .node-console { flex: 1 1 auto; min-height: 150px; overflow-y: auto; background: #04050a; border: 1px solid var(--strong-line); border-radius: 5px; padding: 8px 9px; font: 10px/1.55 var(--mono); }
+  .node-console .ln { white-space: pre-wrap; word-break: break-all; }
+  .node-console .t { color: var(--faint); }
+  .node-console .ok { color: var(--patina); }
+  .node-console .ev { color: var(--synapse); }
+  .node-console .wn { color: var(--vermilion); }
+  .node-console .dim { color: var(--muted); }
+  .backend { padding: 9px 0; border-bottom: 1px solid var(--line); }
+  .backend b { color: var(--patina); font: 10px var(--mono); }
+  .backend span { display: block; margin-top: 3px; color: var(--faint); font: 9px var(--mono); }
+  .backend.optin b { color: var(--faint); }
+  .backend.optin span:first-of-type { color: var(--gold); }
+  .export { width: 100%; padding: 11px; border: 1px solid var(--gold); border-radius: 3px; background: var(--gold); color: var(--black); font: 10px var(--mono); text-transform: uppercase; }
+  .notice { position: fixed; left: 50%; bottom: 22px; transform: translateX(-50%); z-index: 5; max-width: 620px; padding: 11px 16px; color: var(--ink); background: var(--deep); border: 1px solid var(--gold); border-radius: 4px; font: 10px var(--mono); opacity: 0; pointer-events: none; transition: opacity .18s; }
+  .notice.show { opacity: 1; }
+  .cc-banner { display: flex; align-items: center; gap: 14px; padding: 9px 22px; background: var(--raised); border-bottom: 1px solid var(--strong-line); font: 11px var(--mono); color: var(--ink); }
+  .cc-banner.capturing { background: var(--deep); border-bottom-color: var(--line); }
+  .cc-banner .cc-msg { flex: 1; }
+  .cc-banner .cc-msg b { color: var(--patina); }
+  .cc-banner .cc-live { width: 7px; height: 7px; border-radius: 50%; background: var(--patina); box-shadow: 0 0 8px var(--patina); flex: 0 0 auto; }
+  .cc-banner button { padding: 7px 14px; border-radius: 3px; font: 9px var(--mono); text-transform: uppercase; letter-spacing: .06em; cursor: pointer; }
+  .cc-banner .cc-attach { border: 1px solid var(--gold); background: var(--gold); color: var(--black); }
+  .cc-banner .cc-detach { border: 1px solid var(--line); background: transparent; color: var(--faint); }
+  /* Blocking loading layer. `.active` captures clicks the instant work starts so
+     repeated clicks can't pile up concurrent requests; the visible bar (`.show`)
+     fades in slightly later so quick actions don't flash it. Sits above modals (20). */
+  .busy-overlay { position: fixed; inset: 0; z-index: 50; pointer-events: none; }
+  .busy-overlay.active { pointer-events: auto; cursor: progress; }
+  .busy-overlay::after { content: ""; position: absolute; inset: 0; background: rgba(5,5,4,.32); backdrop-filter: blur(.5px); opacity: 0; transition: opacity .16s ease; }
+  .busy-overlay.show::after { opacity: 1; }
+  .busy-bar { position: absolute; top: 0; left: 0; right: 0; height: 3px; overflow: hidden; background: rgba(138,18,153,.25); z-index: 1; opacity: 0; transition: opacity .16s ease; }
+  .busy-label { position: absolute; top: 14px; left: 50%; transform: translateX(-50%); z-index: 1; padding: 7px 16px; color: var(--gold); background: var(--deep); border: 1px solid var(--deep-gold); border-radius: 4px; font: 9px var(--mono); letter-spacing: .22em; text-transform: uppercase; opacity: 0; transition: opacity .16s ease; }
+  .busy-overlay.show .busy-bar, .busy-overlay.show .busy-label { opacity: 1; }
+  .busy-bar::before { content: ""; position: absolute; top: 0; height: 100%; width: 35%; left: -35%; background: linear-gradient(90deg, transparent, var(--gold), var(--pale-gold), var(--gold), transparent); animation: busy-slide 1.05s ease-in-out infinite; }
+  @keyframes busy-slide { 0% { left: -35%; } 100% { left: 100%; } }
+  .privacy { display: flex; flex-direction: column; gap: 7px; }
+  .pstate { display: inline-flex; align-items: center; gap: 6px; padding: 4px 8px; border-radius: 3px; font: 9px var(--mono); letter-spacing: .06em; text-transform: uppercase; margin-right: 5px; }
+  .pstate.locked { color: var(--vermilion); border: 1px solid var(--vermilion); }
+  .pstate.inherited { color: var(--gold); border: 1px solid var(--deep-gold); }
+  .pstate.clear { color: var(--patina); border: 1px solid var(--patina); }
+  .pstate.public { color: var(--black); background: var(--vermilion); }
+  .pstate.encrypted { color: var(--black); background: var(--patina); }
+  .pbtn { width: 100%; padding: 9px; border: 1px solid var(--line); border-radius: 3px; background: var(--graphite); color: var(--ink); font: 9px var(--mono); letter-spacing: .06em; text-transform: uppercase; }
+  .pbtn:hover { border-color: var(--gold); }
+  .pbtn.danger { border-color: var(--vermilion); color: var(--vermilion); }
+  .pbtn.danger:hover { background: var(--vermilion); color: var(--black); }
+  .pform { display: flex; flex-direction: column; gap: 6px; padding: 9px; border: 1px solid var(--line); border-radius: 4px; background: var(--deep); }
+  .pform input[type=password], .pform input[type=text] { background: var(--black); border: 1px solid var(--line); color: var(--ink); padding: 7px; border-radius: 3px; }
+  .pform .review { color: var(--muted); font: 9px var(--mono); }
+  .pform details { color: var(--muted); font: 9px var(--mono); }
+  .pform details div { padding: 2px 0; overflow-wrap: anywhere; }
+  .pform label { color: var(--muted); font: 9px var(--mono); display: flex; gap: 6px; align-items: flex-start; }
+  .pblockers { color: var(--vermilion); font: 9px var(--mono); }
+  .pblockers button { display: block; width: 100%; text-align: left; background: transparent; border: 0; color: var(--gold); font: 9px var(--mono); padding: 3px 0; }
+  .pblockers button:hover { color: var(--pale-gold); }
+  @media (max-width: 1050px) {
+    header { grid-template-columns: 220px 220px 1fr; }
+    main { grid-template-columns: 76px minmax(0,1fr); }
+    aside.panel { display: none; }
+  }
+  @media (max-width: 720px) {
+    body { overflow: auto; height: auto; }
+    header { height: auto; grid-template-columns: 1fr; }
+    .brand-area, .mounted { border-right: 0; border-bottom: 1px solid var(--line); }
+    .timeline { min-height: 48px; }
+    main { height: auto; min-height: 800px; grid-template-columns: 1fr; }
+    .rail { flex-direction: row; overflow-x: auto; }
+    .rail button { min-width: 78px; }
+    .rail .rule { display: none; }
+    .center { min-height: 720px; }
+  }
+</style>
+</head>
+<body>
+<div id="sidekick-onboard" class="cc-banner" role="status" style="display:none;"></div>
+<div id="cc-onboard" class="cc-banner" role="status" style="display:none;"></div>
+<header>
+  <div class="brand-area">
+    <img src="/api/logo.png" alt="Concierge Plugin" style="height: 64px; width: auto; object-fit: contain;">
+    <select id="store" class="store-select" aria-label="Mounted store" style="display: none;"></select>
+  </div>
+  <div class="mounted">
+    <div class="eyebrow">Mounted model - display only</div>
+    <div class="model"><span class="dot"></span><span id="model">loading</span></div>
+  </div>
+  <div id="timeline" class="timeline" aria-label="Checkpoint timeline"></div>
+</header>
+
+<main>
+  <nav class="rail" aria-label="Concierge command rail">
+    <button data-command="Ingest">Ingest</button><button data-command="Put">Put</button>
+    <button data-command="Bind">Bind</button><button data-command="Resolve">Resolve</button>
+    <div class="rule"></div>
+    <button data-view="names">Ls</button><button data-view="record">Cat</button>
+    <div class="rule"></div>
+    <button id="rail-export">Export-CAR</button><button data-command="Share">Share</button>
+    <div class="rule"></div>
+    <button data-command="GC">GC</button><button data-command="Backends">Backends</button>
+    <button data-command="Init">Init</button>
+  </nav>
+
+  <section class="panel center">
+    <div class="panel-head">
+      <span class="panel-title">The Data Platter <span id="root-note"></span></span>
+      <button id="reset-view" class="reset-btn" title="Center and fit the whole graph">Reset View</button>
+      <button class="tab active" data-view="graph">Graph</button>
+      <button class="tab" data-view="record">View Record</button>
+      <button class="tab" data-view="names">Records</button>
+      <button class="tab" data-view="search">Search</button>
+      <button class="tab" data-view="messenger">Messenger<span id="msg-badge" class="tab-badge" style="display:none">0</span></button>
+      <button class="tab" data-view="canvas">Studio</button>
+      <button class="tab" data-view="network">Network</button>
+    </div>
+    <div id="graph-view" class="view active">
+      <div class="swarm-badge"><img src="/api/swarm.png" alt="Swarm protocol"><span>Swarm protocol<br>protected node</span></div>
+      <div class="yarax-badge"><img src="/api/yarax.png" alt="YARA-X"></div>
+      <div class="impeccable-badge"><img src="/api/impeccable.png" alt="Impeccable"></div>
+      <svg id="graph" viewBox="0 0 1000 650" role="img" aria-label="Memory DAG"></svg>
+    </div>
+    <div id="record-view" class="view"><div id="record" class="content empty">Select a graph node or name to inspect it.</div></div>
+    <div id="names-view" class="view"><div class="content"><div id="names" class="names-tree"></div></div></div>
+    <div id="search-view" class="view"><div class="content">
+      <form id="search-form" class="search-tools">
+        <input id="search-q" class="input" placeholder="Search your memory (semantic + graph-gravity)…" autocomplete="off">
+        <select id="search-depth" class="input" style="max-width:120px;">
+          <option value="summary">Summary</option>
+          <option value="brief">Brief</option>
+          <option value="full">Full</option>
+        </select>
+        <label class="tool-button" style="display:flex;align-items:center;gap:6px;cursor:pointer;"><input id="search-related" type="checkbox"> + related</label>
+        <button id="search-go" class="tool-button" type="submit">Search</button>
+      </form>
+      <div class="eyebrow">The Librarian ranks by meaning × graph importance (well-linked nodes outrank lexically-similar orphans), packed to a token budget. Click a hit to open it.</div>
+      <div id="search-results"></div>
+    </div></div>
+    <div id="messenger-view" class="view"><div class="content">
+      <div class="messenger-tools">
+        <input id="room" class="input" list="room-list" placeholder="Room name">
+        <datalist id="room-list"></datalist>
+        <button id="view-room" class="tool-button">View thread</button>
+        <button id="human-only" class="tool-button">Human-only view</button>
+      </div>
+      <div class="eyebrow">A message from someone you haven't approved waits here as a request — a public username is never enough to reach you. Accept to start the thread, or decline to block.</div>
+      <div id="requests" class="requests"></div>
+      <div id="thread"></div>
+    </div></div>
+    <div id="network-view" class="view"><div class="content">
+      <div class="messenger-tools">
+        <input id="network-name" class="input" placeholder="New private network name">
+        <button id="network-create" class="tool-button">Create network</button>
+      </div>
+      <div class="eyebrow">Your private mesh. Each device keeps its own key — pairing never copies a secret. Private sync is capability-scoped and never authorizes public publication. Revoking advances the membership epoch; re-grant remaining devices.</div>
+      <div id="network-identity" class="net-identity"></div>
+      <div id="network-map"></div>
+    </div></div>
+    <div id="canvas-view" class="view"><div class="content" style="display:flex;flex-direction:column;height:100%;box-sizing:border-box;">
+      <div class="eyebrow">Live website builder — <b>Write</b> HTML directly and publish, or open a <b>Folder</b> where you/your AI build a multi-file site that renders live + hot-reloads. Publish to a permanent IPFS address (stable IPNS, updates in place). Sharing a live session is for educational / example displays — nothing is published until you Publish.</div>
+      <div class="messenger-tools">
+        <button id="cv-mode-write" class="tool-button on">✎ Write</button>
+        <button id="cv-mode-folder" class="tool-button">📁 Folder</button>
+        <input id="cv-folder" class="input cv-folder-only" placeholder="site folder path" autocomplete="off" style="flex:1;min-width:140px;display:none;">
+        <button id="cv-open" class="tool-button cv-folder-only" style="display:none;">Open</button>
+        <span id="cv-status" class="canvas-status">writing</span>
+        <button id="cv-share" class="tool-button" style="margin-left:auto;">Share live</button>
+        <input id="cv-session" class="input" placeholder="watch: session + Enter" autocomplete="off" style="max-width:160px;">
+      </div>
+      <div class="messenger-tools">
+        <input id="cv-name" class="input" placeholder="site name" autocomplete="off" style="max-width:170px;">
+        <input id="cv-password" class="input" type="password" placeholder="store password" autocomplete="off" style="max-width:150px;">
+        <button id="cv-publish" class="tool-button">Publish ▸</button>
+        <select id="cv-view" class="input" style="max-width:220px;"><option value="">— view a published site —</option></select>
+        <button id="cv-edit" class="tool-button" title="Back to live preview">Preview</button>
+      </div>
+      <div class="cv-split">
+        <textarea id="cv-src" class="cv-src" spellcheck="false" placeholder="<!doctype html>
+<html><body>
+  <h1>Write your site here — it renders live →</h1>
+</body></html>"></textarea>
+        <div id="cv-files" class="cv-files" style="display:none;"><div class="empty">Open a folder to build a multi-file site — its files appear here as you/your AI build.</div></div>
+        <iframe id="cv-preview" class="canvas-preview" sandbox="allow-scripts allow-same-origin allow-popups allow-forms" title="Live preview"></iframe>
+      </div>
+    </div></div>
+    <form id="chat-bar" class="chat-bar" aria-label="Direct private chat">
+      <button type="button" id="chat-id" class="chat-id" title="Your username — click to copy. Share it so other Concierge users can message you.">
+        <span class="id-dot"></span><span id="chat-id-label">offline</span>
+      </button>
+      <input id="chat-to" class="input chat-to" list="room-list" placeholder="to: paste a username, or a room" autocomplete="off">
+      <input id="chat-msg" class="input chat-msg" placeholder="Direct private message…" autocomplete="off">
+      <button id="chat-send" class="chat-send" type="submit">Send</button>
+    </form>
+  </section>
+
+  <aside class="panel">
+    <div class="panel-head"><span class="panel-title">Store / DAG</span></div>
+    <div class="stats">
+      <div id="stats" class="stat-grid"></div>
+      <div class="console-head"><span class="dot"></span><span class="lbl">Node Console</span></div>
+      <div id="node-console" class="node-console" role="log" aria-live="polite"></div>
+      <h2>Backends + pin status</h2>
+      <div id="backends"></div>
+      <h2>Current root</h2>
+      <div id="car-note" class="cid">No root selected</div>
+      <button id="export" class="export">Export-CAR</button>
+      <h2>Privacy &amp; Publication</h2>
+      <div id="privacy" class="privacy"><div class="empty">Select a root to see its privacy state.</div></div>
+    </div>
+  </aside>
+</main>
+<div id="notice" class="notice" role="status"></div>
+<div id="busy-overlay" class="busy-overlay" role="progressbar" aria-busy="true" aria-label="Working">
+  <div class="busy-bar"></div>
+  <div class="busy-label">Working…</div>
+</div>
+
+<script>
+"use strict";
+const state = { root: "", rootMode: "default", selected: "", humanOnly: false, muted: new Set(), roles: new Map(), room: "", fullGraph: null, visibleCids: new Set(), zoom: 1.0, pan: { x: 0, y: 0 }, viewInitialized: false, graphBounds: null, namesOpen: new Set(), namesOpenInit: false, publishingReady: false, lastStats: null, lastNodeRunning: null };
+// Monotonic selection stamp. Bumped every time the selected node changes, so an
+// in-flight privacy render started for an older selection can detect it was
+// superseded and refuse to paint (otherwise its late `await` could overwrite the
+// panel with a different node than the one now highlighted).
+let privacySeq = 0;
+function setSelected(cid) { state.selected = cid; privacySeq++; }
+const byId = id => document.getElementById(id);
+const svgNS = "http://www.w3.org/2000/svg";
+
+function node(tag, className, text) {
+  const item = document.createElement(tag);
+  if (className) item.className = className;
+  if (text !== undefined) item.textContent = String(text);
+  return item;
+}
+function svgNode(tag, attrs, text) {
+  const item = document.createElementNS(svgNS, tag);
+  Object.entries(attrs || {}).forEach(([key, value]) => item.setAttribute(key, value));
+  if (text !== undefined) item.textContent = String(text);
+  return item;
+}
+function clear(item) { item.replaceChildren(); }
+// A small padlock glyph (shackle arc + body + keyhole) centered at (cx, cy).
+function lockGlyph(cx, cy, color) {
+  const g = svgNode("g", {});
+  g.append(svgNode("path", { d: "M " + (cx - 3) + " " + (cy - 1) + " v -2 a 3 3 0 0 1 6 0 v 2", fill: "none", stroke: color, "stroke-width": 1.3 }));
+  g.append(svgNode("rect", { x: cx - 4.5, y: cy - 1, width: 9, height: 7, rx: 1.3, fill: color }));
+  g.append(svgNode("circle", { cx: cx, cy: cy + 2.4, r: 1, fill: "var(--black)" }));
+  return g;
+}
+function brainGlyph(cx, cy, size, color) {
+  const g = svgNode("g", { class: "brain-icon" });
+  const s = size;
+  // A soft halo behind the brain — pulses (via CSS) whenever the private node is
+  // live, so the running Sidekick is felt at the center of the graph.
+  g.append(svgNode("circle", { cx, cy, r: s * 0.62, class: "brain-halo" }));
+  const img = svgNode("image", {
+    href: "/api/brain.png",
+    x: cx - s / 2,
+    y: cy - s / 2,
+    width: s,
+    height: s
+  });
+  g.append(img);
+  return g;
+}
+function shortCid(cid) { return cid ? cid.slice(0, 12) + "..." + cid.slice(-5) : "none"; }
+// Compact timestamp from unix seconds (graph nodes, checkpoint ticks). Empty if unknown.
+function fmtWhen(ts) {
+  const s = Number(ts || 0);
+  if (!s) return "";
+  return new Date(s * 1000).toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+}
+function formatBytes(bytes) {
+  if (!bytes) return "0 B";
+  const units = ["B", "KB", "MB", "GB"]; let value = bytes; let unit = 0;
+  while (value >= 1024 && unit < units.length - 1) { value /= 1024; unit += 1; }
+  return value.toFixed(unit ? 1 : 0) + " " + units[unit];
+}
+function notice(text) {
+  const item = byId("notice"); item.textContent = text; item.classList.add("show");
+  window.setTimeout(() => item.classList.remove("show"), 2800);
+}
+async function getJson(url) {
+  const response = await fetch(url);
+  const data = await response.json();
+  if (!response.ok || data.error) throw new Error(data.error || response.statusText);
+  return data;
+}
+let csrfToken = "";
+async function postJson(url, payload) {
+  const response = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-CSRF-Token": csrfToken },
+    body: JSON.stringify(payload),
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok || data.error) throw new Error(data.error || response.statusText);
+  return data;
+}
+// User-initiated work runs through `safely`: while anything is in flight the
+// blocking overlay is shown, so further clicks are swallowed instead of stacking
+// up concurrent requests. A counter keeps the overlay up across nested/overlapping
+// actions and only drops it once the last one settles.
+let busyCount = 0;
+let busyShowTimer = null;
+function renderBusy() {
+  const overlay = byId("busy-overlay");
+  if (!overlay) return;
+  const busy = busyCount > 0;
+  overlay.classList.toggle("active", busy); // block clicks immediately
+  if (busy) {
+    if (!busyShowTimer && !overlay.classList.contains("show")) {
+      busyShowTimer = window.setTimeout(() => {
+        busyShowTimer = null;
+        if (busyCount > 0) overlay.classList.add("show");
+      }, 140);
+    }
+  } else {
+    if (busyShowTimer) { window.clearTimeout(busyShowTimer); busyShowTimer = null; }
+    overlay.classList.remove("show");
+  }
+}
+async function safely(action) {
+  busyCount++; renderBusy();
+  try { await action(); }
+  catch (error) { notice(error.message || String(error)); }
+  finally { busyCount = Math.max(0, busyCount - 1); renderBusy(); }
+}
+// Background work (the periodic poll, grant-expiry sweep): same error handling
+// but never shows the overlay or blocks the UI.
+async function quietly(action) {
+  try { await action(); } catch (error) { notice(error.message || String(error)); }
+}
+function showView(name) {
+  document.querySelectorAll(".view").forEach(item => item.classList.toggle("active", item.id === name + "-view"));
+  document.querySelectorAll("[data-view]").forEach(item => item.classList.toggle("active", item.dataset.view === name));
+}
+
+async function loadMeta() {
+  const meta = await getJson("/api/meta");
+  csrfToken = meta.csrf_token || "";
+  byId("model").textContent = meta.mounted_model;
+  const option = node("option", "", meta.store);
+  byId("store").replaceChildren(option);
+}
+async function loadCheckpoints() {
+  const checkpoints = await getJson("/api/checkpoints");
+  const timeline = byId("timeline"); clear(timeline);
+  if (!checkpoints.length) { timeline.append(node("span", "eyebrow", "No checkpoints yet")); return; }
+  checkpoints.forEach((checkpoint, index) => {
+    const tick = node("button", "tick" + (index === checkpoints.length - 1 ? " active" : ""));
+    // The custom hover label (positioned above the bars via CSS) carries the info;
+    // no native `title` — its OS tooltip pops *below* and overlaps the session text.
+    const when = fmtWhen(checkpoint.created_at);
+    tick.append(node("span", "", checkpoint.label + (when ? " · " + when : "")));
+    tick.addEventListener("click", () => selectRoot(checkpoint.cid));
+    timeline.append(tick);
+  });
+}
+async function loadNames() {
+  const names = await getJson("/api/names");
+  const container = byId("names"); clear(container);
+  if (!names.length) { container.append(node("div", "empty", "No names are bound yet.")); return; }
+
+  const months = new Map();
+  names.forEach(binding => {
+    const seconds = Number(binding.created_at || 0);
+    let monthKey, dayKey, monthLabel, dayLabel, sort;
+    if (seconds > 0) {
+      const date = new Date(seconds * 1000);
+      monthKey = date.getFullYear() + "-" + String(date.getMonth() + 1).padStart(2, "0");
+      dayKey = monthKey + "-" + String(date.getDate()).padStart(2, "0");
+      monthLabel = date.toLocaleDateString(undefined, { year: "numeric", month: "long" });
+      dayLabel = date.toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric" });
+      sort = date.getTime();
+    } else {
+      monthKey = dayKey = "undated"; monthLabel = "Undated"; dayLabel = "No timestamp"; sort = -1;
+    }
+    if (!months.has(monthKey)) months.set(monthKey, { label: monthLabel, sort, count: 0, days: new Map() });
+    const month = months.get(monthKey); month.count += 1; month.sort = Math.max(month.sort, sort);
+    if (!month.days.has(dayKey)) month.days.set(dayKey, { label: dayLabel, sort, entries: [] });
+    const day = month.days.get(dayKey); day.sort = Math.max(day.sort, sort);
+    day.entries.push({ ...binding, sort });
+  });
+
+  const sortedMonths = [...months.entries()].sort((a, b) => b[1].sort - a[1].sort);
+  // On the very first render, open the newest month and its newest day. After
+  // that, expansion is driven by state.namesOpen (the user's choices), so the 5s
+  // background refresh re-renders without popping collapsed sections back open.
+  if (!state.namesOpenInit && sortedMonths.length) {
+    const [topMonthKey, topMonth] = sortedMonths[0];
+    state.namesOpen.add(topMonthKey);
+    const topDay = [...topMonth.days.entries()].sort((a, b) => b[1].sort - a[1].sort)[0];
+    if (topDay) state.namesOpen.add(topDay[0]);
+    state.namesOpenInit = true;
+  }
+
+  sortedMonths.forEach(([monthKey, month]) => {
+    const monthOpen = state.namesOpen.has(monthKey);
+    const head = node("button", "month-head" + (monthOpen ? " open" : ""));
+    head.append(
+      node("span", "disclosure", monthOpen ? "▾" : "▸"),
+      node("span", "month-label", month.label),
+      node("span", "count", month.count + (month.count === 1 ? " record" : " records")),
+    );
+    const body = node("div", "month-body"); body.style.display = monthOpen ? "flex" : "none";
+    head.addEventListener("click", () => toggleSection(head, body, monthKey));
+
+    [...month.days.entries()].sort((a, b) => b[1].sort - a[1].sort).forEach(([dayKey, day]) => {
+      const dayOpen = state.namesOpen.has(dayKey);
+      const dayHead = node("button", "day-head" + (dayOpen ? " open" : ""));
+      dayHead.append(
+        node("span", "disclosure", dayOpen ? "▾" : "▸"),
+        node("span", "day-label", day.label),
+        node("span", "count", day.entries.length + (day.entries.length === 1 ? " record" : " records")),
+      );
+      const dayBody = node("div", "day-body"); dayBody.style.display = dayOpen ? "flex" : "none";
+      dayHead.addEventListener("click", () => toggleSection(dayHead, dayBody, dayKey));
+      day.entries.sort((a, b) => a.sort - b.sort).forEach(entry => dayBody.append(eventRow(entry)));
+      body.append(appendChildren(node("div", "day-group"), dayHead, dayBody));
+    });
+    container.append(appendChildren(node("div", "month-group"), head, body));
+  });
+}
+function appendChildren(parent, ...children) { children.forEach(child => parent.append(child)); return parent; }
+function toggleSection(head, body, key) {
+  const open = body.style.display !== "none";
+  body.style.display = open ? "none" : "flex";
+  head.classList.toggle("open", !open);
+  const caret = head.querySelector(".disclosure");
+  if (caret) caret.textContent = open ? "▸" : "▾";
+  // Remember the choice so the periodic re-render preserves it.
+  if (key) { if (open) state.namesOpen.delete(key); else state.namesOpen.add(key); }
+}
+function eventRow(entry) {
+  const row = node("button", "event-row" + (entry.locked ? " locked" : ""));
+  const seconds = Number(entry.created_at || 0);
+  const time = seconds > 0
+    ? new Date(seconds * 1000).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit", second: "2-digit" })
+    : "--:--:--";
+  const desc = entry.locked ? "🔒 Locked record" : (entry.preview || "(no description)");
+  const aliases = entry.names && entry.names.length ? entry.names : [entry.name];
+  const descSpan = node("span", "event-desc", desc);
+  if (aliases.length > 1) descSpan.append(node("span", "event-aliases", " ×" + aliases.length));
+  row.append(
+    node("span", "event-time", time),
+    node("span", "event-kind", entry.kind || "node"),
+    descSpan,
+    node("span", "event-cid", shortCid(entry.cid)),
+  );
+  row.title = aliases.join("\n") + "\n" + entry.cid;
+  row.addEventListener("click", () => { selectRoot(entry.cid); loadRecord(entry.cid); showView("record"); });
+  return row;
+}
+
+async function selectRoot(cid) {
+  state.root = cid;
+  state.rootMode = "fixed";
+  setSelected(cid);
+  state.fullGraph = null;
+  state.visibleCids.clear();
+  await Promise.all([loadGraph(), loadStats(), refreshPrivacy()]);
+}
+
+function isSynthetic(cid) {
+  return cid.startsWith("store:") || cid.startsWith("session:") ||
+         cid.startsWith("year:") || cid.startsWith("month:") || cid.startsWith("day:");
+}
+
+// Every cid reachable downward from `cid` in the loaded graph.
+function descendantsOf(cid) {
+  const out = new Set();
+  const stack = [cid];
+  while (stack.length) {
+    const current = stack.pop();
+    for (const e of state.fullGraph.edges) {
+      if (e.from === current && !out.has(e.to)) { out.add(e.to); stack.push(e.to); }
+    }
+  }
+  return out;
+}
+
+// Toggle a node: collapse it if its children are already shown, otherwise
+// expand (lazy-fetching a record's subgraph the first time it is opened).
+async function toggleNode(cid) {
+  setSelected(cid);
+  if (!state.fullGraph) return;
+
+  const children = state.fullGraph.edges.filter(e => e.from === cid).map(e => e.to);
+  const expanded = children.length > 0 && children.every(child => state.visibleCids.has(child));
+  if (expanded) {
+    for (const cidToHide of descendantsOf(cid)) state.visibleCids.delete(cidToHide);
+    drawGraph(state.fullGraph);
+    safely(refreshPrivacy);
+    return;
+  }
+
+  // Synthetic forest nodes (store/session) and any node whose children are
+  // already loaded just reveal their children locally — no record to fetch.
+  const childrenLoaded = children.length > 0;
+  if (!isSynthetic(cid) && !childrenLoaded) {
+    const g = await getJson("/api/graph?cid=" + encodeURIComponent(cid));
+    // The store-wide graph can be reset (tab switch, ingest, re-root) while this
+    // fetch is in flight; bail rather than dereference a now-null fullGraph.
+    if (!state.fullGraph) return;
+    const seen = new Set(state.fullGraph.nodes.map(n => n.cid));
+    for (const n of g.nodes) {
+      if (!seen.has(n.cid)) {
+        state.fullGraph.nodes.push(n);
+        seen.add(n.cid);
+      }
+    }
+    const seenEdges = new Set(state.fullGraph.edges.map(e => e.from + "|" + e.to));
+    for (const e of g.edges) {
+      if (!seenEdges.has(e.from + "|" + e.to)) {
+        state.fullGraph.edges.push(e);
+        seenEdges.add(e.from + "|" + e.to);
+      }
+    }
+  }
+
+  // Reveal the clicked node and its immediate children.
+  state.visibleCids.add(cid);
+  for (const e of state.fullGraph.edges) {
+    if (e.from === cid) state.visibleCids.add(e.to);
+  }
+
+  drawGraph(state.fullGraph);
+  safely(refreshPrivacy);
+}
+
+async function loadGraph() {
+  const query = state.rootMode === "fixed" && state.root ? "?cid=" + encodeURIComponent(state.root) : "";
+  const graph = await getJson("/api/graph" + query);
+  state.root = graph.root;
+  byId("root-note").textContent = graph.forest
+    ? " / whole store" + (graph.truncated ? " / first " + graph.total + " records" : "")
+    : " / " + shortCid(graph.root) + (graph.truncated ? " / first 96 nodes" : "");
+  
+  if (!state.fullGraph) {
+    state.fullGraph = graph;
+    state.viewInitialized = false; // a freshly loaded graph re-centers on first draw
+    state.visibleCids.clear();
+    state.visibleCids.add(state.root);
+    // Initially show the root and its immediate children
+    for (const e of graph.edges) {
+      if (e.from === state.root) {
+        state.visibleCids.add(e.to);
+      }
+    }
+  }
+  drawGraph(state.fullGraph);
+}
+
+// Re-fetch the graph and copy lock/preview state onto the already-loaded nodes,
+// so a lock/unlock is reflected immediately without collapsing expansions.
+// A whole-store graph fetch can take many seconds; guard against overlapping
+// runs (the periodic poll) and against fullGraph being reset mid-fetch.
+let graphRefreshInFlight = false;
+async function refreshGraphData() {
+  if (!state.fullGraph) { await loadGraph(); return; }
+  if (graphRefreshInFlight) return;
+  graphRefreshInFlight = true;
+  try {
+    const query = state.rootMode === "fixed" && state.root ? "?cid=" + encodeURIComponent(state.root) : "";
+    const fresh = await getJson("/api/graph" + query);
+    if (!state.fullGraph) return; // reset (tab switch / ingest / re-root) while awaiting
+    const freshById = new Map(fresh.nodes.map(n => [n.cid, n]));
+    for (const n of state.fullGraph.nodes) {
+      const f = freshById.get(n.cid);
+      if (!f) continue;
+      n.fenced = f.fenced; n.cleared = f.cleared;
+      n.known_public = f.known_public; n.quarantined = f.quarantined;
+      n.encrypted_private = f.encrypted_private; n.kind = f.kind; n.preview = f.preview;
+    }
+    drawGraph(state.fullGraph);
+  } finally {
+    graphRefreshInFlight = false;
+  }
+}
+
+function drawGraph(graph) {
+  const svg = byId("graph"); clear(svg);
+  if (!graph.nodes.length) { svg.append(svgNode("text", { x: 40, y: 50, class: "graph-preview" }, "No reachable nodes.")); return; }
+
+  const container = svgNode("g", { class: "graph-content" });
+  svg.append(container);
+  
+  // Filter to visible nodes and edges
+  const visibleNodes = graph.nodes.filter(n => state.visibleCids.has(n.cid));
+  const visibleEdges = graph.edges.filter(e => state.visibleCids.has(e.from) && state.visibleCids.has(e.to));
+  
+  const incoming = new Map();
+  visibleNodes.forEach(n => incoming.set(n.cid, 0));
+  visibleEdges.forEach(e => {
+    if (incoming.has(e.to)) incoming.set(e.to, incoming.get(e.to) + 1);
+  });
+  
+  const depths = new Map();
+  visibleNodes.forEach(n => depths.set(n.cid, 0));
+  
+  let changed = true;
+  let iters = 0;
+  while(changed && iters < 1000) {
+    changed = false;
+    iters++;
+    for (const e of visibleEdges) {
+      if (depths.has(e.from) && depths.has(e.to)) {
+        if (depths.get(e.to) <= depths.get(e.from)) {
+          depths.set(e.to, depths.get(e.from) + 1);
+          changed = true;
+        }
+      }
+    }
+  }
+  
+  const byDepth = new Map();
+  visibleNodes.forEach(n => {
+    const d = depths.get(n.cid);
+    if (!byDepth.has(d)) byDepth.set(d, []);
+    byDepth.get(d).push(n);
+  });
+  
+  const positions = new Map();
+  // Which way a node's subtree fans out: -1 = left of the platter, +1 = right.
+  // Labels follow the same direction so left-side nodes read leftward.
+  const nodeDir = new Map();
+  let minX = 0, minY = 0, maxX = 1000, maxY = 800;
+  const centerX = 800, centerY = 600; // Move center a bit to give room for horizontal expansion
+
+  const rootNode = visibleNodes.find(n => n.kind === "store") || visibleNodes.find(n => incoming.get(n.cid) === 0);
+  if (rootNode) { positions.set(rootNode.cid, { x: centerX, y: centerY }); nodeDir.set(rootNode.cid, 1); }
+
+  const sessions = byDepth.get(1) || [];
+  const sessionSubtrees = new Map(); // sessionCid -> Array of nodes in its horizontal breakdown
+  
+  // Assign each node at depth > 1 to a session
+  visibleNodes.forEach(n => {
+    const d = depths.get(n.cid);
+    if (d <= 1) return;
+    // Walk back to find session ancestor
+    let current = n.cid;
+    while (true) {
+        const parentEdge = visibleEdges.find(e => e.to === current);
+        if (!parentEdge) break;
+        if (depths.get(parentEdge.from) === 1) {
+            const sCid = parentEdge.from;
+            if (!sessionSubtrees.has(sCid)) sessionSubtrees.set(sCid, []);
+            sessionSubtrees.get(sCid).push(n);
+            break;
+        }
+        current = parentEdge.from;
+    }
+  });
+
+  // Position sessions in a circle around the root
+  sessions.forEach((s, idx) => {
+    const angle = (idx / sessions.length) * 2 * Math.PI;
+    const radius = 300;
+    const sx = centerX + radius * Math.cos(angle);
+    const sy = centerY + radius * Math.sin(angle);
+    positions.set(s.cid, { x: sx, y: sy });
+    // Label side: left half of the platter reads leftward, right half rightward.
+    const dir = Math.cos(angle) >= 0 ? 1 : -1;
+    nodeDir.set(s.cid, dir);
+
+    // The subtree breaks out along the SAME radial ray as the session, so it
+    // keeps fanning outward from the platter (instead of only left/right).
+    // `outward` is the unit ray center→session; `perp` spreads siblings apart
+    // across that ray.
+    const outX = Math.cos(angle), outY = Math.sin(angle);
+    const perpX = -outY, perpY = outX;
+    const DEPTH_STEP = 350;  // distance between successive depth rings
+    const SIBLING_GAP = 76;  // spread between siblings at the same depth
+
+    const subtree = sessionSubtrees.get(s.cid) || [];
+    const subtreeByDepth = new Map();
+    subtree.forEach(n => {
+        const d = depths.get(n.cid);
+        if (!subtreeByDepth.has(d)) subtreeByDepth.set(d, []);
+        subtreeByDepth.get(d).push(n);
+    });
+
+    for (const [d, arr] of subtreeByDepth.entries()) {
+        const ring = (d - 1) * DEPTH_STEP;  // how far out along the ray
+        arr.forEach((n, i) => {
+            const spread = (i - (arr.length - 1) / 2) * SIBLING_GAP;
+            const px = sx + outX * ring + perpX * spread;
+            const py = sy + outY * ring + perpY * spread;
+            positions.set(n.cid, { x: px, y: py });
+            nodeDir.set(n.cid, dir);
+            if (px > maxX) maxX = px; if (py > maxY) maxY = py;
+            if (px < minX) minX = px; if (py < minY) minY = py;
+        });
+    }
+  });
+  
+  // Capture the real extent of every placed node (root, sessions, subtrees) so
+  // Reset View can fit-and-center the whole graph. Pad right for the node labels,
+  // which extend ~250px past each dot.
+  let bx0 = Infinity, by0 = Infinity, bx1 = -Infinity, by1 = -Infinity;
+  positions.forEach(p => {
+    if (p.x < bx0) bx0 = p.x; if (p.y < by0) by0 = p.y;
+    if (p.x > bx1) bx1 = p.x; if (p.y > by1) by1 = p.y;
+  });
+  if (!isFinite(bx0)) { bx0 = 0; by0 = 0; bx1 = 1000; by1 = 650; }
+  // Pad for labels: they extend ~280px left (left-side nodes) or ~300px right.
+  state.graphBounds = { x: bx0 - 280, y: by0 - 40, w: (bx1 - bx0) + 580, h: (by1 - by0) + 80 };
+
+  // The SVG fills the viewport (no native scroll); all pan/zoom is done through
+  // the content group's transform so Reset View can place it deterministically.
+  const view = byId("graph-view");
+  const vw = view.clientWidth || 1000, vh = view.clientHeight || 650;
+  svg.style.width = "100%";
+  svg.style.height = "100%";
+  svg.setAttribute("viewBox", "0 0 " + vw + " " + vh);
+
+  // Nodes are small LED buttons
+  function radiusOf(item) { return item.kind === "store" ? 32 : 8; }
+  function geom(item, pos) {
+    const r = radiusOf(item);
+    const cx = pos.x, cy = pos.y;
+    // Edge connections return to center-based for radial lines,
+    // but subtrees might benefit from horizontal logic.
+    // For simplicity, we connect centers.
+    return { r, cx, cy, center: { x: cx, y: cy } };
+  }
+  const nodeById = new Map(visibleNodes.map(n => [n.cid, n]));
+  const allById = new Map(graph.nodes.map(n => [n.cid, n]));
+  // A session reflects its records: fully locked if every record is locked,
+  // partially locked if some are.
+  // Decision 0026: everything is fenced from egress by default, so we surface the
+  // *exceptions* — roots cleared for export. "cleared" = this record can leave the
+  // device; "partial" = a tier whose descendants are only partly cleared.
+  function egressStateOf(item) {
+    if (item.cleared) return "cleared";
+    // A calendar tier (or legacy session) reflects its records: fully cleared if
+    // every descendant record is cleared, partial if only some are.
+    if (["session", "year", "month", "day"].includes(item.kind)) {
+      const kids = graph.edges.filter(e => e.from === item.cid).map(e => allById.get(e.to)).filter(Boolean);
+      if (kids.length && kids.every(n => n.cleared || egressStateOf(n) === "cleared")) return "cleared";
+      if (kids.some(n => n.cleared || ["partial","cleared"].includes(egressStateOf(n)))) return "partial";
+    }
+    return "";
+  }
+
+  visibleEdges.forEach(edge => {
+    const fp = positions.get(edge.from), tp = positions.get(edge.to);
+    if (!fp || !tp) return;
+    const a = geom(nodeById.get(edge.from), fp).center;
+    const b = geom(nodeById.get(edge.to), tp).center;
+    container.append(svgNode("line", { x1: a.x, y1: a.y, x2: b.x, y2: b.y, class: "graph-edge" }));
+  });
+  visibleNodes.forEach(item => {
+    const pos = positions.get(item.cid);
+    const g = geom(item, pos);
+    const childEdges = graph.edges.filter(e => e.from === item.cid);
+    const unloadedExpandable = item.expandable && childEdges.length === 0;
+    const hasChildren = childEdges.length > 0 || unloadedExpandable;
+    const hasHiddenChildren = unloadedExpandable || childEdges.some(e => !state.visibleCids.has(e.to));
+
+    const egressState = egressStateOf(item);
+    const isStore = item.kind === "store";
+    const classes = ["graph-node", "led-node"];
+    if (item.cid === state.selected) classes.push("active");
+    if (egressState === "cleared") classes.push("cleared-root");
+    else if (egressState === "partial") classes.push("partial-cleared");
+    if (item.known_public) classes.push("known-public");
+    if (item.quarantined) classes.push("quarantined");
+    if (item.encrypted_private) classes.push("encrypted-private");
+    const group = svgNode("g", { class: classes.join(" "), tabindex: "0", role: "button" });
+
+    // Labels sit on the same side the node fans out toward, so left-side
+    // subtrees read leftward instead of overlapping the platter.
+    const leftSide = (nodeDir.get(item.cid) || 1) < 0;
+    const labelX = leftSide ? g.cx - 15 : g.cx + 15;
+    const labelAnchor = leftSide ? "end" : "start";
+
+    if (item.kind === "store") {
+      group.append(brainGlyph(g.cx, g.cy, 64, "var(--patina)"));
+    } else {
+      group.append(svgNode("circle", { cx: g.cx, cy: g.cy, r: g.r, class: "graph-dot led" }));
+    }
+
+    if (item.kind === "store") {
+      // CENTER: THE DATA PLATTER (brain icon replaces text)
+    } else if (item.kind === "session") {
+      const when = item.started_at ? new Date(item.started_at * 1000) : null;
+      const date = when
+        ? when.toLocaleDateString(undefined, { month: "short", day: "numeric" }) + " " +
+          when.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" })
+        : "undated";
+      group.append(
+        svgNode("text", { x: labelX, y: g.cy - 7, "text-anchor": labelAnchor, class: "graph-kind" }, date),
+        svgNode("text", { x: labelX, y: g.cy + 9, "text-anchor": labelAnchor, class: "graph-preview" }, (item.description || item.preview || "session").slice(0, 34)),
+        svgNode("text", { x: labelX, y: g.cy + 24, "text-anchor": labelAnchor, class: "graph-cid" }, (item.count || 0) + " records")
+      );
+    } else if (item.kind === "year" || item.kind === "month" || item.kind === "day") {
+      // Calendar tier ring: store → year → month → day → event.
+      const sub = item.kind === "day" ? ((item.count || 0) + " records") : "";
+      group.append(
+        svgNode("text", { x: labelX, y: g.cy - 5, "text-anchor": labelAnchor, class: "graph-kind" }, item.kind),
+        svgNode("text", { x: labelX, y: g.cy + 11, "text-anchor": labelAnchor, class: "graph-preview" }, item.preview || ""),
+        svgNode("text", { x: labelX, y: g.cy + 25, "text-anchor": labelAnchor, class: "graph-cid" }, sub)
+      );
+    } else {
+      group.append(
+        svgNode("text", { x: labelX, y: g.cy - 12, "text-anchor": labelAnchor, class: "graph-kind" }, item.kind),
+        svgNode("text", { x: labelX, y: g.cy + 4, "text-anchor": labelAnchor, class: "graph-preview" }, (item.preview || "").slice(0, 30)),
+        svgNode("text", { x: labelX, y: g.cy + 18, "text-anchor": labelAnchor, class: "graph-cid" }, shortCid(item.cid)),
+        svgNode("text", { x: labelX, y: g.cy + 30, "text-anchor": labelAnchor, class: "graph-cid" }, fmtWhen(item.created_at))
+      );
+    }
+
+    // Egress badge + expand/collapse affordance. Fenced is the default (no badge);
+    // we mark the *exceptions* — subgraphs cleared for export / already known-public.
+    // Leaf exceptions show the badge centered; parents keep +/− and get a corner badge.
+    const exposed = egressState === "cleared" || item.known_public;
+    const badgeColor = exposed ? "var(--vermilion)" : "var(--gold)";
+    const showBadge = !!egressState || !!item.known_public;
+    if (hasChildren) {
+      group.append(svgNode("text", { x: g.cx, y: g.cy + 5, "text-anchor": "middle", class: "graph-plus" }, hasHiddenChildren ? "+" : "−"));
+      if (showBadge) group.append(lockGlyph(g.cx + g.r - 1, g.cy - g.r + 1, badgeColor));
+    } else if (showBadge) {
+      group.append(lockGlyph(g.cx, g.cy, badgeColor));
+    }
+
+    const choose = () => safely(async () => {
+      await toggleNode(item.cid);
+      if (!isSynthetic(item.cid)) await loadRecord(item.cid, false);
+    });
+    group.addEventListener("click", choose);
+    group.addEventListener("keydown", event => { if (event.key === "Enter" || event.key === " ") choose(); });
+    container.append(group);
+  });
+  // First draw of a graph fits + centers it; later redraws (expand/collapse,
+  // lock refresh) keep the user's current pan/zoom.
+  if (!state.viewInitialized) { fitView(); state.viewInitialized = true; }
+  else applyZoom();
+}
+
+// Synapse current: when memory is recalled/accessed/used, glowing pulses flow along
+// the graph edges *inward to the brain* at the center — the user sees memory in use.
+// Appends to the same transformed group as the edges, so it tracks pan/zoom. Each
+// pulse travels from the endpoint farther from the brain to the one nearer it.
+function flashSynapses() {
+  const svg = byId("graph");
+  if (!svg) return;
+  const container = svg.querySelector(".graph-content");
+  if (!container) return;
+  const cx = 800, cy = 600; // graph center (the brain) — matches drawGraph
+  container.querySelectorAll(".graph-edge").forEach((edge, idx) => {
+    const x1 = +edge.getAttribute("x1"), y1 = +edge.getAttribute("y1");
+    const x2 = +edge.getAttribute("x2"), y2 = +edge.getAttribute("y2");
+    const inner1 = (x1 - cx) ** 2 + (y1 - cy) ** 2 <= (x2 - cx) ** 2 + (y2 - cy) ** 2;
+    const ox = inner1 ? x2 : x1, oy = inner1 ? y2 : y1; // outer (start)
+    const ix = inner1 ? x1 : x2, iy = inner1 ? y1 : y2; // inner (toward brain)
+    const dot = svgNode("circle", { cx: ox, cy: oy, r: 3, class: "synapse-dot" });
+    container.appendChild(dot);
+    const run = dot.animate(
+      [
+        { transform: "translate(0px,0px)", opacity: 0 },
+        { opacity: 1, offset: 0.25 },
+        { opacity: 1, offset: 0.8 },
+        { transform: "translate(" + (ix - ox) + "px," + (iy - oy) + "px)", opacity: 0 },
+      ],
+      { duration: 900, delay: (idx % 8) * 70, easing: "ease-in" }
+    );
+    run.onfinish = () => dot.remove();
+  });
+}
+async function loadRecord(cid, switchView = true) {
+  setSelected(cid);
+  flashSynapses(); // accessing a record = memory used → fire the current
+  logNode("access " + shortCid(cid), "dim");
+  safely(refreshPrivacy);
+  const record = await getJson("/api/record?cid=" + encodeURIComponent(cid));
+  const container = byId("record"); clear(container); container.className = "content";
+  const top = node("div", "record-top");
+  top.append(node("span", "cid", record.cid));
+  if (record.live !== false) top.append(node("span", "kind", record.kind));
+  container.append(top);
+  // Decision 0026: fenced from egress by default — never hidden locally. Show an
+  // egress badge (fenced is the norm), then the full content below.
+  if (record.locked) {
+    container.append(node("div", "review", "Fenced from egress (local-only). Clear for export to allow publish / share."));
+  }
+  if (record.live === false) {
+    container.append(node("h2", "", "Tombstone receipt"), node("pre", "", record.tombstone || "Tombstoned"));
+  } else {
+    const preview = mediaPreview(record);
+    if (preview) container.append(preview);
+    const rawWrap = node("details", "raw-record");
+    rawWrap.append(node("summary", "", "Raw record"), node("pre", "", JSON.stringify(record.record, null, 2)));
+    if (!preview) rawWrap.open = true;
+    container.append(rawWrap, node("h2", "", "Outbound links"));
+    if (!record.links.length) container.append(node("div", "empty", "No outbound links."));
+    record.links.forEach(link => {
+      const button = node("button", "link");
+      button.append(node("strong", "", link.relation), node("span", "cid", link.cid));
+      button.addEventListener("click", () => loadRecord(link.cid));
+      container.append(button);
+    });
+  }
+  if (switchView) showView("record");
+}
+
+// Build an inline preview for file_ref / blob records: images, video, audio,
+// and PDFs render in-page; text/code is fetched and shown; everything else
+// (Office docs, archives, unknown binaries) gets an open/download card.
+function mediaPreview(record) {
+  const body = (record.record && record.record.body) || record.record || {};
+  let mediaType = body.media_type || "";
+  let filename = body.path ? String(body.path).split("/").pop() : "";
+  let blobCid = "";
+  if (record.kind === "file_ref") {
+    const content = (record.links || []).find(link => link.relation === "content");
+    blobCid = content ? content.cid : "";
+  } else if (record.kind === "blob") {
+    blobCid = record.cid;
+  } else {
+    return null;
+  }
+  if (!blobCid) return null;
+  const url = "/api/blob?cid=" + encodeURIComponent(blobCid);
+  const wrap = node("div", "media-preview");
+  if (filename) wrap.append(node("div", "media-name", filename));
+
+  const isImage = mediaType.startsWith("image/");
+  const isVideo = mediaType.startsWith("video/");
+  const isAudio = mediaType.startsWith("audio/");
+  const isPdf = mediaType === "application/pdf";
+  const isText = mediaType.startsWith("text/") || mediaType === "application/json" || mediaType === "image/svg+xml";
+
+  if (isImage) {
+    const img = node("img", "media-img"); img.src = url; img.alt = filename || "image";
+    wrap.append(img);
+  } else if (isVideo) {
+    const video = node("video", "media-video"); video.src = url; video.controls = true; video.preload = "metadata";
+    wrap.append(video);
+  } else if (isAudio) {
+    const audio = node("audio", ""); audio.src = url; audio.controls = true; audio.style.width = "100%";
+    wrap.append(audio);
+  } else if (isPdf) {
+    const frame = node("iframe", "media-frame"); frame.src = url; frame.title = filename || "PDF";
+    wrap.append(frame);
+    wrap.append(fileActions(url, filename));
+  } else if (isText) {
+    const pre = node("pre", "media-text", "Loading…");
+    wrap.append(pre);
+    safely(async () => {
+      const response = await fetch(url);
+      const text = await response.text();
+      pre.textContent = text.length > 200000 ? text.slice(0, 200000) + "\n… (truncated)" : text;
+    });
+  } else {
+    // Office documents, archives, unknown binaries: no native in-page render.
+    wrap.append(node("div", "media-icon", "▣"));
+    wrap.append(node("div", "review", (mediaType || "binary") + " — open or download to view"));
+    wrap.append(fileActions(url, filename));
+  }
+  return wrap;
+}
+
+function fileActions(url, filename) {
+  const row = node("div", "media-actions");
+  const open = node("a", "pbtn", "Open in new tab"); open.href = url; open.target = "_blank"; open.rel = "noopener";
+  const dl = node("a", "pbtn", "Download"); dl.href = url + "&download=1"; if (filename) dl.setAttribute("download", filename);
+  row.append(open, dl);
+  return row;
+}
+// The node console: a live terminal of what the node is doing. Append a timestamped
+// line; keep the last ~200; auto-scroll only if the user is already at the bottom.
+function logNode(text, cls) {
+  const c = byId("node-console"); if (!c) return;
+  const atBottom = c.scrollTop + c.clientHeight >= c.scrollHeight - 6;
+  const ln = node("div", "ln");
+  ln.append(node("span", "t", new Date().toLocaleTimeString(undefined, { hour12: false }) + "  "));
+  ln.append(node("span", cls || "dim", text));
+  c.append(ln);
+  while (c.childElementCount > 200) c.firstChild.remove();
+  if (atBottom) c.scrollTop = c.scrollHeight;
+}
+async function loadStats() {
+  const query = state.rootMode === "fixed" && state.root ? "?cid=" + encodeURIComponent(state.root) : "";
+  const stats = await getJson("/api/stats" + query);
+  // Emit what changed in the store since the last poll — the node ingesting/binding.
+  if (state.lastStats) {
+    const db = stats.blocks - state.lastStats.blocks, dn = stats.names - state.lastStats.names, dt = stats.tombstones - state.lastStats.tombstones;
+    if (db > 0) logNode("ingested " + db + " block" + (db > 1 ? "s" : "") + "  ·  " + stats.blocks + " total", "ev");
+    if (dn > 0) logNode("bound " + dn + " name" + (dn > 1 ? "s" : ""), "ev");
+    if (dt > 0) logNode("tombstoned " + dt + " block" + (dt > 1 ? "s" : ""), "wn");
+  }
+  state.lastStats = stats;
+  const container = byId("stats"); clear(container);
+  [["Reachable", stats.reachable], ["Blocks", stats.blocks], ["Orphans", stats.orphans],
+   ["Tombstones", stats.tombstones], ["Names", stats.names], ["CAR size", formatBytes(stats.car_size)]].forEach(([label, value]) => {
+    const item = node("div", "stat" + (label === "Orphans" && value ? " warn" : ""));
+    item.append(node("b", "", value), node("span", "", label)); container.append(item);
+  });
+  // Phase B: publishing is opt-in. Remember readiness so the publish review can
+  // present "not set up yet" guidance instead of a raw error.
+  state.publishingReady = !!stats.publishing_ready;
+  const backends = byId("backends"); clear(backends);
+  stats.backends.forEach(info => {
+    const item = node("div", "backend" + (info.selected && !info.reachable ? " optin" : ""));
+    item.append(node("b", "", info.name + (info.selected ? " / selected" : "")), node("span", "", info.pin_status), node("span", "", info.requirements));
+    backends.append(item);
+  });
+  byId("car-note").textContent = stats.root ? shortCid(stats.root) + " / " + stats.car_blocks + " blocks / " + formatBytes(stats.car_size) : "No root selected";
+}
+async function exportCar() {
+  if (!state.root) { notice("Select a named root or graph node first."); return; }
+  const plan = await getJson("/api/egress-plan?cid=" + encodeURIComponent(state.root));
+  const warning = "Plaintext CAR export review\n\n" +
+    plan.block_count + " blocks / " + formatBytes(plan.byte_size) + "\n" +
+    "Backend posture: " + plan.network_posture + "\n" +
+    (plan.blocking_locks.length ? "BLOCKED: " + plan.blocking_locks.length + " lock(s)\n" : "") +
+    "This creates a portable plaintext copy outside the store. Continue?";
+  if (!window.confirm(warning)) return;
+  notice("Browser plaintext download is intentionally disabled. Use concierge-plugin export-car with explicit review.");
+}
+
+function passwordAction(label, action) {
+  const form = node("form", "pform");
+  const input = node("input"); input.type = "password"; input.placeholder = "store password"; input.autocomplete = "current-password";
+  const submit = node("button", "pbtn", label); submit.type = "submit";
+  form.append(input, submit);
+  form.addEventListener("submit", event => {
+    event.preventDefault();
+    safely(async () => {
+      try { await action(input.value); }
+      finally { input.value = ""; }
+    });
+  });
+  return form;
+}
+
+function passwordSetupAction(label, action) {
+  const form = node("form", "pform");
+  const password = node("input"); password.type = "password"; password.placeholder = "create store password"; password.autocomplete = "new-password";
+  const confirm = node("input"); confirm.type = "password"; confirm.placeholder = "confirm store password"; confirm.autocomplete = "new-password";
+  const submit = node("button", "pbtn", label); submit.type = "submit";
+  form.append(password, confirm, submit);
+  form.addEventListener("submit", event => {
+    event.preventDefault();
+    safely(async () => {
+      try {
+        if (!password.value || password.value !== confirm.value) throw new Error("Password confirmation does not match.");
+        await action(password.value, confirm.value);
+      } finally {
+        password.value = "";
+        confirm.value = "";
+      }
+    });
+  });
+  return form;
+}
+
+// Decision 0026: clearing a root for export is the explicit, password-gated act
+// that lifts the default fence. It confirms the reach (what would become
+// exportable) and takes the existing store password.
+function openClearReview(target, info) {
+  const panel = byId("privacy");
+  panel.querySelectorAll(".clear-review").forEach(item => item.remove());
+  const form = node("form", "pform clear-review");
+  form.append(node("div", "review", "Clearing reaches " + info.reachable_node_count + " node(s) and " + info.file_count + " file path(s) — these become exportable."));
+  const password = node("input"); password.type = "password"; password.placeholder = "store password"; password.autocomplete = "current-password";
+  form.append(password);
+  const submit = node("button", "pbtn danger", "Confirm clear for export"); submit.type = "submit";
+  form.append(submit);
+  form.addEventListener("submit", event => {
+    event.preventDefault();
+    safely(async () => {
+      try {
+        if (!password.value) throw new Error("Enter the store password to clear for export.");
+        const current = await getJson("/api/privacy?cid=" + encodeURIComponent(target));
+        if (current.reachable_node_count !== info.reachable_node_count || current.file_count !== info.file_count) {
+          notice("The subgraph changed. Review the updated clear counts.");
+          openClearReview(target, current);
+          return;
+        }
+        const warning = "Clear this subgraph for export?\n\n" + current.reachable_node_count + " reachable node(s)\n" + current.file_count + " file path(s)\n\nIt will no longer be fenced from publish / share / export.";
+        if (!window.confirm(warning)) return;
+        await postJson("/api/clear-for-egress", { target, password: password.value });
+        notice("Cleared " + shortCid(target) + " for export.");
+        await Promise.all([refreshPrivacy(), loadStats(), refreshGraphData()]);
+        if (state.selected) await loadRecord(state.selected);
+      } finally {
+        password.value = "";
+      }
+    });
+  });
+  panel.append(form);
+}
+
+// Privacy panel for a whole session. Decision 0026: every record is fenced from
+// egress by default, so this panel surfaces how many have been *cleared for
+// export* and lets the user clear the whole session at once (or re-fence it).
+async function renderSessionPrivacy(panel, sessionCid, seq) {
+  const sessionId = sessionCid.slice("session:".length);
+  const graph = state.fullGraph;
+  const sessionNode = graph && graph.nodes.find(n => n.cid === sessionCid);
+  const childCids = graph ? graph.edges.filter(e => e.from === sessionCid).map(e => e.to) : [];
+  const childNodes = childCids.map(c => graph.nodes.find(n => n.cid === c)).filter(Boolean);
+  const total = (sessionNode && sessionNode.count) || childCids.length;
+  const clearedCount = childNodes.filter(n => n.cleared || n.known_public).length;
+  // Bail before painting if the selection already moved on (see `setSelected`).
+  if (seq !== privacySeq) return;
+  clear(panel);
+
+  const badges = node("div", "");
+  if (total > 0 && clearedCount >= total) badges.append(node("span", "pstate public", "Session cleared for export"));
+  else if (clearedCount > 0) badges.append(node("span", "pstate inherited", clearedCount + " of " + total + " cleared"));
+  else badges.append(node("span", "pstate locked", "Fenced / local-only"));
+  panel.append(badges);
+  panel.append(node("div", "cid", (sessionNode && sessionNode.description) || ("Session " + sessionId.slice(0, 8))));
+  panel.append(node("div", "review", total + " record(s) in this session — fenced from egress by default. Content stays fully visible here."));
+
+  // Apply an egress action across every record in the session client-side, reusing
+  // the single-root endpoints so no bulk core path is needed. Returns a count.
+  const eachRecord = async (path, extra) => {
+    let count = 0;
+    for (const cid of childCids) {
+      try { await postJson(path, Object.assign({ target: cid }, extra)); count += 1; }
+      catch (_) { /* skip records with nothing to change */ }
+    }
+    return count;
+  };
+
+  const meta = await getJson("/api/meta");
+  if (seq !== privacySeq) return;
+
+  // Re-fence the whole session (the safe direction — no password).
+  if (clearedCount > 0) {
+    const refence = node("button", "pbtn", "Re-fence session (" + clearedCount + " cleared)");
+    refence.addEventListener("click", () => safely(async () => {
+      if (!window.confirm("Re-fence all cleared records in this session? They will be local-only again.")) return;
+      const n = await eachRecord("/api/refence", {});
+      childNodes.forEach(node => { node.cleared = false; });
+      notice("Re-fenced " + n + " record(s).");
+      await Promise.all([refreshGraphData(), loadStats(), refreshPrivacy()]);
+      if (state.selected) await loadRecord(state.selected);
+    }));
+    panel.append(refence);
+  }
+
+  // Clear the whole session for export (password-gated).
+  if (clearedCount < total) {
+    const remaining = total - clearedCount;
+    if (!meta.password_set) {
+      panel.append(node("div", "review", "Create and confirm the store password before clearing for export."));
+      panel.append(passwordSetupAction("Set password & clear session", async (password, confirmPassword) => {
+        await postJson("/api/set-password", { password, confirm_password: confirmPassword });
+        const n = await eachRecord("/api/clear-for-egress", { password });
+        childNodes.forEach(node => { node.cleared = true; });
+        notice("Cleared " + n + " record(s) for export.");
+        await Promise.all([refreshGraphData(), loadStats(), refreshPrivacy()]);
+      }));
+    } else {
+      panel.append(passwordAction("Clear session for export (" + remaining + " record" + (remaining === 1 ? "" : "s") + ")", async password => {
+        if (!window.confirm("Clear all " + remaining + " fenced record(s) in this session for export?")) return;
+        const n = await eachRecord("/api/clear-for-egress", { password });
+        childNodes.forEach(node => { node.cleared = true; });
+        notice("Cleared " + n + " record(s) for export.");
+        await Promise.all([refreshGraphData(), loadStats(), refreshPrivacy()]);
+        if (state.selected) await loadRecord(state.selected);
+      }));
+    }
+  }
+}
+
+// The privacy panel runs the full egress/sensitivity scan, which is cheap for a
+// small record but can take many seconds on a huge subgraph. It is secondary
+// info, so it must never hold the blocking overlay: callers can `await
+// refreshPrivacy()` but it returns immediately and does the heavy work in the
+// background (`quietly`). Overlapping requests coalesce into a single re-run so
+// the 5s poll and rapid selections can't stack expensive scans.
+let privacyRunning = false;
+let privacyRerun = false;
+function refreshPrivacy() {
+  if (privacyRunning) { privacyRerun = true; return Promise.resolve(); }
+  privacyRunning = true;
+  quietly(async () => {
+    try {
+      do { privacyRerun = false; await refreshPrivacyBody(); } while (privacyRerun);
+    } finally { privacyRunning = false; }
+  });
+  return Promise.resolve();
+}
+async function refreshPrivacyBody() {
+  const target = state.selected || state.root;
+  const seq = privacySeq;
+  const panel = byId("privacy");
+  if (!target) { clear(panel); panel.append(node("div", "empty", "Select a root to see its privacy state.")); return; }
+  if (target.startsWith("session:")) { await renderSessionPrivacy(panel, target, seq); return; }
+  if (isSynthetic(target)) { clear(panel); panel.append(node("div", "empty", "Select a session or record node to see its privacy state.")); return; }
+  let info;
+  try { info = await getJson("/api/privacy?cid=" + encodeURIComponent(target)); }
+  catch (error) { if (seq !== privacySeq) return; clear(panel); panel.append(node("div", "pblockers", error.message)); return; }
+  // A newer selection superseded this one while the scan was in flight — drop this
+  // render so the panel never shows a different node than the one now highlighted.
+  if (seq !== privacySeq) return;
+  clear(panel);
+
+  // Decision 0026: fenced from egress by DEFAULT. The exception worth surfacing is
+  // a root that has been explicitly cleared for export (it can leave the device).
+  const badges = node("div", "");
+  if (info.known_public) badges.append(node("span", "pstate public", "Known public"));
+  else if (info.cleared) badges.append(node("span", "pstate public", "Cleared for export"));
+  else badges.append(node("span", "pstate locked", "Fenced / local-only"));
+  if (info.encrypted_private_copy) badges.append(node("span", "pstate encrypted", "Encrypted-private copy"));
+  panel.append(badges, node("div", "cid", shortCid(info.root)));
+  if (info.encrypted_private_copy) panel.append(node("div", "review", "private: " + shortCid(info.encrypted_private_copy)));
+  panel.append(node("div", "review", info.reachable_node_count + " reachable node(s) / " + info.file_count + " file path(s)"));
+
+  if (info.sensitivity_warnings && info.sensitivity_warnings.length) {
+    panel.append(node("div", "pblockers", "⚠ " + info.sensitivity_warnings.length + " sensitive finding(s)"));
+  }
+
+  // Clear for export: the explicit, password-gated act that lifts the default
+  // fence so this subgraph can be published / shared / exported.
+  if (!info.cleared && !info.known_public) {
+    if (info.password_set) {
+      const clearBtn = node("button", "pbtn danger", "Clear for export");
+      clearBtn.addEventListener("click", () => openClearReview(target, info));
+      panel.append(clearBtn);
+    } else {
+      panel.append(node("div", "review", "Create and confirm the store password before clearing anything for export."));
+      panel.append(passwordSetupAction("Set password & clear for export", async (password, confirmPassword) => {
+        await postJson("/api/set-password", { password, confirm_password: confirmPassword });
+        await postJson("/api/clear-for-egress", { target, password });
+        notice("Cleared " + shortCid(target) + " for export.");
+        await Promise.all([refreshPrivacy(), loadStats(), refreshGraphData()]);
+        if (state.selected) await loadRecord(state.selected);
+      }));
+    }
+  }
+
+  if (info.blocked && info.blocking_locks.length) {
+    const blockers = node("div", "pblockers");
+    blockers.append(node("div", "", info.blocked_node_count + " fenced node(s), " + info.blocked_file_count + " fenced file path(s) block this export:"));
+    info.blocking_locks.forEach(hit => {
+      const label = "focus " + shortCid(hit.lock_root) + " / " + hit.intersecting_count + " node(s) / " + hit.intersecting_file_paths.length + " file path(s)" + (hit.lock_label ? " (" + hit.lock_label + ")" : "");
+      const focus = node("button", "", label);
+      focus.addEventListener("click", () => safely(async () => { await selectRoot(hit.lock_root); await loadRecord(hit.lock_root); }));
+      blockers.append(focus);
+    });
+    panel.append(blockers);
+  }
+
+  // Re-fence: restore the default fence on a previously-cleared root. This makes
+  // the data *more* private, so it needs no password.
+  if (info.cleared) {
+    panel.append(node("div", "review", "Re-fencing restores local-only protection and blocks export again."));
+    const refence = node("button", "pbtn", "Re-fence (make private)");
+    refence.addEventListener("click", () => safely(async () => {
+      if (!window.confirm("Re-fence this subgraph? It will be local-only again and can no longer be exported.")) return;
+      await postJson("/api/refence", { target });
+      notice("Re-fenced — subgraph is local-only again.");
+      await Promise.all([refreshPrivacy(), loadStats(), refreshGraphData()]);
+      if (state.selected) await loadRecord(state.selected);
+    }));
+    panel.append(refence);
+  }
+
+  if (!info.password_set) {
+    panel.append(passwordSetupAction("Set store password", async (password, confirmPassword) => {
+      await postJson("/api/set-password", { password, confirm_password: confirmPassword });
+      notice("Store password set.");
+      await refreshPrivacy();
+    }));
+  } else {
+    const review = node("button", "pbtn", "Review & publish publicly");
+    review.addEventListener("click", () => safely(() => openPublishReview(target)));
+    panel.append(review);
+    const convert = node("button", "pbtn", info.encrypted_private_copy ? "Re-encrypt and share private" : "Convert to encrypted private and share");
+    convert.addEventListener("click", () => safely(() => openPrivateReview(target)));
+    panel.append(convert);
+  }
+}
+
+function openPrivateReview(target) {
+  const panel = byId("privacy");
+  panel.querySelectorAll(".private-review").forEach(item => item.remove());
+  const form = node("form", "pform private-review");
+  const namespace = node("input"); namespace.type = "text"; namespace.placeholder = "destination namespace, e.g. team:wetlands";
+  const recipients = node("input"); recipients.type = "text"; recipients.placeholder = "recipient AgentIDs, comma-separated";
+  const review = node("button", "pbtn", "Review private conversion and share"); review.type = "submit";
+  form.append(
+    node("div", "review", "The source plaintext stays local-only. Only new ciphertext CIDs and a read-only bearer capability may be shared."),
+    namespace,
+    recipients,
+    review
+  );
+  form.addEventListener("submit", event => {
+    event.preventDefault();
+    safely(async () => {
+      const recipientList = recipients.value.split(",").map(value => value.trim()).filter(Boolean);
+      const plan = await getJson("/api/egress-plan?op=private&cid=" + encodeURIComponent(target) +
+        "&namespace=" + encodeURIComponent(namespace.value.trim()) +
+        "&recipients=" + encodeURIComponent(recipientList.join(",")));
+      clear(form);
+      form.append(node("div", "review", "Source review: " + plan.source.block_count + " plaintext block(s) / " + formatBytes(plan.source.byte_size)));
+      form.append(node("div", "review", "Exact source manifest digest: " + plan.source.manifest_digest));
+      form.append(node("div", "review", "Destination namespace: " + plan.destination_namespace));
+      appendReviewList(form, "Exact source CID manifest", plan.source.manifest);
+      appendReviewList(form, "Reviewed recipients", plan.recipients);
+      if (plan.source.known_public_receipts) {
+        form.append(node("div", "pblockers", "KNOWN PUBLIC: encryption cannot revoke " + plan.source.known_public_receipts + " prior public publication receipt(s)."));
+      }
+      const password = node("input"); password.type = "password"; password.placeholder = "store password"; password.autocomplete = "current-password";
+      const ack = node("input"); ack.type = "checkbox";
+      const ackLabel = node("label", ""); ackLabel.append(ack, node("span", "", "I reviewed the exact source manifest, destination namespace, and recipients."));
+      const submit = node("button", "pbtn", "Authorize one conversion and private share"); submit.type = "button";
+      submit.addEventListener("click", () => safely(async () => {
+        try {
+          if (!ack.checked) throw new Error("Acknowledge the private-share review first.");
+          const result = await postJson("/api/convert-private", {
+            review_token: plan.review_token,
+            password: password.value,
+            acknowledge_private: true,
+          });
+          notice("Private ciphertext " + shortCid(result.ciphertext_root) + " created; plaintext remains locked.");
+          const capability = node("details", "");
+          capability.append(
+            node("summary", "", "Read-only bearer capability for reviewed recipients"),
+            node("div", "pblockers", "Treat this capability as a secret. Anyone holding it can decrypt the authorized subgraph."),
+            node("pre", "", JSON.stringify(result.capability, null, 2))
+          );
+          form.replaceChildren(capability);
+          await Promise.all([refreshPrivacy(), loadStats(), refreshGraphData()]);
+        } finally {
+          password.value = "";
+        }
+      }));
+      form.append(password, ackLabel, submit);
+    });
+  });
+  panel.append(form);
+}
+
+async function openPublishReview(target) {
+  const plan = await getJson("/api/egress-plan?op=publish&cid=" + encodeURIComponent(target));
+  const panel = byId("privacy");
+  panel.querySelectorAll(".publish-review").forEach(item => item.remove());
+  const form = node("form", "pform publish-review");
+  // Phase B: publishing is opt-in. If the selected backend isn't running, say so
+  // up front as setup guidance — not an error. The review/gate still works; the
+  // publish itself will report the unreachable node if they proceed.
+  if (!state.publishingReady) {
+    form.append(node("div", "review", "Publishing isn't set up on this machine — it's optional. Start a local IPFS node (Kubo) at " + plan.backend_target + " to enable. Everything else works offline."));
+  }
+  form.append(node("div", "review", "Review: " + plan.block_count + " blocks / " + formatBytes(plan.byte_size)));
+  form.append(node("div", "review", "Backend: " + plan.backend + " / " + plan.network_posture));
+  form.append(node("div", "review", "Exact manifest digest: " + plan.manifest_digest));
+  appendReviewList(form, "Exact CID manifest", plan.manifest);
+  appendReviewList(form, "File paths", plan.file_paths);
+  appendReviewList(form, "Media types", plan.media_types);
+  if (plan.blocking_locks.length) {
+    const blockedNodes = new Set(plan.blocking_locks.flatMap(hit => hit.intersecting_cids)).size;
+    const blockedFiles = new Set(plan.blocking_locks.flatMap(hit => hit.intersecting_file_paths)).size;
+    form.append(node("div", "pblockers", plan.blocking_locks.length + " lock root(s) intersect " + blockedNodes + " node(s) and " + blockedFiles + " file path(s). Password authorization will be one-shot and consumed immediately."));
+  }
+  if (plan.sensitivity_warnings.length) form.append(node("div", "pblockers", "⚠ sensitive: " + plan.sensitivity_warnings.join("; ")));
+  if (plan.known_public_receipts) form.append(node("div", "pblockers", "KNOWN PUBLIC: " + plan.known_public_receipts + " prior publication receipt(s). Locking cannot make this private again."));
+  const password = node("input"); password.type = "password"; password.placeholder = "store password"; password.autocomplete = "current-password";
+  const ack = node("input"); ack.type = "checkbox";
+  const ackLabel = node("label", ""); ackLabel.append(ack, node("span", "", "I understand this is an irreversible public publication."));
+  const submit = node("button", "pbtn danger", "Authorize one public publish"); submit.type = "submit";
+  form.append(password, ackLabel, submit);
+  form.addEventListener("submit", event => {
+    event.preventDefault();
+    safely(async () => {
+      try {
+        if (!ack.checked) throw new Error("Acknowledge irreversibility first.");
+        const receipt = await postJson("/api/authorize-publish", { review_token: plan.review_token, password: password.value, acknowledge_irreversible: true });
+        notice("Published " + shortCid(receipt.root) + " via " + receipt.backend + "; one-shot authorization consumed.");
+        await Promise.all([refreshPrivacy(), loadStats(), refreshGraphData()]);
+      } finally {
+        password.value = "";
+      }
+    });
+  });
+  panel.append(form);
+}
+function appendReviewList(form, label, values) {
+  const details = node("details", "");
+  const summary = node("summary", "", label + " (" + values.length + ")");
+  details.append(summary);
+  values.forEach(value => details.append(node("div", "", value)));
+  form.append(details);
+}
+async function loadRooms() {
+  const rooms = await getJson("/api/rooms"); const list = byId("room-list"); clear(list);
+  rooms.forEach(room => { const option = node("option"); option.value = room; list.append(option); });
+}
+async function loadThread() {
+  const room = byId("room").value.trim(); if (!room) return;
+  state.room = room;
+  const thread = await getJson("/api/thread?room=" + encodeURIComponent(room));
+  const container = byId("thread"); clear(container);
+  // Moderator badge (Phase 8 §3/§4): the Guardian watches every room — show its
+  // policy + flag synthesis candidates so the host can summarize long threads.
+  const mod = thread.moderation;
+  if (mod) {
+    const badge = node("div", "moderator-badge");
+    const sendLabel = mod.ai_send === "off" ? "Human-only" : (mod.ai_send === "on_mention" ? "AI on mention" : "AI allowed");
+    badge.append(node("span", "mod-guardian", "⊙ Guardian active"));
+    badge.append(node("span", "mod-policy", sendLabel));
+    if (mod.muted_count > 0) badge.append(node("span", "mod-muted", mod.muted_count + " muted"));
+    badge.append(node("span", "mod-count", mod.message_count + " msgs"));
+    if (mod.synthesis_candidate) badge.append(node("span", "mod-synth", "synthesis candidate (≥" + mod.synthesis_threshold + ")"));
+    container.append(badge);
+  }
+  const visible = thread.messages.filter(message => !state.muted.has(message.author) && !(state.humanOnly && state.roles.get(message.author) === "ai"));
+  if (!visible.length) { container.append(node("div", "empty", "No visible messages in this room.")); return; }
+  visible.forEach(message => {
+    const item = node("article", "message"); const head = node("div", "message-head");
+    const label = message.nickname || shortCid(message.author);
+    head.append(node("span", "", "[" + message.clock + "] " + label + " / " + (state.roles.get(message.author) || "unclassified")));
+    const role = node("button", "", state.roles.get(message.author) === "ai" ? "mark human" : "mark AI");
+    role.addEventListener("click", () => { state.roles.set(message.author, state.roles.get(message.author) === "ai" ? "human" : "ai"); loadThread(); });
+    const mute = node("button", "", "mute participant");
+    mute.addEventListener("click", () => { state.muted.add(message.author); loadThread(); });
+    const reveal = node("button", "", "reveal CID");
+    reveal.addEventListener("click", () => { reveal.textContent = message.cid; });
+    head.append(role, mute, reveal);
+    // Phase I — trust thermometer + structural importance + follow lens (all local).
+    const tier = node("span", "trust-tier trust-" + (message.trust_tier || "unverified"), message.trust_label || "Unverified");
+    tier.title = "Authentication tier this message crossed (honest auth-strength, not reputation)";
+    head.append(tier);
+    if (message.followed) head.append(Object.assign(node("span", "trust-follow", "following"), { title: "Authored by someone you follow" }));
+    if (message.importance > 0) head.append(Object.assign(node("span", "trust-importance", "ties " + message.importance), { title: "How many decisions/files this message ties together (structural importance, not popularity)" }));
+    item.append(head, node("p", "", message.payload)); container.append(item);
+  });
+}
+function commandHelp(command) {
+  const commands = {
+    Ingest: "Write operation: use concierge-plugin ingest <file.jsonl> in a terminal.",
+    Put: "Write operation: use the mem put surface in a terminal.",
+    Bind: "Write operation: use mem bind <name> <cid> in a terminal.",
+    Resolve: "Read operation: use concierge-plugin recall <name>, or select Names here.",
+    Share: "Publish operation: use concierge-plugin share <root> in a terminal.",
+    GC: "Destructive operation: use mem gc after reviewing roots.",
+    Backends: "Backend status is shown in the right stats rail.",
+    Init: "Write operation: use concierge-plugin init in the target store directory."
+  };
+  notice(commands[command] || command);
+}
+
+// Ingest from a path on disk: a file, a folder, or a whole repo. The loopback
+// server reads the path directly, so large media and repos need no upload.
+function openIngestModal() {
+  const existing = byId("ingest-overlay");
+  if (existing) existing.remove();
+  const overlay = node("div", "modal-overlay"); overlay.id = "ingest-overlay";
+  const form = node("form", "pform modal-card");
+  form.append(node("div", "modal-title", "Ingest from disk"));
+  const input = node("input", "input");
+  input.type = "text"; input.placeholder = "/absolute/path/to/file-or-folder";
+  input.spellcheck = false;
+  form.append(input);
+  form.append(node("div", "review", "Files, folders and repos ingest recursively, with no size or type limit. .git / node_modules / target are skipped. A single .jsonl is read as a harness session."));
+  const actions = node("div", "modal-actions");
+  const go = node("button", "pbtn", "Ingest"); go.type = "submit";
+  const cancel = node("button", "pbtn", "Cancel"); cancel.type = "button";
+  cancel.addEventListener("click", () => overlay.remove());
+  actions.append(go, cancel); form.append(actions);
+  overlay.append(form);
+  overlay.addEventListener("click", event => { if (event.target === overlay) overlay.remove(); });
+  form.addEventListener("submit", event => {
+    event.preventDefault();
+    const path = input.value.trim();
+    if (!path) return;
+    go.disabled = true; go.textContent = "Ingesting…";
+    safely(async () => {
+      try {
+        const report = await postJson("/api/ingest-path", { path });
+        let message;
+        if (report.kind === "session") {
+          message = "Ingested session: " + report.events + " events, " + report.nodes_written + " nodes";
+        } else if (report.kind === "folder") {
+          message = "Ingested folder: " + report.files + " files, " + formatBytes(report.bytes) + (report.ignored ? ", " + report.ignored + " skipped" : "");
+        } else {
+          message = "Ingested file (" + formatBytes(report.bytes || 0) + ")";
+        }
+        notice(message);
+        overlay.remove();
+        // Rebuild the whole-store forest so the new import/session appears.
+        state.fullGraph = null; state.rootMode = "default"; state.root = ""; state.selected = "";
+        state.visibleCids.clear();
+        await Promise.all([loadGraph(), loadStats(), loadNames(), loadCheckpoints()]);
+      } finally {
+        go.disabled = false; go.textContent = "Ingest";
+      }
+    });
+  });
+  document.body.append(overlay);
+  input.focus();
+}
+
+byId("reset-view").addEventListener("click", () => fitView());
+
+// Scale + translate the graph so its full extent is centered in the viewport.
+function fitView() {
+  const view = byId("graph-view");
+  if (!view) return;
+  const vw = view.clientWidth || 1000, vh = view.clientHeight || 650;
+  const svg = byId("graph");
+  if (svg) svg.setAttribute("viewBox", "0 0 " + vw + " " + vh); // keep units = px after a resize
+  const b = state.graphBounds;
+  if (!b || b.w <= 0 || b.h <= 0) { state.zoom = 1.0; state.pan = { x: 0, y: 0 }; applyZoom(); return; }
+  const margin = 48;
+  const zoom = Math.max(0.1, Math.min(2, Math.min((vw - margin) / b.w, (vh - margin) / b.h)));
+  const cx = b.x + b.w / 2, cy = b.y + b.h / 2;
+  state.zoom = zoom;
+  state.pan = { x: vw / 2 - zoom * cx, y: vh / 2 - zoom * cy };
+  applyZoom();
+}
+
+// Phase N · Phase H — the Private Network Map: identity hierarchy, networks, this
+// device's scopes + their validity, epoch health, and who is revoked.
+async function loadNetwork() {
+  let data;
+  try { data = await getJson("/api/network"); } catch (e) { return; }
+  const idBar = byId("network-identity"); clear(idBar);
+  idBar.append(node("span", "", "UserID (root): "), Object.assign(node("b", "", data.user_id ? shortCid(data.user_id) : "—"), { title: data.user_id || "" }));
+  idBar.append(node("span", "", "This device: "), Object.assign(node("b", "", data.device_id ? shortCid(data.device_id) : "—"), { title: data.device_id || "" }));
+
+  const map = byId("network-map"); clear(map);
+  if (!data.networks.length) { map.append(node("div", "empty", "No private network yet. Create one above, then pair another computer from the CLI (network pair).")); return; }
+  data.networks.forEach(net => {
+    const card = node("div", "net-card");
+    const head = node("h3", "", net.name);
+    if (net.is_root) head.append(node("span", "net-pill root", "root"));
+    head.append(node("span", "net-pill " + (net.descriptor_valid ? "ok" : "stale"), net.descriptor_valid ? "verified" : "INVALID"));
+    head.append(node("span", "net-pill", "epoch " + net.membership_epoch));
+    card.append(head);
+    card.append(Object.assign(node("div", "net-meta", net.network_id), { title: net.network_id }));
+
+    if (net.device_membership) {
+      const m = node("div", "net-cap");
+      m.append(node("span", "net-pill " + (net.device_membership.valid ? "ok" : "stale"), net.device_membership.valid ? "member" : "membership stale"));
+      m.append(node("span", "", "this device can: " + (net.device_membership.capabilities || []).join(", ")));
+      card.append(m);
+    }
+    (net.capabilities || []).forEach(cap => {
+      const row = node("div", "net-cap");
+      row.append(node("span", "net-pill " + (cap.valid ? "ok" : "stale"), cap.valid ? "valid" : "stale"));
+      const code = node("code", "", cap.namespace); row.append(code);
+      row.append(node("span", "", "→ " + cap.operations.join(", ")));
+      card.append(row);
+    });
+    if ((net.revoked || []).length) {
+      card.append(node("div", "net-revoked", "Revoked: " + net.revoked.map(shortCid).join(", ")));
+    }
+    // Revoke control (root only).
+    if (net.is_root) {
+      const row = node("div", "net-revoke-row");
+      const input = node("input", "input"); input.placeholder = "subject id to revoke"; input.style.fontSize = "9px";
+      const btn = node("button", "tool-button", "Revoke");
+      btn.addEventListener("click", () => safely(async () => {
+        const subject = input.value.trim(); if (!subject) return;
+        await postJson("/api/network/revoke", { subject });
+        await loadNetwork();
+        notice("Revoked. Epoch advanced — re-grant remaining devices.");
+      }));
+      row.append(input, btn); card.append(row);
+    }
+    map.append(card);
+  });
+}
+byId("network-create").addEventListener("click", () => safely(async () => {
+  const name = byId("network-name").value.trim(); if (!name) return;
+  await postJson("/api/network/create", { name });
+  byId("network-name").value = "";
+  await loadNetwork();
+}));
+
+document.querySelectorAll("[data-view]").forEach(button => button.addEventListener("click", () => {
+  // Clicking the Graph tab while focused on one root returns to the whole-store forest.
+  if (button.dataset.view === "graph" && state.rootMode === "fixed") {
+    state.rootMode = "default"; state.root = ""; state.selected = "";
+    state.fullGraph = null; state.visibleCids.clear();
+    safely(async () => { await Promise.all([loadGraph(), loadStats(), refreshPrivacy()]); });
+  }
+  showView(button.dataset.view);
+  if (button.dataset.view === "search") byId("search-q").focus();
+  if (button.dataset.view === "network") safely(loadNetwork);
+  if (button.dataset.view === "canvas") safely(cvLoadSites);
+}));
+byId("search-form").addEventListener("submit", event => { event.preventDefault(); safely(runSearch); });
+document.querySelectorAll("[data-command]").forEach(button => button.addEventListener("click", () => {
+  if (button.dataset.command === "Ingest") { openIngestModal(); return; }
+  commandHelp(button.dataset.command);
+}));
+byId("export").addEventListener("click", exportCar); byId("rail-export").addEventListener("click", exportCar);
+byId("view-room").addEventListener("click", () => safely(loadThread));
+byId("human-only").addEventListener("click", () => {
+  state.humanOnly = !state.humanOnly; byId("human-only").classList.toggle("on", state.humanOnly); safely(loadThread);
+});
+byId("room").addEventListener("keydown", event => { if (event.key === "Enter") safely(loadThread); });
+
+// Direct private chat bar (bottom of the center panel). A 64-hex "to" is a
+// username (a peer DM, delivered concierge-to-concierge); anything else is a room.
+async function sendChat() {
+  const to = byId("chat-to").value.trim();
+  const text = byId("chat-msg").value.trim();
+  if (!to) { byId("chat-to").focus(); notice("Enter a recipient — a username or a room."); return; }
+  if (!text) { byId("chat-msg").focus(); return; }
+  const res = await postJson("/api/message", { room: to, body: text });
+  byId("chat-msg").value = "";
+  const room = res.room || to;        // a direct message resolves to a dm-room id
+  byId("room").value = room;          // keep the Messenger view in sync
+  state.room = room;
+  const how = res.direct ? "direct message" : "message";
+  logNode(how + " → " + (res.delivered ? "delivered" : "queued (peer offline)"), res.delivered ? "ok" : "warn");
+  await loadMe();                     // the node just came online on first send
+  await loadRooms();
+  await loadThread();
+}
+byId("chat-bar").addEventListener("submit", event => { event.preventDefault(); safely(sendChat); });
+
+// ── Studio: live website builder + publish + educational live-share ──────────
+// Open a site folder; it renders live (multi-file) at /canvas-preview/<token>/ and
+// hot-reloads as files change (you or your AI write them). Publish the folder to a
+// stable IPNS site. "Share live" broadcasts the page to viewers for example displays.
+const cv = { mode: "write", token: null, folder: null, mtime: 0, poll: null, viewing: false };
+function cvStatus(t) { byId("cv-status").textContent = t; }
+function randId() { return Math.random().toString(36).slice(2, 10); }
+function cvBasename(p) { return (p || "").replace(/\/+$/, "").split("/").pop() || ""; }
+function cvWritePreview() { byId("cv-preview").removeAttribute("src"); byId("cv-preview").srcdoc = byId("cv-src").value; }
+let cvSrcDebounce;
+byId("cv-src").addEventListener("input", () => {
+  if (cv.mode !== "write") return;
+  clearTimeout(cvSrcDebounce);
+  cvSrcDebounce = setTimeout(() => { cvWritePreview(); if (cvRtc.role === "host") cvBroadcast(); }, 250);
+});
+function cvSetMode(m) {
+  cv.mode = m; cv.viewing = false;
+  const write = m === "write";
+  byId("cv-mode-write").classList.toggle("on", write);
+  byId("cv-mode-folder").classList.toggle("on", !write);
+  byId("cv-src").style.display = write ? "" : "none";
+  byId("cv-files").style.display = write ? "none" : "";
+  document.querySelectorAll(".cv-folder-only").forEach(el => el.style.display = write ? "none" : "");
+  if (write) { if (cv.poll) clearInterval(cv.poll); cvWritePreview(); cvStatus("writing"); }
+  else { if (cv.token) cvShowLive(); cvStatus(cv.token ? "live" : "no folder open"); }
+}
+byId("cv-mode-write").addEventListener("click", () => cvSetMode("write"));
+byId("cv-mode-folder").addEventListener("click", () => cvSetMode("folder"));
+
+function cvShowLive() {
+  cv.viewing = false;
+  if (cv.token) byId("cv-preview").removeAttribute("srcdoc"), byId("cv-preview").src = "/canvas-preview/" + cv.token + "/?t=" + cv.mtime;
+}
+function cvRenderFiles(files, hasIndex) {
+  const box = byId("cv-files"); clear(box);
+  if (!files || !files.length) { box.append(node("div", "empty", "Folder is empty — add an index.html (you or your AI).")); return; }
+  if (!hasIndex) box.append(node("div", "empty", "⚠ no index.html — the preview needs one."));
+  files.forEach(f => box.append(node("div", "cv-file" + (f === "index.html" ? " index" : ""), f)));
+}
+async function cvOpen() {
+  const folder = byId("cv-folder").value.trim();
+  if (!folder) { notice("Enter the folder where your site's files are."); return; }
+  const res = await postJson("/api/canvas/open", { folder });
+  cv.token = res.token; cv.folder = folder; cv.mtime = res.mtime;
+  if (!byId("cv-name").value.trim()) byId("cv-name").value = cvBasename(folder).toLowerCase().replace(/[^a-z0-9._-]+/g, "-");
+  cvRenderFiles(res.files, res.has_index);
+  cvShowLive();
+  cvStatus(res.has_index ? (res.files.length + " file(s) · live") : "no index.html yet — add one to render");
+  startCvPoll();
+  logNode("studio · opened " + folder, "ok");
+}
+async function cvPoll() {
+  if (!cv.token || cv.viewing) return;
+  let res; try { res = await getJson("/api/canvas/mtime?token=" + cv.token); } catch (e) { return; }
+  if (res.mtime && res.mtime !== cv.mtime) {
+    cv.mtime = res.mtime;
+    cvShowLive();                                   // hot reload
+    try { const f = await getJson("/api/canvas/files?token=" + cv.token); cvRenderFiles(f.files, f.has_index); } catch (e) {}
+    if (cvRtc.role === "host") cvBroadcast();        // push to educational viewers
+  }
+}
+function startCvPoll() { if (cv.poll) clearInterval(cv.poll); cv.poll = setInterval(() => quietly(cvPoll), 1000); }
+async function cvPublish() {
+  const name = byId("cv-name").value.trim();
+  const password = byId("cv-password").value;
+  if (!name) { byId("cv-name").focus(); notice("Give your site a name."); return; }
+  if (!password) { byId("cv-password").focus(); notice("Your store password is required — publishing is a password-gated egress."); return; }
+  let folder;
+  if (cv.mode === "write") {
+    const html = byId("cv-src").value;
+    if (!html.trim()) { notice("Write some HTML first."); return; }
+    const snap = await postJson("/api/canvas/snapshot", { session: name, html });   // stage HTML to a folder
+    folder = snap.folder;
+  } else {
+    if (!cv.folder) { notice("Open a folder first."); return; }
+    folder = cv.folder;
+  }
+  notice("Publishing to IPFS… first publish can take ~30s to propagate.");
+  logNode("studio · publishing " + name, "ok");
+  const res = await postJson("/api/site/publish", { name, folder, kind: "site", password });
+  byId("cv-password").value = "";
+  logNode("studio · live at " + res.ipns, "ok");
+  notice("Published — live at " + res.url);
+  await cvLoadSites();
+}
+async function cvLoadSites() {
+  let data; try { data = await getJson("/api/sites"); } catch (e) { return; }
+  const sel = byId("cv-view"); const cur = sel.value;
+  clear(sel); sel.append(node("option", "", "— view a published site —"));
+  (data.sites || []).forEach(s => {
+    const o = node("option", "", s.name + "  ·  " + (s.ipns || "").slice(0, 12) + "…"); o.value = s.ipns; sel.append(o);
+  });
+  sel.value = cur;
+}
+byId("cv-view").addEventListener("change", () => {
+  const ipns = byId("cv-view").value; if (!ipns) return;
+  cv.viewing = true;
+  byId("cv-preview").removeAttribute("srcdoc");
+  byId("cv-preview").src = "http://127.0.0.1:8090/ipns/" + ipns + "/";    // your public node's gateway
+  cvStatus("viewing published site (your node's gateway)");
+});
+byId("cv-edit").addEventListener("click", () => {
+  if (cv.mode === "write") { cvWritePreview(); cvStatus("writing"); }
+  else if (cv.token) { cvShowLive(); cvStatus("live"); }
+});
+byId("cv-open").addEventListener("click", () => safely(cvOpen));
+byId("cv-folder").addEventListener("keydown", e => { if (e.key === "Enter") safely(cvOpen); });
+byId("cv-publish").addEventListener("click", () => safely(cvPublish));
+
+// Educational live-share: broadcast the current page to remote viewers over WebRTC
+// (signaling via the Rust relay / DM channel). Single-page; the local builder handles
+// full multi-file sites. Host = "Share live"; viewers type the session name + Enter.
+const cvRtc = { session: null, role: null, me: null, peers: new Map(), poll: null };
+const CV_ICE = { iceServers: [{ urls: "stun:stun.l.google.com:19302" }] };
+function cvViewerRender(html) { byId("cv-preview").removeAttribute("src"); byId("cv-preview").srcdoc = html || ""; }
+async function cvSignal(to, kind, data) { try { await postJson("/api/canvas/signal", { session: cvRtc.session, from: cvRtc.me, to, kind, data }); } catch (e) {} }
+function cvPeer(id) {
+  const pc = new RTCPeerConnection(CV_ICE);
+  pc.onicecandidate = e => { if (e.candidate) cvSignal(id, "ice", e.candidate); };
+  const entry = { pc, dc: null }; cvRtc.peers.set(id, entry); return entry;
+}
+async function cvCurrentHtml() {
+  if (cv.mode === "write") return byId("cv-src").value;
+  if (!cv.token) return "";
+  try { return await (await fetch("/canvas-preview/" + cv.token + "/index.html")).text(); } catch (e) { return ""; }
+}
+async function cvBroadcast() {
+  const html = await cvCurrentHtml();
+  for (const { dc } of cvRtc.peers.values()) if (dc && dc.readyState === "open") dc.send(html);
+}
+async function cvHandle(m) {
+  const { from, kind, data } = m; if (!from || from === cvRtc.me) return;
+  if (cvRtc.role === "host") {
+    if (kind === "join") {
+      const e = cvPeer(from); const dc = e.pc.createDataChannel("page"); e.dc = dc;
+      dc.onopen = async () => dc.send(await cvCurrentHtml());
+      const offer = await e.pc.createOffer(); await e.pc.setLocalDescription(offer); await cvSignal(from, "offer", offer);
+    } else if (kind === "answer") { const e = cvRtc.peers.get(from); if (e) await e.pc.setRemoteDescription(data); }
+    else if (kind === "ice") { const e = cvRtc.peers.get(from); if (e && data) try { await e.pc.addIceCandidate(data); } catch (x) {} }
+  } else if (cvRtc.role === "viewer") {
+    if (kind === "offer") {
+      const e = cvPeer(from); e.pc.ondatachannel = ev => { ev.channel.onmessage = msg => cvViewerRender(msg.data); };
+      await e.pc.setRemoteDescription(data); const ans = await e.pc.createAnswer(); await e.pc.setLocalDescription(ans); await cvSignal(from, "answer", ans);
+    } else if (kind === "ice") { const e = cvRtc.peers.get(from); if (e && data) try { await e.pc.addIceCandidate(data); } catch (x) {} }
+  }
+}
+function startCvSignalPoll() {
+  if (cvRtc.poll) clearInterval(cvRtc.poll);
+  cvRtc.poll = setInterval(() => quietly(async () => {
+    if (!cvRtc.session) return;
+    let res; try { res = await getJson("/api/canvas/signal?session=" + encodeURIComponent(cvRtc.session) + "&me=" + encodeURIComponent(cvRtc.me)); } catch (e) { return; }
+    for (const m of (res.messages || [])) await cvHandle(m);
+  }), 1200);
+}
+byId("cv-share").addEventListener("click", () => {
+  if (cvRtc.role === "host") { notice("Already sharing live · session “" + cvRtc.session + "”."); return; }
+  cvRtc.session = byId("cv-session").value.trim() || ("studio-" + randId());
+  byId("cv-session").value = cvRtc.session;
+  cvRtc.role = "host"; cvRtc.me = "host"; cvRtc.peers.clear();
+  startCvSignalPoll();
+  cvStatus("sharing live · session “" + cvRtc.session + "”");
+  notice("Live share started — others open Studio, type “" + cvRtc.session + "”, and press Enter to watch.");
+});
+byId("cv-session").addEventListener("keydown", e => {
+  if (e.key !== "Enter" || cvRtc.role === "host") return;
+  cvRtc.session = byId("cv-session").value.trim(); if (!cvRtc.session) return;
+  cvRtc.role = "viewer"; cvRtc.me = randId(); cvRtc.peers.clear();
+  startCvSignalPoll(); cvSignal("host", "join", {});
+  cvStatus("watching “" + cvRtc.session + "”…");
+});
+// Bridge: pick up HTML the AI staged via the MCP `concierge.write_site` tool
+// (<store>/canvas/draft/index.html) and surface it live in the Write tab — so
+// "tell the AI to write the page" really lands in this window.
+let cvDraftMtime = 0;
+async function cvDraftPoll() {
+  let d; try { d = await getJson("/api/canvas/draft"); } catch (e) { return; }
+  if (!d.mtime || d.mtime <= cvDraftMtime) return;
+  const baseline = cvDraftMtime === 0;
+  cvDraftMtime = d.mtime;
+  if (baseline && byId("cv-src").value.trim()) return;   // don't clobber existing typing on first sight
+  if (cv.mode === "write" && d.html != null) {
+    byId("cv-src").value = d.html;
+    cvWritePreview();
+    if (cvRtc.role === "host") cvBroadcast();
+    cvStatus("the AI wrote the page · review + Publish");
+    logNode("studio · AI wrote into the Write tab", "ok");
+  }
+}
+setInterval(() => quietly(cvDraftPoll), 2000);
+
+// Your username chip: shows online state; click copies the full username to share.
+async function loadMe() {
+  let me; try { me = await getJson("/api/me"); } catch (e) { return; }
+  state.myUsername = me.username || "";
+  const chip = byId("chat-id"), label = byId("chat-id-label");
+  if (!chip) return;
+  chip.classList.toggle("online", !!me.online);
+  chip.dataset.full = me.username || "";
+  label.textContent = me.online ? ("you · " + (me.username || "").slice(0, 8)) : "offline";
+}
+byId("chat-id").addEventListener("click", () => {
+  const full = byId("chat-id").dataset.full || "";
+  if (!full) { notice("Your network node starts the moment you send your first message."); return; }
+  if (navigator.clipboard) navigator.clipboard.writeText(full);
+  notice("Username copied — share it so other Concierge users can message you.");
+});
+
+// Pending message requests (the consent gate's holding area).
+async function loadRequests() {
+  let data; try { data = await getJson("/api/requests"); } catch (e) { return; }
+  const reqs = data.requests || [];
+  const badge = byId("msg-badge");
+  if (badge) { badge.style.display = reqs.length ? "inline-block" : "none"; badge.textContent = reqs.length; }
+  const box = byId("requests"); if (!box) return; clear(box);
+  reqs.forEach(r => {
+    const card = node("div", "request-card");
+    const main = node("div", "req-main");
+    main.append(
+      node("div", "req-user", "Request from " + (r.username || "").slice(0, 18) + "…"),
+      node("div", "req-preview", r.preview || (r.count + " message(s)")));
+    const accept = node("button", "req-accept", "Accept");
+    const decline = node("button", "req-decline", "Decline");
+    accept.addEventListener("click", () => safely(async () => {
+      await postJson("/api/requests/accept", { username: r.username });
+      notice("Accepted — their messages were delivered to the thread.");
+      await loadRequests(); await loadRooms(); if (state.room) await loadThread();
+    }));
+    decline.addEventListener("click", () => safely(async () => {
+      await postJson("/api/requests/decline", { username: r.username });
+      await loadRequests();
+    }));
+    card.append(main, accept, decline);
+    box.append(card);
+  });
+}
+
+function applyZoom() {
+  const svg = byId("graph");
+  if (!svg) return;
+  const content = svg.querySelector("g.graph-content");
+  if (content) {
+    content.setAttribute("transform", `translate(${state.pan.x}, ${state.pan.y}) scale(${state.zoom})`);
+  }
+}
+
+byId("graph-view").addEventListener("wheel", event => {
+  event.preventDefault();
+  const zoomSpeed = 0.001;
+  state.zoom -= event.deltaY * zoomSpeed;
+  state.zoom = Math.max(0.1, Math.min(5, state.zoom));
+  applyZoom();
+}, { passive: false });
+
+let isDragging = false;
+let lastMouse = { x: 0, y: 0 };
+
+byId("graph-view").addEventListener("mousedown", event => {
+  if (event.target.closest(".graph-node")) return;
+  isDragging = true;
+  lastMouse = { x: event.clientX, y: event.clientY };
+});
+
+window.addEventListener("mousemove", event => {
+  if (!isDragging) return;
+  const dx = event.clientX - lastMouse.x;
+  const dy = event.clientY - lastMouse.y;
+  state.pan.x += dx;
+  state.pan.y += dy;
+  lastMouse = { x: event.clientX, y: event.clientY };
+  applyZoom();
+});
+
+window.addEventListener("mouseup", () => {
+  isDragging = false;
+});
+
+// Phase 8: the Sidekick (on-node embedding model) + its private Kubo node, which
+// enable together. Coupled — the Sidekick needs the node; the node only runs as
+// part of the Sidekick.
+async function loadSidekickStatus() {
+  const banner = byId("sidekick-onboard");
+  let s;
+  try { s = await getJson("/api/sidekick/status"); }
+  catch (_) { banner.style.display = "none"; document.body.classList.remove("node-live"); return; }
+  // Heartbeat: pulse the central brain whenever the private node is actually up.
+  document.body.classList.toggle("node-live", !!s.node_running);
+  if (state.lastNodeRunning !== s.node_running) {
+    if (s.node_running) logNode("kubo private node ready · on-node embedding model online", "ok");
+    else if (state.lastNodeRunning === true) logNode("kubo node stopped", "wn");
+    state.lastNodeRunning = s.node_running;
+  }
+  clear(banner);
+  banner.style.display = "flex";
+  if (s.operational) {
+    banner.className = "cc-banner capturing";
+    banner.append(node("span", "cc-live", ""));
+    const msg = node("div", "cc-msg", "");
+    msg.append(node("b", "", "Sidekick active"), node("span", "", " — on-node embedding model + private Kubo node running."));
+    banner.append(msg);
+    const off = node("button", "cc-detach", "Disable");
+    off.addEventListener("click", () => safely(async () => {
+      await postJson("/api/sidekick/disable", {});
+      notice("Sidekick disabled.");
+      await loadSidekickStatus();
+    }));
+    banner.append(off);
+  } else if (s.enabled && !s.node_running) {
+    banner.className = "cc-banner";
+    const msg = node("div", "cc-msg", "");
+    msg.append(node("b", "", "Sidekick enabled — node starting…"), node("span", "", " the private Kubo node is coming up (a few seconds). If it doesn't, re-launch."));
+    banner.append(msg);
+    // Not a dead end: a daemon that failed to come up can be re-launched.
+    const retry = node("button", "cc-attach", "Re-launch node");
+    retry.addEventListener("click", () => safely(async () => {
+      await postJson("/api/sidekick/enable", {});
+      notice("Re-launching the private Kubo node…");
+      await loadSidekickStatus();
+    }));
+    banner.append(retry);
+  } else if (!s.kubo_installed) {
+    // Kubo missing: don't offer an enable button that just errors — point the user
+    // at the one prerequisite. Re-checks each refresh, so it flips to "Enable
+    // Sidekick" once Kubo is installed.
+    banner.className = "cc-banner";
+    const msg = node("div", "cc-msg", "");
+    msg.append(
+      node("b", "", "Sidekick needs Kubo (IPFS)"),
+      node("span", "", " The Sidekick is the on-node embedding model that powers retrieval; it runs as part of your private Kubo node. Install Kubo, then this becomes “Enable Sidekick.”"),
+    );
+    banner.append(msg);
+    const link = node("a", "cc-attach", "Install Kubo →");
+    link.href = "https://docs.ipfs.tech/install/";
+    link.target = "_blank";
+    link.rel = "noopener noreferrer";
+    banner.append(link);
+  } else {
+    banner.className = "cc-banner";
+    const msg = node("div", "cc-msg", "");
+    msg.append(node("b", "", "Enable Sidekick"), node("span", "", " " + s.disclaimer));
+    banner.append(msg);
+    const on = node("button", "cc-attach", "Enable Sidekick");
+    on.addEventListener("click", () => safely(async () => {
+      await postJson("/api/sidekick/enable", {});
+      notice("Enabling Sidekick — launching your private Kubo node.");
+      await loadSidekickStatus();
+    }));
+    banner.append(on);
+  }
+}
+
+// Phase C onboarding: surface Claude Code auto-capture. Capture is opt-in —
+// the banner offers to attach; once attached it shows a live "capturing" badge
+// with a detach control. Nothing is captured until the user attaches.
+async function loadClaudeCodeStatus() {
+  const banner = byId("cc-onboard");
+  let status;
+  try { status = await getJson("/api/claude-code/status"); }
+  catch (_) { banner.style.display = "none"; return; }
+  clear(banner);
+  if (!status.available || (!status.attached && !status.session_count)) {
+    banner.style.display = "none";
+    return;
+  }
+  banner.style.display = "flex";
+  const n = status.session_count;
+  if (status.attached) {
+    banner.className = "cc-banner capturing";
+    banner.append(node("span", "cc-live", ""));
+    const msg = node("div", "cc-msg", "");
+    msg.append(node("b", "", "Capturing Claude Code"), node("span", "", " — " + n + " session" + (n === 1 ? "" : "s") + " watched, new activity ingested automatically."));
+    banner.append(msg);
+    const detach = node("button", "cc-detach", "Detach");
+    detach.addEventListener("click", () => safely(async () => {
+      await postJson("/api/claude-code/detach", {});
+      notice("Detached — Claude Code capture paused.");
+      await loadClaudeCodeStatus();
+    }));
+    banner.append(detach);
+  } else {
+    banner.className = "cc-banner";
+    const here = status.current_project_sessions || 0;
+    const msg = node("div", "cc-msg", "");
+    const lead = here > 0
+      ? "Found " + here + " Claude Code session" + (here === 1 ? "" : "s") + " for this project"
+      : "Found " + n + " Claude Code session" + (n === 1 ? "" : "s");
+    const tail = here > 0
+      ? " (" + n + " on this machine). Attach to backfill and capture new sessions automatically — local-only, nothing leaves your device."
+      : " on this machine. Attach to backfill them and capture new sessions automatically — local-only, nothing leaves your device.";
+    msg.append(node("b", "", lead), node("span", "", tail));
+    banner.append(msg);
+    const attach = node("button", "cc-attach", "Attach");
+    attach.addEventListener("click", () => safely(async () => {
+      await postJson("/api/claude-code/attach", {});
+      notice("Attached — backfilling and watching Claude Code sessions.");
+      await loadClaudeCodeStatus();
+      quietly(async () => { await Promise.all([loadNames(), refreshGraphData(), loadStats()]); });
+    }));
+    banner.append(attach);
+  }
+}
+
+// Phase 8 §1 — the Librarian's semantic-search bar. Ranks by meaning × graph
+// gravity, packed to a token budget; clicking a hit opens that node's record.
+async function runSearch() {
+  const q = byId("search-q").value.trim();
+  const depth = byId("search-depth").value;
+  const hops = byId("search-related").checked ? 1 : 0;
+  const out = byId("search-results");
+  clear(out);
+  if (!q) return;
+  out.append(node("div", "search-summary", "Searching…"));
+  let data;
+  try {
+    data = await getJson("/api/search?q=" + encodeURIComponent(q) + "&depth=" + encodeURIComponent(depth) + "&budget=4000&hops=" + hops);
+  } catch (error) {
+    clear(out); out.append(node("div", "pblockers", error.message)); return;
+  }
+  clear(out);
+  flashSynapses(); // a search is memory recall → fire the current on the graph
+  logNode("recall “" + q + "” → " + data.items.length + " hit(s) over " + data.indexed + " nodes", "ev");
+  out.append(node("div", "search-summary",
+    data.items.length + " hit(s) over " + data.indexed + " indexed node(s) · " + data.used_tokens + "/" + data.budget_tokens + " tokens"));
+  if (!data.items.length) {
+    out.append(node("div", "empty", "No matches. Capture or ingest more, or broaden the query."));
+    return;
+  }
+  data.items.forEach(hit => {
+    const card = node("div", "search-hit" + (hit.hop ? " related" : ""));
+    const head = node("div", "hit-head");
+    head.append(
+      node("span", "hit-score", hit.hop ? "related ↳" : "score " + hit.score.toFixed(3)),
+      node("span", "hit-kind", hit.kind),
+      node("span", "", "gravity " + hit.gravity.toFixed(2)),
+      node("span", "", shortCid(hit.cid)),
+    );
+    card.append(head, node("div", "hit-preview", hit.preview));
+    card.addEventListener("click", () => { loadRecord(hit.cid); showView("record"); });
+    out.append(card);
+  });
+}
+
+safely(async () => {
+  await Promise.all([loadMeta(), loadCheckpoints(), loadNames(), loadRooms(), loadMe(), loadRequests()]);
+  await loadGraph();
+  await refreshPrivacy();
+});
+// Stats (the store/DAG rail) are informational and the slowest call, so they
+// load in the background — the UI is interactive as soon as the graph is ready.
+logNode("data platter mounted — watching the node", "ok");
+quietly(loadStats);
+quietly(loadSidekickStatus);
+quietly(loadClaudeCodeStatus);
+window.setInterval(() => quietly(async () => {
+  await Promise.all([loadNames(), loadCheckpoints(), refreshGraphData(), loadStats(), loadSidekickStatus(), loadMe(), loadRequests()]);
+  if (!byId("privacy").querySelector("form")) await refreshPrivacy();
+  if (state.room) await loadThread();
+}), 5000);
+</script>
+</body>
+</html>

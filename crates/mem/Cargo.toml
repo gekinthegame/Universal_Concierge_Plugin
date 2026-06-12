@@ -1,0 +1,57 @@
+# Vendored from ~/Desktop/Concierge_V4/mem (Phase A, DECISIONS.md 0013 / SHIPPABLE_PLUGIN_PLAN.md).
+# Self-contained: explicit edition 2024 + pinned deps, since this workspace is
+# edition 2021. The library is linked in-process by crates/core (no more `mem` CLI
+# subprocess). The [[bin]] is retained for parity/debugging but is not on the
+# plugin's runtime path.
+[package]
+name         = "mem"
+version      = "0.1.0"
+edition      = "2024"
+rust-version = "1.86"
+license      = "Apache-2.0"
+
+[[bin]]
+name = "mem"
+path = "src/main.rs"
+
+[lib]
+name = "mem"
+path = "src/lib.rs"
+
+[dependencies]
+serde              = { version = "1.0", features = ["derive"] }
+serde_bytes        = "0.11"
+ipld-core          = "0.4"
+cid                = { version = "0.11", features = ["serde"] }
+serde_ipld_dagcbor = "0.6"
+multihash          = "0.19"
+sha2               = "0.10"
+hex                = "0.4"
+anyhow             = "1.0"
+serde_json         = "1.0"
+atomic-write-file  = "0.2"
+clap               = { version = "4.5", features = ["derive"] }
+toml               = "0.8"
+reqwest            = { version = "0.12", features = ["blocking", "json"] }
+walkdir            = "2.5"
+regex              = "1.10"
+rustyline          = "14.0"
+# Source-code symbol ingestor (ingestors/source.rs). Grammars bumped from 0.21
+# to the 0.23 line so their `cc` build-dep is compatible with libp2p's `cc ^1.2.8`
+# in crates/net (the old 0.21 pinned `cc ~1.0.90`, which conflicted). The 0.23
+# grammars use the `LANGUAGE` constant API instead of `language()` functions.
+tree-sitter        = "0.24"
+tree-sitter-rust   = "0.23"
+tree-sitter-python = "0.23"
+tree-sitter-javascript = "0.23"
+tree-sitter-typescript = "0.23"
+iroh-car           = { version = "0.5.1", optional = true }
+tokio              = { version = "1.40", features = ["full"], optional = true }
+
+[dev-dependencies]
+tempfile = "3.13"
+
+[features]
+default = []
+pinata = ["reqwest/multipart", "dep:iroh-car", "dep:tokio"]
+ipfs = ["reqwest/multipart", "dep:iroh-car", "dep:tokio"]

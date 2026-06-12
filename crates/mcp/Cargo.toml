@@ -1,0 +1,10 @@
+[package]
+name = "concierge-mcp"
+description = "Layer 4 — MCP server: the Concierge's tools/resources over MCP (JSON-RPC 2.0 / stdio)."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+concierge-core = { path = "../core" }
+serde_json = { workspace = true }

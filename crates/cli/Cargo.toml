@@ -1,0 +1,24 @@
+[package]
+name = "concierge-plugin"
+description = "Universal Concierge Plugin CLI — the mountable entry point."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "concierge-plugin"
+path = "src/main.rs"
+
+[dependencies]
+concierge-core = { path = "../core" }
+concierge-adapter-jsonl = { path = "../adapter-jsonl" }
+concierge-adapter-hermes = { path = "../adapter-hermes" }
+concierge-adapter-claude-code = { path = "../adapter-claude-code" }
+concierge-gui = { path = "../gui" }
+concierge-net = { path = "../net" }
+concierge-mcp = { path = "../mcp" }
+notify = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+toml = { workspace = true }

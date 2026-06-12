@@ -1,0 +1,15 @@
+[package]
+name = "concierge-adapter-claude-code"
+description = "Layer 3 — Claude Code harness adapter. Translates Claude Code session transcripts (~/.claude/projects/<slug>/*.jsonl) into Concierge envelopes."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+concierge-core = { path = "../core" }
+concierge-adapter-jsonl = { path = "../adapter-jsonl" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

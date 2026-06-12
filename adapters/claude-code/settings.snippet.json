@@ -1,0 +1,66 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "CONCIERGE_BIN=/Users/quinonesfam/Desktop/Universal_Concierge_Pluggin/target/debug/concierge-plugin python3 /Users/quinonesfam/Desktop/Universal_Concierge_Pluggin/adapters/claude-code/concierge_hook.py"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "CONCIERGE_BIN=/Users/quinonesfam/Desktop/Universal_Concierge_Pluggin/target/debug/concierge-plugin python3 /Users/quinonesfam/Desktop/Universal_Concierge_Pluggin/adapters/claude-code/concierge_hook.py"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "CONCIERGE_BIN=/Users/quinonesfam/Desktop/Universal_Concierge_Pluggin/target/debug/concierge-plugin python3 /Users/quinonesfam/Desktop/Universal_Concierge_Pluggin/adapters/claude-code/concierge_hook.py"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "CONCIERGE_BIN=/Users/quinonesfam/Desktop/Universal_Concierge_Pluggin/target/debug/concierge-plugin python3 /Users/quinonesfam/Desktop/Universal_Concierge_Pluggin/adapters/claude-code/concierge_hook.py"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "CONCIERGE_BIN=/Users/quinonesfam/Desktop/Universal_Concierge_Pluggin/target/debug/concierge-plugin python3 /Users/quinonesfam/Desktop/Universal_Concierge_Pluggin/adapters/claude-code/concierge_hook.py"
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "CONCIERGE_BIN=/Users/quinonesfam/Desktop/Universal_Concierge_Pluggin/target/debug/concierge-plugin python3 /Users/quinonesfam/Desktop/Universal_Concierge_Pluggin/adapters/claude-code/concierge_hook.py"
+          }
+        ]
+      }
+    ]
+  }
+}

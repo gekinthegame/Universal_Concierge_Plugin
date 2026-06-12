@@ -1,0 +1,216 @@
+# IPLD Schema — Unified Memory Layer.
+#
+# The language-agnostic contract that travels with the data; mirrors
+# src/node.rs. Field names are the exact DAG-CBOR wire keys. Optional Rust
+# fields serialize as present-but-null (serde emits the key), so they are
+# `nullable` here, not `optional`.
+#
+# Kept in lockstep with the Rust structs: the test
+# `wire_field_names_are_documented_in_schema` fails if a Rust field is added
+# without a matching name here.
+
+type Record struct {
+  schema_version Int
+  created_at     Int
+  source         Source
+  edges          [Edge]
+  body           Node
+}
+
+type Edge struct {
+  rel EdgeRel
+  to  Link
+}
+
+type EdgeRel enum {
+  | produced
+  | planned_as
+  | derived_from
+  | used_as_context
+  | references
+  | contains
+  | summarizes
+  | supersedes
+}
+
+# Internally-tagged on "kind". Unit variants serialize as a one-field map.
+type Source union {
+  | UserSource    "user"
+  | ModelSource   "model"
+  | SystemSource  "system"
+  | DerivedSource "derived"
+} representation inline {
+  discriminantKey "kind"
+}
+type UserSource    struct {}
+type SystemSource  struct {}
+type ModelSource   struct { name String }
+type DerivedSource struct { from [Link] }
+
+# Internally-tagged on "type".
+type Node union {
+  | Memory       "memory"
+  | UserPrefs    "user_prefs"
+  | Plan         "plan"
+  | Decision     "decision"
+  | Prompt       "prompt"
+  | Response     "response"
+  | ToolResult   "tool_result"
+  | Blob         "blob"
+  | FileRef      "file_ref"
+  | Task         "task"
+  | Conversation "conversation"
+  | Skill        "skill"
+  | Checkpoint   "checkpoint"
+  | DirectoryManifest "directory_manifest"
+  | IngestRun    "ingest_run"
+  | Symbol       "symbol"
+  | ExtractedText "extracted_text"
+  | DayIndex     "day_index"
+  | MonthIndex   "month_index"
+  | YearIndex    "year_index"
+} representation inline {
+  discriminantKey "type"
+}
+
+type DirectoryManifest struct {
+  root_path String
+  entries   [DirectoryEntry]
+}
+
+type DirectoryEntry struct {
+  path     String
+  file_ref Link
+}
+
+type IngestRun struct {
+  source_path     String
+  manifest        Link
+  file_count      Int
+  byte_count      Int
+  ignored_count   Int
+  plugin_records  Int
+  plugin_failures Int
+  per_file_plugin_records {String:Int}
+  per_file_plugin_failures {String:Int}
+}
+
+type Symbol struct {
+  path       String
+  name       String
+  kind       String
+  language   String
+  signature  String
+  body       String
+  start_line Int
+  end_line   Int
+}
+
+type ExtractedText struct {
+  path       String
+  text       String
+  media_type nullable String
+}
+
+# Phase A.5 calendar tier (DECISIONS.md 0014). Index nodes only — events stay
+# their own records; these change only how an event is reached.
+type DayIndex struct {
+  date   String   # UTC YYYY-MM-DD
+  events Link      # HAMT root mapping event key -> event record
+}
+type MonthIndex struct {
+  month String     # UTC YYYY-MM
+  days  [CalendarEntry]
+}
+type YearIndex struct {
+  year   String    # UTC YYYY
+  months [CalendarEntry]
+}
+type CalendarEntry struct {
+  label String
+  node  Link
+}
+
+type Memory struct {
+  text String
+  kind MemoryKind
+}
+
+type MemoryKind enum {
+  | user
+  | feedback
+  | project
+  | reference
+}
+
+# entries is a list of [key, value] pairs on the wire.
+type UserPrefs struct {
+  entries [StringPair]
+}
+type StringPair [String]
+
+type Plan struct {
+  title String
+  prose String
+  spec  nullable Link
+}
+
+type Decision struct {
+  question  String
+  choice    String
+  rationale String
+}
+
+type Prompt struct {
+  text  String
+  model nullable String
+}
+
+type Response struct {
+  text  String
+  model String
+}
+
+type ToolResult struct {
+  tool   String
+  input  String
+  output String
+  ok     Bool
+}
+
+# Opaque content, addressed independently of the path that references it.
+type Blob struct {
+  bytes      Bytes
+  media_type nullable String
+}
+
+type FileRef struct {
+  path       String
+  size       nullable Int
+  media_type nullable String
+  mtime      nullable Int
+  content    Link   # must reference a Blob record
+}
+
+type Task struct {
+  title  String
+  prose  String
+  parent nullable Link
+}
+
+type Conversation struct {
+  turns  [Link]
+  parent nullable Link
+}
+
+type Skill struct {
+  name       String
+  body       String
+  supersedes nullable Link
+}
+
+type Checkpoint struct {
+  label  String
+  root   Link
+  parent nullable Link
+}
