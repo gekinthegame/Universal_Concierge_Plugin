@@ -83,14 +83,17 @@ pub fn collect(
         .collect();
 
     // Decisions are kept wherever they live — a settled call is never garbage.
-    // Finding them means decoding each block (also our chance to know kinds).
+    // Finding them means decoding each block. Only *records* decode as a `Node`;
+    // HAMT internal nodes, blobs, and other structural blocks don't — and a
+    // non-record can never be a Decision, so skip a block that fails to decode
+    // rather than aborting GC on any store that contains them (it always does).
     let mut decisions: Vec<Cid> = Vec::new();
     for cid in &on_disk {
-        let record = blocks
-            .get(cid)
-            .and_then(|bytes| crate::node::decode(&bytes))?;
-        if matches!(record.body, Node::Decision(_)) {
-            decisions.push(*cid);
+        let bytes = blocks.get(cid)?;
+        if let Ok(record) = crate::node::decode(&bytes) {
+            if matches!(record.body, Node::Decision(_)) {
+                decisions.push(*cid);
+            }
         }
     }
 
@@ -330,6 +333,31 @@ mod tests {
         let reachable = s.reachable(&chain[0]).unwrap();
         // 1 checkpoint + 4 conversations + 4 turns = 9 present blocks.
         assert_eq!(reachable.len(), 9, "full conversation history retained");
+    }
+
+    #[test]
+    fn gc_tolerates_non_node_blocks_like_hamt_internal_nodes() {
+        // Regression: GC scanned EVERY on-disk block as a `Node` to find Decisions
+        // and aborted (`dag-cbor version probe failed`) on the first that didn't
+        // decode — HAMT internal nodes, blobs, index blocks, which every real store
+        // has. A non-record can't be a Decision, so GC must skip it, not abort.
+        let (dir, mut s) = store(5);
+        let named = s.put_node(memory("kept by name"), Source::User).unwrap();
+        s.bind("keep", named).unwrap();
+
+        // Inject a raw, non-`Node` block into the same blocks dir — a stand-in for a
+        // HAMT internal node: storable, content-addressed, but not a record.
+        let raw_blocks = LocalBlocks::new(dir.path().join("blocks"));
+        let raw = raw_blocks
+            .put(b"not a node, just structural bytes")
+            .unwrap();
+
+        // GC completes (previously this returned Err and aborted), keeps the named
+        // record, and sweeps the unreferenced non-Node block as an orphan.
+        let report = s.gc(&policy(10)).unwrap();
+        assert!(s.has_block(&named).unwrap(), "named record kept");
+        assert!(!s.has_block(&raw).unwrap(), "non-Node orphan reclaimed");
+        assert!(report.pruned_orphans.contains(&raw));
     }
 
     #[test]

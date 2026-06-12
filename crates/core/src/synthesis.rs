@@ -50,7 +50,10 @@ pub fn synthesis_candidates(mem: &MemCli, threshold: usize) -> Result<Vec<Synthe
     for room in known_rooms(mem)? {
         let count = mem.room_thread(&room)?.len();
         if count >= threshold {
-            out.push(SynthesisCandidate { room, message_count: count });
+            out.push(SynthesisCandidate {
+                room,
+                message_count: count,
+            });
         }
     }
     Ok(out)
@@ -90,7 +93,10 @@ pub fn record_synthesis(
         "rationale": "host-model synthesis; the node performed no generation",
     });
     let cid = mem.put_node_derived(
-        &Node { kind: "decision".to_string(), fields_json: body.to_string() },
+        &Node {
+            kind: "decision".to_string(),
+            fields_json: body.to_string(),
+        },
         provenance,
     )?;
     mem.bind(&format!("synthesis-{room}-{}", now_secs()), &cid)?;
@@ -111,8 +117,13 @@ mod tests {
         }
         // 4 messages: a candidate at threshold 3, not at threshold 5.
         let at3 = synthesis_candidates(&mem, 3).unwrap();
-        assert!(at3.iter().any(|c| c.room == "design" && c.message_count == 4));
-        assert!(synthesis_candidates(&mem, 5).unwrap().is_empty(), "below threshold → not flagged");
+        assert!(at3
+            .iter()
+            .any(|c| c.room == "design" && c.message_count == 4));
+        assert!(
+            synthesis_candidates(&mem, 5).unwrap().is_empty(),
+            "below threshold → not flagged"
+        );
     }
 
     #[test]
@@ -136,19 +147,27 @@ mod tests {
         // The HOST produced this summary; the node only records it.
         let cid = record_synthesis(&mem, "r", "The team agreed on X.", &provenance).unwrap();
 
-        let Record::Live { kind, body_json, .. } = mem.get(&CidOrName::Cid(cid.clone())).unwrap()
+        let Record::Live {
+            kind, body_json, ..
+        } = mem.get(&CidOrName::Cid(cid.clone())).unwrap()
         else {
             panic!("expected a live record");
         };
         assert_eq!(kind, "decision", "synthesis is recorded as a Decision node");
         // The full record nests the node under `body`.
         let value: serde_json::Value = serde_json::from_str(&body_json).unwrap();
-        assert_eq!(value["body"]["choice"], "The team agreed on X.", "the host summary is the choice");
+        assert_eq!(
+            value["body"]["choice"], "The team agreed on X.",
+            "the host summary is the choice"
+        );
 
         // Provenance is real derived links: walking the synthesis reaches the source messages.
         let reachable = mem.walk(&cid).unwrap();
         for source in &provenance {
-            assert!(reachable.contains(source), "synthesis links back to its source sub-graph");
+            assert!(
+                reachable.contains(source),
+                "synthesis links back to its source sub-graph"
+            );
         }
     }
 }

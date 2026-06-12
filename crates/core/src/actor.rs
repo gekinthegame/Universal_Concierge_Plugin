@@ -110,7 +110,10 @@ pub enum ActorError {
 }
 
 fn op_name(op: &Operation) -> String {
-    serde_json::to_value(op).ok().and_then(|v| v.as_str().map(String::from)).unwrap_or_default()
+    serde_json::to_value(op)
+        .ok()
+        .and_then(|v| v.as_str().map(String::from))
+        .unwrap_or_default()
 }
 
 /// **The actor trust rule.** Accept `actor_cert` iff its hosting device is a valid
@@ -141,8 +144,12 @@ pub fn verify_actor_certificate(
         return Err(ActorError::DeviceMismatch);
     }
     // The cert must be signed by that hosting device.
-    if !verify_sig(&AgentId(actor_cert.device_id.clone()), &actor_cert.signing_bytes(), &actor_cert.signature)
-        .map_err(ActorError::Malformed)?
+    if !verify_sig(
+        &AgentId(actor_cert.device_id.clone()),
+        &actor_cert.signing_bytes(),
+        &actor_cert.signature,
+    )
+    .map_err(ActorError::Malformed)?
     {
         return Err(ActorError::BadSignature);
     }
@@ -205,14 +212,20 @@ impl MemCli {
         let device = self.identity()?;
         // The actor cannot exceed this device: intersect the requested ops (or the
         // least-privilege default) with what the device itself holds.
-        let device_membership = self
-            .device_membership(network_id)?
-            .ok_or_else(|| Error::SecurityPolicy("this device is not a member of the network".to_string()))?;
+        let device_membership = self.device_membership(network_id)?.ok_or_else(|| {
+            Error::SecurityPolicy("this device is not a member of the network".to_string())
+        })?;
         let held: std::collections::BTreeSet<String> =
             device_membership.capabilities.iter().cloned().collect();
-        let candidate = if operations.is_empty() { Operation::agent_defaults() } else { operations };
-        let operations: Vec<Operation> =
-            candidate.into_iter().filter(|op| held.contains(&op_name(op))).collect();
+        let candidate = if operations.is_empty() {
+            Operation::agent_defaults()
+        } else {
+            operations
+        };
+        let operations: Vec<Operation> = candidate
+            .into_iter()
+            .filter(|op| held.contains(&op_name(op)))
+            .collect();
         let cert = ActorCertificate::issue(
             &device,
             network_id,
@@ -226,15 +239,19 @@ impl MemCli {
         let mut all = self.actor_certificates(network_id)?;
         all.retain(|c| !(c.actor_id == cert.actor_id && c.namespace == cert.namespace));
         all.push(cert.clone());
-        let text = serde_json::to_string_pretty(&all).map_err(|e| Error::Io(format!("serialize actors: {e}")))?;
-        std::fs::write(self.actors_path(network_id)?, text).map_err(|e| Error::Io(format!("write actors: {e}")))?;
+        let text = serde_json::to_string_pretty(&all)
+            .map_err(|e| Error::Io(format!("serialize actors: {e}")))?;
+        std::fs::write(self.actors_path(network_id)?, text)
+            .map_err(|e| Error::Io(format!("write actors: {e}")))?;
         Ok(cert)
     }
 
     /// The actor certificates this device has issued for a network.
     pub fn actor_certificates(&self, network_id: &NetworkId) -> CoreResult<Vec<ActorCertificate>> {
         match std::fs::read_to_string(self.actors_path(network_id)?) {
-            Ok(text) => serde_json::from_str(&text).map_err(|e| Error::Io(format!("parse actors: {e}"))),
+            Ok(text) => {
+                serde_json::from_str(&text).map_err(|e| Error::Io(format!("parse actors: {e}")))
+            }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
             Err(e) => Err(Error::Io(format!("read actors: {e}"))),
         }
@@ -250,27 +267,57 @@ mod tests {
 
     /// (root, descriptor, namespace, device identity, device membership with the
     /// given op names).
-    fn device_member(caps: &[&str]) -> (NetworkDescriptor, Namespace, Identity, MembershipCertificate) {
+    fn device_member(
+        caps: &[&str],
+    ) -> (
+        NetworkDescriptor,
+        Namespace,
+        Identity,
+        MembershipCertificate,
+    ) {
         let root = Identity::generate();
         let descriptor = NetworkDescriptor::create(&root, "team", 1000);
-        let ns = Namespace::new(descriptor.network_id.clone(), NamespaceScope::Project("atlas".into()));
+        let ns = Namespace::new(
+            descriptor.network_id.clone(),
+            NamespaceScope::Project("atlas".into()),
+        );
         let device = Identity::generate();
         let membership = MembershipCertificate::issue(
-            &root, &descriptor.network_id, &device.agent_id().0, SubjectKind::Device,
-            1000, DAY, 0, caps.iter().map(|s| s.to_string()).collect(),
+            &root,
+            &descriptor.network_id,
+            &device.agent_id().0,
+            SubjectKind::Device,
+            1000,
+            DAY,
+            0,
+            caps.iter().map(|s| s.to_string()).collect(),
         );
         (descriptor, ns, device, membership)
     }
 
     #[test]
     fn a_device_enrolls_an_actor_with_a_subset_of_its_own_operations() {
-        let (descriptor, ns, device, membership) = device_member(&["sync_read", "sync_write", "message_receive"]);
+        let (descriptor, ns, device, membership) =
+            device_member(&["sync_read", "sync_write", "message_receive"]);
         let actor = Identity::generate();
         let cert = ActorCertificate::issue(
-            &device, &descriptor.network_id, &actor.agent_id().0, &ns,
-            vec![Operation::SyncRead, Operation::MessageReceive], 1000, DAY, 0,
+            &device,
+            &descriptor.network_id,
+            &actor.agent_id().0,
+            &ns,
+            vec![Operation::SyncRead, Operation::MessageReceive],
+            1000,
+            DAY,
+            0,
         );
-        assert!(verify_actor_certificate(&cert, &membership, &descriptor, 2000, &RevocationSet::new()).is_ok());
+        assert!(verify_actor_certificate(
+            &cert,
+            &membership,
+            &descriptor,
+            2000,
+            &RevocationSet::new()
+        )
+        .is_ok());
     }
 
     #[test]
@@ -279,8 +326,14 @@ mod tests {
         let (descriptor, ns, device, membership) = device_member(&["sync_read"]);
         let actor = Identity::generate();
         let cert = ActorCertificate::issue(
-            &device, &descriptor.network_id, &actor.agent_id().0, &ns,
-            vec![Operation::SyncWrite], 1000, DAY, 0,
+            &device,
+            &descriptor.network_id,
+            &actor.agent_id().0,
+            &ns,
+            vec![Operation::SyncWrite],
+            1000,
+            DAY,
+            0,
         );
         assert_eq!(
             verify_actor_certificate(&cert, &membership, &descriptor, 2000, &RevocationSet::new()),
@@ -294,13 +347,34 @@ mod tests {
         // A device that is NOT a member of this network (no valid membership cert).
         let outsider_device = Identity::generate();
         let outsider_membership = MembershipCertificate::issue(
-            &Identity::generate(), &descriptor.network_id, &outsider_device.agent_id().0,
-            SubjectKind::Device, 1000, DAY, 0, vec!["sync_read".into()],
+            &Identity::generate(),
+            &descriptor.network_id,
+            &outsider_device.agent_id().0,
+            SubjectKind::Device,
+            1000,
+            DAY,
+            0,
+            vec!["sync_read".into()],
         ); // issued by a non-root → not a valid member
         let actor = Identity::generate();
-        let cert = ActorCertificate::issue(&outsider_device, &descriptor.network_id, &actor.agent_id().0, &ns, vec![Operation::SyncRead], 1000, DAY, 0);
+        let cert = ActorCertificate::issue(
+            &outsider_device,
+            &descriptor.network_id,
+            &actor.agent_id().0,
+            &ns,
+            vec![Operation::SyncRead],
+            1000,
+            DAY,
+            0,
+        );
         assert_eq!(
-            verify_actor_certificate(&cert, &outsider_membership, &descriptor, 2000, &RevocationSet::new()),
+            verify_actor_certificate(
+                &cert,
+                &outsider_membership,
+                &descriptor,
+                2000,
+                &RevocationSet::new()
+            ),
             Err(ActorError::DeviceNotMember),
         );
     }
@@ -309,16 +383,34 @@ mod tests {
     fn a_revoked_actor_is_rejected_and_tampering_breaks_the_signature() {
         let (descriptor, ns, device, membership) = device_member(&["sync_read"]);
         let actor = Identity::generate();
-        let cert = ActorCertificate::issue(&device, &descriptor.network_id, &actor.agent_id().0, &ns, vec![Operation::SyncRead], 1000, DAY, 0);
+        let cert = ActorCertificate::issue(
+            &device,
+            &descriptor.network_id,
+            &actor.agent_id().0,
+            &ns,
+            vec![Operation::SyncRead],
+            1000,
+            DAY,
+            0,
+        );
 
         let mut revoked = RevocationSet::new();
         revoked.revoke(&actor.agent_id().0);
-        assert_eq!(verify_actor_certificate(&cert, &membership, &descriptor, 2000, &revoked), Err(ActorError::ActorRevoked));
+        assert_eq!(
+            verify_actor_certificate(&cert, &membership, &descriptor, 2000, &revoked),
+            Err(ActorError::ActorRevoked)
+        );
 
         let mut tampered = cert.clone();
         tampered.operations.push(Operation::SyncWrite);
         assert_eq!(
-            verify_actor_certificate(&tampered, &membership, &descriptor, 2000, &RevocationSet::new()),
+            verify_actor_certificate(
+                &tampered,
+                &membership,
+                &descriptor,
+                2000,
+                &RevocationSet::new()
+            ),
             Err(ActorError::BadSignature),
         );
     }
@@ -328,10 +420,15 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let mem = MemCli::new(dir.path());
         let descriptor = mem.create_network("team").unwrap();
-        let ns = Namespace::new(descriptor.network_id.clone(), NamespaceScope::Project("atlas".into()));
+        let ns = Namespace::new(
+            descriptor.network_id.clone(),
+            NamespaceScope::Project("atlas".into()),
+        );
         let actor = Identity::generate();
 
-        let cert = mem.enroll_actor(&descriptor.network_id, &actor.agent_id().0, &ns, vec![]).unwrap();
+        let cert = mem
+            .enroll_actor(&descriptor.network_id, &actor.agent_id().0, &ns, vec![])
+            .unwrap();
         // Default = read-only least privilege, never write/admin/publish.
         assert!(cert.operations.contains(&Operation::SyncRead));
         assert!(!cert.operations.contains(&Operation::SyncWrite));
@@ -339,7 +436,17 @@ mod tests {
         // Persisted + verifies against this device's (founder) membership.
         let stored = mem.actor_certificates(&descriptor.network_id).unwrap();
         assert_eq!(stored.len(), 1);
-        let device_membership = mem.device_membership(&descriptor.network_id).unwrap().unwrap();
-        assert!(verify_actor_certificate(&stored[0], &device_membership, &descriptor, now_secs(), &RevocationSet::new()).is_ok());
+        let device_membership = mem
+            .device_membership(&descriptor.network_id)
+            .unwrap()
+            .unwrap();
+        assert!(verify_actor_certificate(
+            &stored[0],
+            &device_membership,
+            &descriptor,
+            now_secs(),
+            &RevocationSet::new()
+        )
+        .is_ok());
     }
 }

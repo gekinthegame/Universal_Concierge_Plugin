@@ -124,9 +124,15 @@ fn player_html(title: &str, files: &[String]) -> String {
     let first = files.first().cloned().unwrap_or_default();
     let e = ext_of(&first);
     let stage = if VIDEO_EXT.contains(&e.as_str()) {
-        format!("<video id=\"stage\" src=\"{}\" controls autoplay></video>", esc(&first))
+        format!(
+            "<video id=\"stage\" src=\"{}\" controls autoplay></video>",
+            esc(&first)
+        )
     } else if AUDIO_EXT.contains(&e.as_str()) {
-        format!("<audio id=\"stage\" src=\"{}\" controls autoplay></audio>", esc(&first))
+        format!(
+            "<audio id=\"stage\" src=\"{}\" controls autoplay></audio>",
+            esc(&first)
+        )
     } else {
         format!("<img id=\"stage\" src=\"{}\" alt=\"\">", esc(&first))
     };

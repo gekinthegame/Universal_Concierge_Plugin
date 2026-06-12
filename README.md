@@ -1,77 +1,128 @@
-# Universal Concierge Plugin
+# Universal Concierge Plugin (UCP)
 
-### The Concierge — _Serving up Data on a Silver Platter._
+### *Serving up Data on a Silver Platter.*
 
-**A small sidekick to your large model.**
+**Universal Concierge Plugin (UCP)** is a mountable, lightweight sidekick that provides any AI harness with a portable, content-addressed memory substrate. It organizes, ranks, and serves your entire agent history as a unified context layer, visualized through an interactive, forkable knowledge graph.
 
-Universal Concierge Plugin rides alongside any AI harness as a lightweight
-sidekick. It remembers everything the agent does in a portable, content-addressed
-graph (IPLD, CAR, optional network publishing) — and, with a tiny on-node
-embedder, it *ranks and serves* the right memory back to the host's large model
-when asked. The model stays the muscle that thinks; the Concierge is the sidekick
-that knows where everything is and hands over the right thing at the right moment.
-Handed to any harness without rewriting a line, and without adopting Concierge's
-runtime, UI, or agent loop.
+Built on **IPLD** and secured by **Private IPFS Swarms**, UCP turns transient agent traces into an enduring, sovereign knowledge base that you own, verify, and can share without middlemen.
 
-```text
-Any Harness  ->  Universal Concierge Plugin  ->  IPLD DAG  ->  LocalBlocks / CAR / Pinata / MCP
-```
+---
 
-Concierge is the **substrate, not the harness** — and a *functioning* one: it
-doesn't just store, it serves. The plugin observes durable agent activity —
-prompts, responses, tool calls, file references, decisions, checkpoints — and
-records it into a content-addressed IPLD graph. The tiny embedder then indexes
-and ranks that graph so the substrate can hand the host's model the right context
-on demand — a small, performance-invisible addition that compounds into a large
-help to whatever model you bring. CIDs become portable references across agents,
-tools, and machines; CAR files become the migration and backup format; and
-publishing is a backend concern, not a harness concern. Standard Kubo/IPFS is public-networked unless explicitly isolated, so
-the plugin never treats a local Kubo node as private and requires the explicit
-`publish-public` operation plus a reviewed manifest and irreversible-publication
-confirmation.
+![UCP UI Overview](https://raw.githubusercontent.com/YOUR_REPO/assets/main/ucp-overview.png)
+*(Note: Replace with actual screenshot links once hosted)*
 
-> Recall is **explicit**. The plugin is not an auto-context compiler — it won't
-> inject memory into prompts unless the host asks.
+---
 
-## Why a Python (or any-language) harness works with a Rust core
+## ⬇️ Install
 
-The core is Rust, but a harness never needs to *be* Rust. It only emits
-**host-neutral events** across a language-agnostic boundary:
+One self-contained binary — no separate `mem`, database, or cloud. Kubo/IPFS is
+**optional** (only for publishing and the on-node Sidekick).
 
-```text
-python harness  ->  events.jsonl  ->  concierge-plugin ingest events.jsonl  ->  IPLD records
-```
-
-One JSON object per line is the whole contract. No FFI, no bindings required.
-(In-process Python bindings via PyO3 are a possible later optimization, not a
-requirement.) See [`ADAPTER_CONTRACT.md`](./ADAPTER_CONTRACT.md).
-
-## Workspace layout
-
-This is a Cargo workspace. Boundaries between core, adapters, and MCP are kept
-explicit from day one:
-
-| Crate | Plan layer | Status |
-|---|---|---|
-| [`crates/core`](./crates/core) | Layer 1 (core binding) + Layer 2 (host event API) | contracts declared (Phase 0) |
-| [`crates/adapter-jsonl`](./crates/adapter-jsonl) | Layer 3 (generic JSONL adapter) | line parser (Phase 0) |
-| [`crates/mcp`](./crates/mcp) | Layer 4 (MCP server) | **deferred** stub — built last |
-| [`crates/cli`](./crates/cli) | `concierge-plugin` entry point | command surface stubbed (Phase 0) |
-
-## Build & run
-
+**macOS / Linux**
 ```sh
-cargo build
-cargo test
-cargo run --bin concierge-plugin -- help
+curl -fsSL https://github.com/gekinthegame/Universal_Concierge_Plugin/releases/latest/download/install.sh | sh
 ```
 
-## Status
+**Windows (PowerShell)**
+```powershell
+irm https://github.com/gekinthegame/Universal_Concierge_Plugin/releases/latest/download/install.ps1 | iex
+```
 
-Phase 0 (Project Shape) is in place: workspace scaffold, host-neutral event
-contract, deferred-MCP boundary, and a decision log. No command does real work
-yet — each subcommand names the phase that implements it.
+Then launch the explorer:
+```sh
+concierge-plugin gui
+```
 
-The full plan, including the per-phase step breakdown, lives in
-[`UNIVERSAL_CONCIERGE_PLUGIN_PLAN.md`](./UNIVERSAL_CONCIERGE_PLUGIN_PLAN.md).
-Architecture/MCP decisions are tracked in [`DECISIONS.md`](./DECISIONS.md).
+> Builds are **not yet code-signed/notarized** (first cut — community review
+> welcome). Installing via the `curl | sh` one-liner avoids the macOS Gatekeeper
+> prompt because `curl` doesn't set the quarantine flag. Signed native installers
+> (`.dmg` / `.msi` / AppImage) are a fast-follow.
+
+---
+
+## 🚀 Pillars of the Concierge
+
+### 1. The Data Platter (The Visual Substrate)
+Your memory is no longer a hidden log; it is a **Merkle-DAG** you can touch. The Data Platter is an interactive SVG graph engine that visualizes your entire store.
+*   **Synapse Pulses:** Watch your memory "fire" with glowing pulses that flow toward the central brain whenever the AI retrieves context.
+*   **Forkable History:** Every prompt, tool call, and decision is a CID-verifiable node.
+*   **Swarm Protected:** Built-in status indicators for your **Private Kubo Swarm** and **YARA-X** security scanning.
+
+### 2. The Librarian (The Unified Context Layer)
+The Librarian keeps your entire memory "hot" and ready for retrieval.
+*   **Semantic Timeline:** Browse your history chronologically (Years -> Months -> Days) or search by meaning.
+*   **Graph-Gravity Ranking:** Retrieval isn't just about keywords; it's about importance. The Librarian ranks by **Meaning × Structural Connectivity**, ensuring well-linked decisions outrank isolated noise.
+*   **Context Budgeting:** Automatically packs the most relevant history into your model's specific token budget.
+
+### 3. The Studio (Autonomous Web Publishing)
+The Studio is where the AI transitions from "talking" to "building."
+*   **AI-Staged Web:** Ask your AI to design a site, and it writes directly into the Studio's **Write** tab—no copy-pasting required.
+*   **Live Preview:** Content landed in the Studio is rendered instantly via a hot-reloading draft system.
+*   **Multi-Platform Publishing:** Reviewed deployment to **IPFS**, **GitHub Pages**, **Netlify**, **Vercel**, and **Cloudflare Pages**. Plaintext FTP is intentionally unsupported.
+*   **Zero Hosting Fees:** Leverage free developer tiers across the web with a single click.
+*   **Educational Live-Share:** Open a "Live Session" to let an approved peer watch the AI build in real-time over WebRTC.
+
+### 4. The Messenger (Decentralized Communication)
+Beyond a personal log, UCP is a communication plane for humans and AI.
+*   **P2P Messaging:** Send encrypted messages directly to other `AgentID` public keys—no email or chat servers required.
+*   **Consent Gate:** A unique security layer where public usernames are never enough to reach you. You must explicitly approve a peer's request before they can enter your private thread.
+*   **Merkle-DAG Threading:** Messages follow the **OrbitDB** shape—each message is a signed IPLD node linking to its parent CID. History is immutable and verifiable; concurrent branches remain explicit rather than pretending to have one perfect global order.
+*   **AI-Send Lever:** Control your agent's participation in rooms (On, Off, or On-Mention), turning the AI from a silent observer into an active collaborator.
+
+---
+
+## 🛡️ Sovereign Security (Herd Immunity)
+
+UCP is built on the **Inverted Security Paradigm**: data starts private and only leaves through explicit, reviewed gates.
+*   **Egress-Locked-by-Default:** Every record is fenced from the public internet. "Clearing for Export" is a deliberate, password-gated act.
+*   **YARA-X Immune System:** An embedded malware scanner gate acts as a strict filter for all data crossing propagation boundaries.
+*   **Private Swarm (PNET):** Your node ignores the public IPFS DHT, communicating only with trusted peers in your encrypted private mesh.
+*   **Consent Gate:** Direct messaging requires explicit peer approval. A public username is never enough to reach you.
+
+---
+
+## 🛠️ Community & Harness Integration
+
+UCP is the "portable soul" for:
+*   **Local-First AI:** Give Ollama or LM Studio a permanent, private memory.
+*   **Agentic IDEs:** Provide Claude Code, Cursor, or Goose with deep provenance of past architectural decisions.
+*   **DeSci (Decentralized Science):** Build an immutable, audit-able record of the entire research process.
+
+---
+
+## 📖 Commands & Interface
+
+UCP provides a robust set of tools for managing your decentralized memory:
+*   **INGEST:** Import files, folders, or harness logs directly into the Merkle-DAG.
+*   **PUT / BIND:** Manually stage data or bind stable names to CIDs.
+*   **LS / CAT:** Browse the chronological timeline and inspect raw IPLD records.
+*   **SHARE / EXPORT-CAR:** Publish to the public web or export portable, verifiable snapshots.
+*   **GC:** Garbage collect un-named orphans to keep your store lean.
+
+---
+
+## 🏗️ The Architecture: Kubo as the Central Substrate
+
+UCP treats the **Kubo (IPFS) node** as the "hardware" or the "engine" of your personal cloud. The Concierge pulls everything together by orchestrating three core layers within a single, node-resident environment:
+
+*   **The Storage Layer (IPLD):** Kubo provides the Merkle-DAG substrate where every interaction is stored as a permanent, content-addressed block.
+*   **The Network Layer (Swarm):** Kubo manages the **Private Swarm (PNET)**, ensuring your data moves securely between your trusted devices and only hits the public web when you authorize an egress.
+*   **The AI Layer (Sidekick):** The **on-node embedding model** runs directly alongside the Kubo daemon, allowing for "hot" semantic retrieval without your memory ever leaving your local environment.
+
+---
+
+## 📜 Technical Stack
+*   **Core:** Rust (Performance, safety, and native IPFS/libp2p integration).
+*   **Storage:** IPLD / Merkle-DAGs (Content-addressable, immutable).
+*   **Network:** libp2p / **Private Swarms (PNET)**.
+*   **Naming:** IPNS / ENS / Blockchain Adapters.
+*   **Security:** **YARA-X** (Embedded malware scanning) + **Swarm Encryption**.
+*   **UI:** Vanilla HTML5/CSS3/JS (Single-file "Sovereign SPA").
+
+---
+
+## 🤝 Contributing
+We believe in **Egalitarian Human + AI Problem Solving.** Check out our `PLATFORM_VISION.md` to see how we’re building a decentralized public square for the future of work.
+
+---
+*"The substrate, not the harness."*

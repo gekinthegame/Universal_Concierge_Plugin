@@ -4,6 +4,46 @@ Append-only record of architectural decisions. Newest first.
 
 ---
 
+## 0032 — IPFS Cluster is an optional, self-hosted pin-replication layer (CRDT, user-owned secret), never a landlord
+
+**Date:** 2026-06-12 · **Status:** accepted (direction); not yet implemented · **Plans/Surface:** `IPFS_CLUSTER_PLAN.md`, `crates/core/src/node.rs`, `crates/core/src/config.rs`, `crates/core/src/publishing.rs`, `crates/core/src/pairing.rs`, `crates/gui` (BACKENDS + PIN STATUS, Sidekick toggle, Network map) · **Builds on:** 0011, 0022, 0026, 0027, 0029, 0030, 0031
+
+A published CID is only as available as the **single** Kubo node that pinned it (0027:
+"a down node is just *not set up*"). [IPFS Cluster](https://ipfscluster.io) fixes exactly
+that — a sidecar daemon next to Kubo that maintains a **replicated pinset** and **re-pins
+automatically** across peers. We adopt it as an **optional, layered** capability, on these
+terms:
+
+- **CRDT only — no central server.** Peers form a private libp2p net gated by a **user-owned
+  cluster secret** (0600). We do **not** use Raft (fixed membership = more central). The
+  default and primary use is a cluster of **your own devices**: publish on one, all of them
+  replicate and auto-heal — the sovereign-publish story (0027) hardened against single-node
+  downtime, with **no landlord**.
+- **Public or ciphertext only — never plaintext private data to peers you don't control.**
+  Cluster has **no encryption and no ACL**; it only replicates pins of CIDs that already
+  exist in IPFS. So privacy must *precede* pinning: only the **cleared/public** tier (0030)
+  or **already-encrypted ciphertext** (0011) is ever cluster-pinned. Encrypted data stays an
+  **inert, blind-pinned ciphertext** the peers cannot read (existing threat-model invariant);
+  decryption stays capability-gated locally.
+- **Opt-in, off by default; detected, not bundled.** A missing/down cluster reads as "not set
+  up," never an error, and publish still works (local pin only) — same stance as the Kubo
+  node (0027/0029). Binaries (`ipfs-cluster-service`/`-ctl`) are found like Kubo, with an
+  honest install prompt; the toggle folds into "Enable Sidekick" (0029, same Kubo coupling).
+- **Adding a device reuses Phase N pairing.** The secret travels over the **encrypted
+  post-pairing channel** (the QR offer stays secret-free), exactly like a capability grant.
+- **A public *follower* cluster** (`ipfs-cluster-follow`) is allowed for **public-only**
+  community durability — explicit, public content only, never private/ciphertext through a
+  third party's `trusted_peers` (consistent with 0031: public IPFS is non-anonymous and the
+  user's responsibility).
+
+**Non-goal — this does NOT replace Phase N sync.** IPFS Cluster replicates a *flat Kubo
+pinset*; Phase N (`crates/net` + `sync`/`merge`) still owns the **`mem` DAG's** CRDT
+merge/heads/tombstones/capabilities. They sit at different layers: Cluster = Kubo pin
+durability for published/public (or blind-pinned ciphertext) content; Phase N = the private
+content-addressed store's convergence. Do not conflate them.
+
+---
+
 ## 0031 — Copyright is a documented user responsibility, not an enforced platform function
 
 **Date:** 2026-06-10 · **Status:** accepted · **Plans/Surface:** `ACCEPTABLE_USE.md`, `FUTURE_VISION_WEB_PUBLISHING.md`, `THREAT_MODEL.md` · **Builds on:** 0026, 0029, 0030

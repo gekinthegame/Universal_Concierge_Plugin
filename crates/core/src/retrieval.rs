@@ -191,9 +191,11 @@ impl SemanticEmbedder {
             .iter()
             .find(|info| info.model_code.to_lowercase() == want)
             .or_else(|| {
-                models
-                    .iter()
-                    .find(|info| info.model_code.to_lowercase().ends_with(&format!("/{want}")))
+                models.iter().find(|info| {
+                    info.model_code
+                        .to_lowercase()
+                        .ends_with(&format!("/{want}"))
+                })
             })
             .cloned();
         let (model, dims, resolved) = match matched {
@@ -202,7 +204,11 @@ impl SemanticEmbedder {
                 eprintln!(
                     "librarian: unknown embedding model '{model_id}'; falling back to bge-small-en-v1.5"
                 );
-                (fastembed::EmbeddingModel::BGESmallENV15, 384, "bge-small-en-v1.5".to_string())
+                (
+                    fastembed::EmbeddingModel::BGESmallENV15,
+                    384,
+                    "bge-small-en-v1.5".to_string(),
+                )
             }
         };
         let loaded = fastembed::TextEmbedding::try_new(fastembed::InitOptions::new(model))
@@ -323,8 +329,11 @@ impl Embedder for HttpEmbedder {
 /// and `{"embeddings": [[...]]}`.
 fn extract_embedding(value: &serde_json::Value) -> Option<Vec<f32>> {
     let as_vec = |arr: &serde_json::Value| -> Option<Vec<f32>> {
-        arr.as_array()
-            .map(|xs| xs.iter().filter_map(|x| x.as_f64().map(|f| f as f32)).collect())
+        arr.as_array().map(|xs| {
+            xs.iter()
+                .filter_map(|x| x.as_f64().map(|f| f as f32))
+                .collect()
+        })
     };
     if let Some(v) = value.get("embedding").and_then(as_vec) {
         return Some(v);
@@ -392,8 +401,10 @@ fn cosine(a: &[f32], b: &[f32]) -> f32 {
 /// stationary distribution (well-connected nodes get more mass).
 fn pagerank(nodes: &[String], out_edges: &HashMap<String, Vec<String>>) -> HashMap<String, f32> {
     let n = nodes.len();
-    let mut rank: HashMap<String, f32> =
-        nodes.iter().map(|c| (c.clone(), 1.0 / n.max(1) as f32)).collect();
+    let mut rank: HashMap<String, f32> = nodes
+        .iter()
+        .map(|c| (c.clone(), 1.0 / n.max(1) as f32))
+        .collect();
     if n == 0 {
         return rank;
     }
@@ -401,7 +412,8 @@ fn pagerank(nodes: &[String], out_edges: &HashMap<String, Vec<String>>) -> HashM
     let teleport = (1.0 - PAGERANK_ALPHA) / n as f32;
 
     // Inbound adjacency + out-degree, both restricted to in-scope targets.
-    let mut inbound: HashMap<&String, Vec<&String>> = nodes.iter().map(|c| (c, Vec::new())).collect();
+    let mut inbound: HashMap<&String, Vec<&String>> =
+        nodes.iter().map(|c| (c, Vec::new())).collect();
     let mut outdeg: HashMap<&String, usize> = HashMap::new();
     for cid in nodes {
         let targets: Vec<&String> = out_edges
@@ -415,7 +427,11 @@ fn pagerank(nodes: &[String], out_edges: &HashMap<String, Vec<String>>) -> HashM
     }
 
     for _ in 0..50 {
-        let dangling_mass: f32 = nodes.iter().filter(|c| outdeg[c] == 0).map(|c| rank[c]).sum();
+        let dangling_mass: f32 = nodes
+            .iter()
+            .filter(|c| outdeg[c] == 0)
+            .map(|c| rank[c])
+            .sum();
         let dangling_share = PAGERANK_ALPHA * dangling_mass / n as f32;
         let mut next = HashMap::with_capacity(n);
         let mut delta = 0.0f32;
@@ -568,7 +584,10 @@ impl<E: Embedder> Librarian<E> {
         let mut entries = Vec::new();
         let mut out_edges: HashMap<String, Vec<String>> = HashMap::new();
         for cid in &cids {
-            let Some(Record::Live { kind, body_json, .. }) = records.get(&cid.0) else {
+            let Some(Record::Live {
+                kind, body_json, ..
+            }) = records.get(&cid.0)
+            else {
                 continue;
             };
             if is_scaffolding(kind) {
@@ -623,12 +642,25 @@ impl<E: Embedder> Librarian<E> {
     }
 
     /// Compute the graph signals (PageRank gravity + density) and recency, normalized.
-    fn finish(embedder: E, mut entries: Vec<IndexEntry>, out_edges: &HashMap<String, Vec<String>>) -> Self {
+    fn finish(
+        embedder: E,
+        mut entries: Vec<IndexEntry>,
+        out_edges: &HashMap<String, Vec<String>>,
+    ) -> Self {
         let node_ids: Vec<String> = entries.iter().map(|e| e.cid.clone()).collect();
         let pr = pagerank(&node_ids, out_edges);
-        let max_pr = pr.values().copied().fold(0.0f32, f32::max).max(f32::EPSILON);
-        let density_of = |e: &IndexEntry| e.outbound.len() as f32 / (e.text.len() as f32 / 1024.0).max(1.0);
-        let max_density = entries.iter().map(density_of).fold(0.0f32, f32::max).max(f32::EPSILON);
+        let max_pr = pr
+            .values()
+            .copied()
+            .fold(0.0f32, f32::max)
+            .max(f32::EPSILON);
+        let density_of =
+            |e: &IndexEntry| e.outbound.len() as f32 / (e.text.len() as f32 / 1024.0).max(1.0);
+        let max_density = entries
+            .iter()
+            .map(density_of)
+            .fold(0.0f32, f32::max)
+            .max(f32::EPSILON);
         let now = now_secs();
         for e in &mut entries {
             e.gravity = pr.get(&e.cid).copied().unwrap_or(0.0) / max_pr;
@@ -745,12 +777,16 @@ impl<E: Embedder> Librarian<E> {
         for hop in 1..=hops {
             let mut next: Vec<&str> = Vec::new();
             for cid in &frontier {
-                let Some(entry) = by_cid.get(cid) else { continue };
+                let Some(entry) = by_cid.get(cid) else {
+                    continue;
+                };
                 for link in &entry.outbound {
                     if included.contains(link.as_str()) {
                         continue;
                     }
-                    let Some(linked) = by_cid.get(link.as_str()) else { continue };
+                    let Some(linked) = by_cid.get(link.as_str()) else {
+                        continue;
+                    };
                     if used + linked.tokens > token_budget {
                         continue;
                     }
@@ -912,9 +948,7 @@ mod tests {
         /// triples — bypasses the store so ranking/packing/gravity are testable
         /// in isolation.
         fn from_raw(raw: Vec<(&str, &str, Vec<&str>)>) -> Self {
-            Self::from_raw_dated(
-                raw.into_iter().map(|(c, t, o)| (c, t, o, None)).collect(),
-            )
+            Self::from_raw_dated(raw.into_iter().map(|(c, t, o)| (c, t, o, None)).collect())
         }
 
         /// As [`from_raw`] but with an explicit `created_at` per node, to test recency.
@@ -979,14 +1013,23 @@ mod tests {
             );
             let _ = stream.write_all(resp.as_bytes());
         });
-        let e = HttpEmbedder::new(&format!("http://127.0.0.1:{port}/api/embeddings"), "any-model");
+        let e = HttpEmbedder::new(
+            &format!("http://127.0.0.1:{port}/api/embeddings"),
+            "any-model",
+        );
         let v = e.embed("hello");
         server.join().unwrap();
         // 3-4-... normalized: [0.6, 0.0, 0.8].
         assert_eq!(v.len(), 3);
-        assert!((v[0] - 0.6).abs() < 1e-5 && (v[2] - 0.8).abs() < 1e-5, "normalized: {v:?}");
+        assert!(
+            (v[0] - 0.6).abs() < 1e-5 && (v[2] - 0.8).abs() < 1e-5,
+            "normalized: {v:?}"
+        );
         assert_eq!(e.dims(), 3, "dims learned from the response");
-        assert!(e.id().contains("any-model"), "id carries the model for cache tagging");
+        assert!(
+            e.id().contains("any-model"),
+            "id carries the model for cache tagging"
+        );
     }
 
     #[test]
@@ -1067,8 +1110,16 @@ mod tests {
         // A decision links to its provenance tool_result. The query matches only
         // the decision lexically; one hop should surface the linked provenance.
         let raw = vec![
-            ("decision", "we chose the egress-locked default for privacy", vec!["provenance"]),
-            ("provenance", "command grep results showing the lock fields", vec![]),
+            (
+                "decision",
+                "we chose the egress-locked default for privacy",
+                vec!["provenance"],
+            ),
+            (
+                "provenance",
+                "command grep results showing the lock fields",
+                vec![],
+            ),
             ("unrelated", "sourdough fermentation starter timing", vec![]),
         ];
         let lib = Librarian::from_raw(raw);
@@ -1079,15 +1130,33 @@ mod tests {
         let direct_has_prov = direct.items.iter().any(|r| r.cid == "provenance");
 
         // With one hop: the provenance is pulled in as related (hop = 1).
-        let hopped = lib.retrieve_multihop("egress-locked privacy default", 10_000, &[], Depth::Brief, 1, None);
+        let hopped = lib.retrieve_multihop(
+            "egress-locked privacy default",
+            10_000,
+            &[],
+            Depth::Brief,
+            1,
+            None,
+        );
         let prov = hopped.items.iter().find(|r| r.cid == "provenance");
-        assert!(prov.is_some(), "one hop surfaces the linked provenance node");
+        assert!(
+            prov.is_some(),
+            "one hop surfaces the linked provenance node"
+        );
         assert_eq!(prov.unwrap().hop, 1, "tagged as related (hop 1)");
         let decision = hopped.items.iter().find(|r| r.cid == "decision").unwrap();
         assert_eq!(decision.hop, 0, "the direct match stays hop 0");
         // The decision (direct match) ranks ahead of its related provenance.
-        let dpos = hopped.items.iter().position(|r| r.cid == "decision").unwrap();
-        let ppos = hopped.items.iter().position(|r| r.cid == "provenance").unwrap();
+        let dpos = hopped
+            .items
+            .iter()
+            .position(|r| r.cid == "decision")
+            .unwrap();
+        let ppos = hopped
+            .items
+            .iter()
+            .position(|r| r.cid == "provenance")
+            .unwrap();
         assert!(dpos < ppos, "direct matches lead, related context follows");
         // (Sanity: the link, not lexical similarity, is what brought provenance in.)
         let _ = direct_has_prov;
@@ -1103,18 +1172,28 @@ mod tests {
         let lib = Librarian::from_raw(raw);
         // Tight budget: even with hops requested, packing must respect it.
         let result = lib.retrieve_multihop("alpha beta", 12, &[], Depth::Brief, 2, None);
-        assert!(result.used_tokens <= 12, "multi-hop respects the budget: {}", result.used_tokens);
+        assert!(
+            result.used_tokens <= 12,
+            "multi-hop respects the budget: {}",
+            result.used_tokens
+        );
     }
 
     #[test]
     fn pack_respects_token_budget() {
         // Each text is ~40 chars ≈ 10 tokens; a 25-token budget fits ~2.
         let text = "alpha beta gamma delta epsilon zeta eta";
-        let raw: Vec<(&str, &str, Vec<&str>)> =
-            ["n0", "n1", "n2", "n3", "n4"].iter().map(|c| (*c, text, vec![])).collect();
+        let raw: Vec<(&str, &str, Vec<&str>)> = ["n0", "n1", "n2", "n3", "n4"]
+            .iter()
+            .map(|c| (*c, text, vec![]))
+            .collect();
         let lib = Librarian::from_raw(raw);
         let result = lib.retrieve("alpha beta", 25, &[], Depth::Brief);
-        assert!(result.used_tokens <= 25, "budget respected: {}", result.used_tokens);
+        assert!(
+            result.used_tokens <= 25,
+            "budget respected: {}",
+            result.used_tokens
+        );
         assert!(result.items.len() < 5, "not everything fits");
         assert!(!result.items.is_empty(), "something fits");
     }
@@ -1123,11 +1202,20 @@ mod tests {
     fn pinned_cid_is_always_included_even_over_budget() {
         let raw = vec![
             ("relevant", "alpha beta gamma", vec![]),
-            ("pinned-irrelevant", "zebra umbrella concrete xylophone", vec![]),
+            (
+                "pinned-irrelevant",
+                "zebra umbrella concrete xylophone",
+                vec![],
+            ),
         ];
         let lib = Librarian::from_raw(raw);
         // Budget 0 → nothing fits by score, but the pinned CID is forced in.
-        let result = lib.retrieve("alpha beta", 0, &["pinned-irrelevant".to_string()], Depth::Brief);
+        let result = lib.retrieve(
+            "alpha beta",
+            0,
+            &["pinned-irrelevant".to_string()],
+            Depth::Brief,
+        );
         assert!(
             result.items.iter().any(|r| r.cid == "pinned-irrelevant"),
             "pinned CID must be included regardless of budget/score"
@@ -1185,14 +1273,19 @@ mod tests {
             let cid = mem
                 .put_node(&Node {
                     kind: "memory".to_string(),
-                    fields_json: format!(r#"{{"text":"node {i} content here","kind":"reference"}}"#),
+                    fields_json: format!(
+                        r#"{{"text":"node {i} content here","kind":"reference"}}"#
+                    ),
                 })
                 .unwrap();
             mem.bind(&format!("n{i}"), &cid).unwrap();
         }
         let first = std::sync::Arc::new(AtomicUsize::new(0));
         Librarian::index_all_persistent(&mem, Counting(first.clone())).unwrap();
-        assert!(first.load(Ordering::SeqCst) >= 5, "first build embeds all nodes");
+        assert!(
+            first.load(Ordering::SeqCst) >= 5,
+            "first build embeds all nodes"
+        );
         // Second build: the persisted cache (same model id) serves every vector.
         let second = std::sync::Arc::new(AtomicUsize::new(0));
         Librarian::index_all_persistent(&mem, Counting(second.clone())).unwrap();
@@ -1209,13 +1302,26 @@ mod tests {
         // nodes carry a record-level created_at; here we set it directly.)
         let now = now_secs();
         let lib = Librarian::from_raw_dated(vec![
-            ("recent", "the same topic about distributed consensus", vec![], Some(now - 60)),
-            ("old", "the same topic about distributed consensus", vec![], Some(now - 400 * 86_400)),
+            (
+                "recent",
+                "the same topic about distributed consensus",
+                vec![],
+                Some(now - 60),
+            ),
+            (
+                "old",
+                "the same topic about distributed consensus",
+                vec![],
+                Some(now - 400 * 86_400),
+            ),
         ]);
         let result = lib.retrieve("distributed consensus topic", 10_000, &[], Depth::Brief);
         let rpos = result.items.iter().position(|r| r.cid == "recent").unwrap();
         let opos = result.items.iter().position(|r| r.cid == "old").unwrap();
-        assert!(rpos < opos, "newer memory ranks above equally-relevant older memory");
+        assert!(
+            rpos < opos,
+            "newer memory ranks above equally-relevant older memory"
+        );
     }
 
     #[test]
@@ -1225,13 +1331,15 @@ mod tests {
         let decision = mem
             .put_node(&Node {
                 kind: "decision".to_string(),
-                fields_json: r#"{"question":"","choice":"adopt the egress lock","rationale":""}"#.to_string(),
+                fields_json: r#"{"question":"","choice":"adopt the egress lock","rationale":""}"#
+                    .to_string(),
             })
             .unwrap();
         let memo = mem
             .put_node(&Node {
                 kind: "memory".to_string(),
-                fields_json: r#"{"text":"a note about the egress lock","kind":"reference"}"#.to_string(),
+                fields_json: r#"{"text":"a note about the egress lock","kind":"reference"}"#
+                    .to_string(),
             })
             .unwrap();
         mem.bind("d", &decision).unwrap();
@@ -1264,21 +1372,29 @@ mod tests {
         let cid = mem
             .put_node(&Node {
                 kind: "memory".to_string(),
-                fields_json: r#"{"text":"the flagged malware payload notes","kind":"reference"}"#.to_string(),
+                fields_json: r#"{"text":"the flagged malware payload notes","kind":"reference"}"#
+                    .to_string(),
             })
             .unwrap();
         mem.bind("latest", &cid).unwrap();
         // Indexed + retrievable.
-        assert!(Librarian::index_all(&mem, LexicalEmbedder::default()).unwrap().contains(&cid.0));
+        assert!(Librarian::index_all(&mem, LexicalEmbedder::default())
+            .unwrap()
+            .contains(&cid.0));
         // Quarantine → excluded from the index, never surfaces.
         mem.quarantine_cid(&cid, "yara: test").unwrap();
         let withheld = Librarian::index_all(&mem, LexicalEmbedder::default()).unwrap();
         assert!(!withheld.contains(&cid.0), "quarantined CID is excluded");
         let result = withheld.retrieve("malware payload notes", 10_000, &[], Depth::Full);
-        assert!(result.items.iter().all(|i| i.cid != cid.0), "never surfaces while quarantined");
+        assert!(
+            result.items.iter().all(|i| i.cid != cid.0),
+            "never surfaces while quarantined"
+        );
         // Release → reversible, re-appears.
         mem.release_cid(&cid).unwrap();
-        assert!(Librarian::index_all(&mem, LexicalEmbedder::default()).unwrap().contains(&cid.0));
+        assert!(Librarian::index_all(&mem, LexicalEmbedder::default())
+            .unwrap()
+            .contains(&cid.0));
     }
 
     #[test]
@@ -1289,20 +1405,27 @@ mod tests {
         let node_a = mem
             .put_node(&Node {
                 kind: "memory".to_string(),
-                fields_json: r#"{"text":"capability A alpha content","kind":"reference"}"#.to_string(),
+                fields_json: r#"{"text":"capability A alpha content","kind":"reference"}"#
+                    .to_string(),
             })
             .unwrap();
         let secret_b = mem
             .put_node(&Node {
                 kind: "memory".to_string(),
-                fields_json: r#"{"text":"capability B forbidden secret bravo","kind":"reference"}"#.to_string(),
+                fields_json: r#"{"text":"capability B forbidden secret bravo","kind":"reference"}"#
+                    .to_string(),
             })
             .unwrap();
         mem.bind("a", &node_a).unwrap();
         mem.bind("b", &secret_b).unwrap();
 
         // Index scoped to A's root only — B is a sibling, out of scope.
-        let lib = Librarian::index(&mem, LexicalEmbedder::default(), &[node_a.clone()]).unwrap();
+        let lib = Librarian::index(
+            &mem,
+            LexicalEmbedder::default(),
+            std::slice::from_ref(&node_a),
+        )
+        .unwrap();
         assert!(lib.contains(&node_a.0), "A is indexed");
         assert!(
             !lib.contains(&secret_b.0),

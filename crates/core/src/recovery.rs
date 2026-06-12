@@ -85,7 +85,12 @@ impl UserIdentityOp {
     /// Append a rotation to `new_active_key`, signed by `signer` — which must be the
     /// current active key (a [`UserOpKind::Rotate`]) or the recovery key (a
     /// [`UserOpKind::Recover`]); the verifier enforces that.
-    pub fn rotate(prior: &UserIdentityOp, new_active_key: &str, signer: &Identity, created_at: u64) -> Self {
+    pub fn rotate(
+        prior: &UserIdentityOp,
+        new_active_key: &str,
+        signer: &Identity,
+        created_at: u64,
+    ) -> Self {
         let kind = if signer.agent_id().0 == prior.recovery_key {
             UserOpKind::Recover
         } else {
@@ -156,7 +161,9 @@ pub enum RecoveryError {
     BrokenChain,
     #[error("the stable user_id or recovery key changed mid-chain")]
     InvariantChanged,
-    #[error("an op was signed by a key not authorized at that point (not the active or recovery key)")]
+    #[error(
+        "an op was signed by a key not authorized at that point (not the active or recovery key)"
+    )]
     UnauthorizedSigner,
     #[error("an op's signature does not verify")]
     BadSignature,
@@ -183,8 +190,12 @@ pub fn verify_and_resolve(log: &UserIdentityLog) -> Result<ResolvedIdentity, Rec
     {
         return Err(RecoveryError::BadGenesis);
     }
-    if !verify_sig(&AgentId(genesis.signer.clone()), &genesis.signing_bytes(), &genesis.signature)
-        .map_err(RecoveryError::Malformed)?
+    if !verify_sig(
+        &AgentId(genesis.signer.clone()),
+        &genesis.signing_bytes(),
+        &genesis.signature,
+    )
+    .map_err(RecoveryError::Malformed)?
     {
         return Err(RecoveryError::BadSignature);
     }
@@ -208,8 +219,12 @@ pub fn verify_and_resolve(log: &UserIdentityLog) -> Result<ResolvedIdentity, Rec
         if op.signer != active_key && op.signer != recovery_key {
             return Err(RecoveryError::UnauthorizedSigner);
         }
-        if !verify_sig(&AgentId(op.signer.clone()), &op.signing_bytes(), &op.signature)
-            .map_err(RecoveryError::Malformed)?
+        if !verify_sig(
+            &AgentId(op.signer.clone()),
+            &op.signing_bytes(),
+            &op.signature,
+        )
+        .map_err(RecoveryError::Malformed)?
         {
             return Err(RecoveryError::BadSignature);
         }
@@ -217,7 +232,11 @@ pub fn verify_and_resolve(log: &UserIdentityLog) -> Result<ResolvedIdentity, Rec
         prev_hash = op.hash();
     }
 
-    Ok(ResolvedIdentity { user_id, active_key, recovery_key })
+    Ok(ResolvedIdentity {
+        user_id,
+        active_key,
+        recovery_key,
+    })
 }
 
 use std::path::PathBuf;
@@ -252,15 +271,19 @@ impl MemCli {
     /// This UserID's rotation log, if recovery has been established.
     pub fn user_identity_log(&self) -> CoreResult<Option<UserIdentityLog>> {
         match std::fs::read_to_string(self.user_log_path()?) {
-            Ok(text) => serde_json::from_str(&text).map(Some).map_err(|e| Error::Io(format!("parse user log: {e}"))),
+            Ok(text) => serde_json::from_str(&text)
+                .map(Some)
+                .map_err(|e| Error::Io(format!("parse user log: {e}"))),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
             Err(e) => Err(Error::Io(format!("read user log: {e}"))),
         }
     }
 
     fn write_user_log(&self, log: &UserIdentityLog) -> CoreResult<()> {
-        let text = serde_json::to_string_pretty(log).map_err(|e| Error::Io(format!("serialize user log: {e}")))?;
-        std::fs::write(self.user_log_path()?, text).map_err(|e| Error::Io(format!("write user log: {e}")))
+        let text = serde_json::to_string_pretty(log)
+            .map_err(|e| Error::Io(format!("serialize user log: {e}")))?;
+        std::fs::write(self.user_log_path()?, text)
+            .map_err(|e| Error::Io(format!("write user log: {e}")))
     }
 
     /// **Establish recovery** for this install's UserID: generate an offline
@@ -270,13 +293,16 @@ impl MemCli {
     /// resolved identity (the stable id + current active key + recovery key).
     pub fn establish_user_recovery(&self) -> CoreResult<ResolvedIdentity> {
         if let Some(log) = self.user_identity_log()? {
-            return verify_and_resolve(&log).map_err(|e| Error::SecurityPolicy(format!("existing user log invalid: {e}")));
+            return verify_and_resolve(&log)
+                .map_err(|e| Error::SecurityPolicy(format!("existing user log invalid: {e}")));
         }
         let initial = self.user_identity()?; // the current active UserID key
-        // A fresh, separate recovery key — persisted owner-only (ideally moved
-        // offline / into an encrypted recovery package; see the plan).
+                                             // A fresh, separate recovery key — persisted owner-only (ideally moved
+                                             // offline / into an encrypted recovery package; see the plan).
         let recovery = Identity::generate();
-        recovery.save(&self.recovery_key_path()?).map_err(Error::Io)?;
+        recovery
+            .save(&self.recovery_key_path()?)
+            .map_err(Error::Io)?;
         let genesis = UserIdentityOp::genesis(&initial, &recovery.agent_id().0, now_secs());
         let log = UserIdentityLog { ops: vec![genesis] };
         self.write_user_log(&log)?;
@@ -293,19 +319,27 @@ impl MemCli {
     /// as `user.key`. The stable UserID is unchanged. Requires recovery to have been
     /// established.
     pub fn rotate_user_key(&self) -> CoreResult<ResolvedIdentity> {
-        let mut log = self
-            .user_identity_log()?
-            .ok_or_else(|| Error::SecurityPolicy("no user-identity log — run establish first".to_string()))?;
+        let mut log = self.user_identity_log()?.ok_or_else(|| {
+            Error::SecurityPolicy("no user-identity log — run establish first".to_string())
+        })?;
         let current = self.user_identity()?;
         let new_active = Identity::generate();
-        let prior = log.ops.last().ok_or_else(|| Error::SecurityPolicy("empty user log".to_string()))?;
+        let prior = log
+            .ops
+            .last()
+            .ok_or_else(|| Error::SecurityPolicy("empty user log".to_string()))?;
         let op = UserIdentityOp::rotate(prior, &new_active.agent_id().0, &current, now_secs());
         log.ops.push(op);
-        verify_and_resolve(&log).map_err(|e| Error::SecurityPolicy(format!("rotation invalid: {e}")))?;
+        verify_and_resolve(&log)
+            .map_err(|e| Error::SecurityPolicy(format!("rotation invalid: {e}")))?;
         // Install the new active key, then commit the log.
         new_active.save(&self.user_key_path()?).map_err(Error::Io)?;
         self.write_user_log(&log)?;
-        let _ = self.append_security_event_unlocked("user_key_rotated", &Cid(new_active.agent_id().0.clone()), "active key rotated");
+        let _ = self.append_security_event_unlocked(
+            "user_key_rotated",
+            &Cid(new_active.agent_id().0.clone()),
+            "active key rotated",
+        );
         verify_and_resolve(&log).map_err(|e| Error::SecurityPolicy(format!("{e}")))
     }
 
@@ -315,21 +349,31 @@ impl MemCli {
     /// is read from `recovery.key`; in production it would be supplied from an offline
     /// backup.)
     pub fn recover_user_key(&self) -> CoreResult<ResolvedIdentity> {
-        let mut log = self
-            .user_identity_log()?
-            .ok_or_else(|| Error::SecurityPolicy("no user-identity log — nothing to recover".to_string()))?;
+        let mut log = self.user_identity_log()?.ok_or_else(|| {
+            Error::SecurityPolicy("no user-identity log — nothing to recover".to_string())
+        })?;
         let recovery = Identity::load_or_create(&self.recovery_key_path()?).map_err(Error::Io)?;
         let new_active = Identity::generate();
-        let prior = log.ops.last().ok_or_else(|| Error::SecurityPolicy("empty user log".to_string()))?;
+        let prior = log
+            .ops
+            .last()
+            .ok_or_else(|| Error::SecurityPolicy("empty user log".to_string()))?;
         if prior.recovery_key != recovery.agent_id().0 {
-            return Err(Error::SecurityPolicy("recovery key does not match this identity".to_string()));
+            return Err(Error::SecurityPolicy(
+                "recovery key does not match this identity".to_string(),
+            ));
         }
         let op = UserIdentityOp::rotate(prior, &new_active.agent_id().0, &recovery, now_secs());
         log.ops.push(op);
-        verify_and_resolve(&log).map_err(|e| Error::SecurityPolicy(format!("recovery invalid: {e}")))?;
+        verify_and_resolve(&log)
+            .map_err(|e| Error::SecurityPolicy(format!("recovery invalid: {e}")))?;
         new_active.save(&self.user_key_path()?).map_err(Error::Io)?;
         self.write_user_log(&log)?;
-        let _ = self.append_security_event_unlocked("user_identity_recovered", &Cid(new_active.agent_id().0.clone()), "active key recovered via recovery key");
+        let _ = self.append_security_event_unlocked(
+            "user_identity_recovered",
+            &Cid(new_active.agent_id().0.clone()),
+            "active key recovered via recovery key",
+        );
         verify_and_resolve(&log).map_err(|e| Error::SecurityPolicy(format!("{e}")))
     }
 }
@@ -339,7 +383,13 @@ mod tests {
     use super::*;
 
     fn genesis(initial: &Identity, recovery: &Identity) -> UserIdentityLog {
-        UserIdentityLog { ops: vec![UserIdentityOp::genesis(initial, &recovery.agent_id().0, 1000)] }
+        UserIdentityLog {
+            ops: vec![UserIdentityOp::genesis(
+                initial,
+                &recovery.agent_id().0,
+                1000,
+            )],
+        }
     }
 
     #[test]
@@ -360,13 +410,26 @@ mod tests {
         let new_device = Identity::generate();
         let mut log = genesis(&initial, &recovery);
         // Routine rotation: the current active key signs in the new key.
-        let op = UserIdentityOp::rotate(log.ops.last().unwrap(), &new_device.agent_id().0, &initial, 2000);
+        let op = UserIdentityOp::rotate(
+            log.ops.last().unwrap(),
+            &new_device.agent_id().0,
+            &initial,
+            2000,
+        );
         assert_eq!(op.kind, UserOpKind::Rotate);
         log.ops.push(op);
 
         let resolved = verify_and_resolve(&log).unwrap();
-        assert_eq!(resolved.user_id, initial.agent_id().0, "the identity is unchanged");
-        assert_eq!(resolved.active_key, new_device.agent_id().0, "but the active key rotated");
+        assert_eq!(
+            resolved.user_id,
+            initial.agent_id().0,
+            "the identity is unchanged"
+        );
+        assert_eq!(
+            resolved.active_key,
+            new_device.agent_id().0,
+            "but the active key rotated"
+        );
     }
 
     #[test]
@@ -377,12 +440,21 @@ mod tests {
         let recovery = Identity::generate();
         let replacement = Identity::generate();
         let mut log = genesis(&initial, &recovery);
-        let op = UserIdentityOp::rotate(log.ops.last().unwrap(), &replacement.agent_id().0, &recovery, 3000);
+        let op = UserIdentityOp::rotate(
+            log.ops.last().unwrap(),
+            &replacement.agent_id().0,
+            &recovery,
+            3000,
+        );
         assert_eq!(op.kind, UserOpKind::Recover, "signed by the recovery key");
         log.ops.push(op);
 
         let resolved = verify_and_resolve(&log).unwrap();
-        assert_eq!(resolved.user_id, initial.agent_id().0, "still the same user after recovery");
+        assert_eq!(
+            resolved.user_id,
+            initial.agent_id().0,
+            "still the same user after recovery"
+        );
         assert_eq!(resolved.active_key, replacement.agent_id().0);
     }
 
@@ -393,8 +465,18 @@ mod tests {
         let k2 = Identity::generate();
         let k3 = Identity::generate();
         let mut log = genesis(&initial, &recovery);
-        log.ops.push(UserIdentityOp::rotate(log.ops.last().unwrap(), &k2.agent_id().0, &initial, 2000));
-        log.ops.push(UserIdentityOp::rotate(log.ops.last().unwrap(), &k3.agent_id().0, &k2, 3000));
+        log.ops.push(UserIdentityOp::rotate(
+            log.ops.last().unwrap(),
+            &k2.agent_id().0,
+            &initial,
+            2000,
+        ));
+        log.ops.push(UserIdentityOp::rotate(
+            log.ops.last().unwrap(),
+            &k3.agent_id().0,
+            &k2,
+            3000,
+        ));
         let resolved = verify_and_resolve(&log).unwrap();
         assert_eq!(resolved.active_key, k3.agent_id().0);
         assert_eq!(resolved.user_id, initial.agent_id().0);
@@ -407,9 +489,17 @@ mod tests {
         let attacker = Identity::generate();
         let mut log = genesis(&initial, &recovery);
         // Attacker (neither the active nor the recovery key) signs a rotation.
-        let op = UserIdentityOp::rotate(log.ops.last().unwrap(), &attacker.agent_id().0, &attacker, 2000);
+        let op = UserIdentityOp::rotate(
+            log.ops.last().unwrap(),
+            &attacker.agent_id().0,
+            &attacker,
+            2000,
+        );
         log.ops.push(op);
-        assert_eq!(verify_and_resolve(&log), Err(RecoveryError::UnauthorizedSigner));
+        assert_eq!(
+            verify_and_resolve(&log),
+            Err(RecoveryError::UnauthorizedSigner)
+        );
     }
 
     #[test]
@@ -420,10 +510,23 @@ mod tests {
         let k2 = Identity::generate();
         let k3 = Identity::generate();
         let mut log = genesis(&initial, &recovery);
-        log.ops.push(UserIdentityOp::rotate(log.ops.last().unwrap(), &k2.agent_id().0, &initial, 2000));
+        log.ops.push(UserIdentityOp::rotate(
+            log.ops.last().unwrap(),
+            &k2.agent_id().0,
+            &initial,
+            2000,
+        ));
         // `initial` is now superseded; it tries to rotate again → rejected.
-        log.ops.push(UserIdentityOp::rotate(log.ops.last().unwrap(), &k3.agent_id().0, &initial, 3000));
-        assert_eq!(verify_and_resolve(&log), Err(RecoveryError::UnauthorizedSigner));
+        log.ops.push(UserIdentityOp::rotate(
+            log.ops.last().unwrap(),
+            &k3.agent_id().0,
+            &initial,
+            3000,
+        ));
+        assert_eq!(
+            verify_and_resolve(&log),
+            Err(RecoveryError::UnauthorizedSigner)
+        );
     }
 
     #[test]
@@ -432,14 +535,16 @@ mod tests {
         let recovery = Identity::generate();
         let k2 = Identity::generate();
         let mut log = genesis(&initial, &recovery);
-        let mut op = UserIdentityOp::rotate(log.ops.last().unwrap(), &k2.agent_id().0, &initial, 2000);
+        let mut op =
+            UserIdentityOp::rotate(log.ops.last().unwrap(), &k2.agent_id().0, &initial, 2000);
         op.active_key = Identity::generate().agent_id().0; // tamper after signing
         log.ops.push(op);
         assert_eq!(verify_and_resolve(&log), Err(RecoveryError::BadSignature));
 
         // Broken chain: an op whose prev points nowhere.
         let mut log2 = genesis(&initial, &recovery);
-        let mut op2 = UserIdentityOp::rotate(log2.ops.last().unwrap(), &k2.agent_id().0, &initial, 2000);
+        let mut op2 =
+            UserIdentityOp::rotate(log2.ops.last().unwrap(), &k2.agent_id().0, &initial, 2000);
         op2.prev = Some("deadbeef".to_string());
         op2.signature = initial.sign(&op2.signing_bytes()); // re-sign the tampered op
         log2.ops.push(op2);
@@ -463,12 +568,19 @@ mod tests {
         let r1 = mem.rotate_user_key().unwrap();
         assert_eq!(r1.user_id, stable_id, "same user after rotation");
         assert_ne!(r1.active_key, r0.active_key, "active key rotated");
-        assert_eq!(mem.user_identity().unwrap().agent_id().0, r1.active_key, "the installed key is the new active key");
+        assert_eq!(
+            mem.user_identity().unwrap().agent_id().0,
+            r1.active_key,
+            "the installed key is the new active key"
+        );
 
         // Recover via the offline recovery key (active key 'lost'): id still holds.
         let r2 = mem.recover_user_key().unwrap();
         assert_eq!(r2.user_id, stable_id, "same user after recovery");
-        assert_ne!(r2.active_key, r1.active_key, "a fresh active key was installed");
+        assert_ne!(
+            r2.active_key, r1.active_key,
+            "a fresh active key was installed"
+        );
         assert_eq!(r2.recovery_key, r0.recovery_key, "recovery key invariant");
 
         // The persisted log replays to exactly the resolved state.
@@ -482,13 +594,22 @@ mod tests {
         // The integration: after a root rotates its key, a membership cert + a
         // capability it signs with the NEW key are accepted *with* its rotation log,
         // but rejected without it (the genesis key is still all the descriptor lists).
-        use crate::capability::{verify_capability, verify_capability_with_logs, Capability, Namespace, NamespaceScope, Operation};
-        use crate::membership::{verify_membership, verify_membership_with_logs, MembershipCertificate, NetworkDescriptor, RevocationSet, SubjectKind};
+        use crate::capability::{
+            verify_capability, verify_capability_with_logs, Capability, Namespace, NamespaceScope,
+            Operation,
+        };
+        use crate::membership::{
+            verify_membership, verify_membership_with_logs, MembershipCertificate,
+            NetworkDescriptor, RevocationSet, SubjectKind,
+        };
 
         let initial = Identity::generate();
         let recovery = Identity::generate();
         let descriptor = NetworkDescriptor::create(&initial, "team", 1000); // root = initial's key
-        let ns = Namespace::new(descriptor.network_id.clone(), NamespaceScope::Project("atlas".into()));
+        let ns = Namespace::new(
+            descriptor.network_id.clone(),
+            NamespaceScope::Project("atlas".into()),
+        );
 
         // The root rotates initial → new_active.
         let new_active = Identity::generate();
@@ -500,18 +621,46 @@ mod tests {
 
         // The root, now signing with new_active, issues a device cert + a capability.
         let device = Identity::generate();
-        let cert = MembershipCertificate::issue(&new_active, &descriptor.network_id, &device.agent_id().0, SubjectKind::Device, 1000, 24 * 3600, 0, vec![]);
-        let cap = Capability::issue(&new_active, ns, &device.agent_id().0, vec![Operation::SyncRead], 1000, 24 * 3600, 0, false);
+        let cert = MembershipCertificate::issue(
+            &new_active,
+            &descriptor.network_id,
+            &device.agent_id().0,
+            SubjectKind::Device,
+            1000,
+            24 * 3600,
+            0,
+            vec![],
+        );
+        let cap = Capability::issue(
+            &new_active,
+            ns,
+            &device.agent_id().0,
+            vec![Operation::SyncRead],
+            1000,
+            24 * 3600,
+            0,
+            false,
+        );
         let now = 3000;
         let revoked = RevocationSet::new();
 
         // Without the rotation log, the new key is an unknown issuer.
-        assert!(verify_membership(&cert, &descriptor, now, &revoked).is_err(), "new key not recognized without the log");
+        assert!(
+            verify_membership(&cert, &descriptor, now, &revoked).is_err(),
+            "new key not recognized without the log"
+        );
         assert!(verify_capability(&cap, &[], &descriptor, now, &revoked).is_err());
 
         // With the log, the rotated root key is recognized — the recovered owner can
         // still administer the network.
-        assert!(verify_membership_with_logs(&cert, &descriptor, now, &revoked, &[log.clone()]).is_ok());
+        assert!(verify_membership_with_logs(
+            &cert,
+            &descriptor,
+            now,
+            &revoked,
+            std::slice::from_ref(&log)
+        )
+        .is_ok());
         assert!(verify_capability_with_logs(&cap, &[], &descriptor, now, &revoked, &[log]).is_ok());
     }
 
@@ -521,10 +670,14 @@ mod tests {
         let recovery = Identity::generate();
         let k2 = Identity::generate();
         let mut log = genesis(&initial, &recovery);
-        let mut op = UserIdentityOp::rotate(log.ops.last().unwrap(), &k2.agent_id().0, &initial, 2000);
+        let mut op =
+            UserIdentityOp::rotate(log.ops.last().unwrap(), &k2.agent_id().0, &initial, 2000);
         op.user_id = "someone-else".to_string();
         op.signature = initial.sign(&op.signing_bytes()); // re-sign so only the invariant check fires
         log.ops.push(op);
-        assert_eq!(verify_and_resolve(&log), Err(RecoveryError::InvariantChanged));
+        assert_eq!(
+            verify_and_resolve(&log),
+            Err(RecoveryError::InvariantChanged)
+        );
     }
 }

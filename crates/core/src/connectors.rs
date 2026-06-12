@@ -118,7 +118,10 @@ pub struct HttpIndexConnector {
 
 impl HttpIndexConnector {
     pub fn new(alias: &str, url: &str) -> Self {
-        Self { alias: alias.to_string(), url: url.to_string() }
+        Self {
+            alias: alias.to_string(),
+            url: url.to_string(),
+        }
     }
 }
 
@@ -128,11 +131,16 @@ impl ExternalConnector for HttpIndexConnector {
     }
 
     fn search(&self, query: &str, limit: usize) -> Result<Vec<ExternalHit>> {
-        let (host, port, path) = parse_http_url(&self.url)
-            .ok_or_else(|| Error::Io(format!("connector `{}`: bad http url {}", self.alias, self.url)))?;
+        let (host, port, path) = parse_http_url(&self.url).ok_or_else(|| {
+            Error::Io(format!(
+                "connector `{}`: bad http url {}",
+                self.alias, self.url
+            ))
+        })?;
         let body = serde_json::json!({ "query": query, "limit": limit }).to_string();
-        let mut stream = TcpStream::connect((host.as_str(), port))
-            .map_err(|e| Error::BackendDown(format!("connector `{}` unreachable: {e}", self.alias)))?;
+        let mut stream = TcpStream::connect((host.as_str(), port)).map_err(|e| {
+            Error::BackendDown(format!("connector `{}` unreachable: {e}", self.alias))
+        })?;
         let _ = stream.set_read_timeout(Some(Duration::from_secs(20)));
         // Headers + body in one write: a server that responds and closes before a
         // second write would break the pipe (same fix as the HTTP embedder).
@@ -142,18 +150,20 @@ impl ExternalConnector for HttpIndexConnector {
         )
         .into_bytes();
         wire.extend_from_slice(body.as_bytes());
-        stream
-            .write_all(&wire)
-            .map_err(|e| Error::BackendDown(format!("connector `{}` write failed: {e}", self.alias)))?;
+        stream.write_all(&wire).map_err(|e| {
+            Error::BackendDown(format!("connector `{}` write failed: {e}", self.alias))
+        })?;
         let mut response = Vec::new();
-        stream
-            .read_to_end(&mut response)
-            .map_err(|e| Error::BackendDown(format!("connector `{}` read failed: {e}", self.alias)))?;
+        stream.read_to_end(&mut response).map_err(|e| {
+            Error::BackendDown(format!("connector `{}` read failed: {e}", self.alias))
+        })?;
         let text = String::from_utf8_lossy(&response);
-        let start = text
-            .find("\r\n\r\n")
-            .ok_or_else(|| Error::Io(format!("connector `{}`: malformed HTTP response", self.alias)))?
-            + 4;
+        let start = text.find("\r\n\r\n").ok_or_else(|| {
+            Error::Io(format!(
+                "connector `{}`: malformed HTTP response",
+                self.alias
+            ))
+        })? + 4;
         let value: serde_json::Value = serde_json::from_str(text[start..].trim())
             .map_err(|e| Error::Io(format!("connector `{}`: bad JSON: {e}", self.alias)))?;
         Ok(parse_hits(&value, &self.alias))
@@ -166,12 +176,21 @@ fn parse_hits(value: &serde_json::Value, source_alias: &str) -> Vec<ExternalHit>
         .iter()
         .find_map(|k| value.get(*k).and_then(|v| v.as_array()))
         .or_else(|| value.as_array());
-    let Some(array) = array else { return Vec::new() };
+    let Some(array) = array else {
+        return Vec::new();
+    };
     array
         .iter()
         .filter_map(|item| {
-            let cid = item.get("cid").or_else(|| item.get("link")).and_then(|v| v.as_str())?;
-            let title = item.get("title").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let cid = item
+                .get("cid")
+                .or_else(|| item.get("link"))
+                .and_then(|v| v.as_str())?;
+            let title = item
+                .get("title")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
             let snippet = ["snippet", "text", "abstract", "summary"]
                 .iter()
                 .find_map(|k| item.get(*k).and_then(|v| v.as_str()))
@@ -208,7 +227,11 @@ pub fn federate(
             }
         }
     }
-    out.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+    out.sort_by(|a, b| {
+        b.score
+            .partial_cmp(&a.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
     out.truncate(limit);
     out
 }
@@ -235,7 +258,11 @@ impl MemCli {
         let mut registry = ConnectorRegistry::load(&path)?;
         registry.sources.insert(
             alias.to_string(),
-            ExternalSource { alias: alias.to_string(), url: url.to_string(), kind: "http-index".to_string() },
+            ExternalSource {
+                alias: alias.to_string(),
+                url: url.to_string(),
+                kind: "http-index".to_string(),
+            },
         );
         registry.save(&path)
     }
@@ -259,7 +286,9 @@ impl MemCli {
         let quarantine = self.quarantine_registry().unwrap_or_default();
         let connectors: Vec<Box<dyn ExternalConnector>> = registry
             .list()
-            .map(|s| Box::new(HttpIndexConnector::new(&s.alias, &s.url)) as Box<dyn ExternalConnector>)
+            .map(|s| {
+                Box::new(HttpIndexConnector::new(&s.alias, &s.url)) as Box<dyn ExternalConnector>
+            })
             .collect();
         Ok(federate(&connectors, query, limit, &quarantine))
     }
@@ -293,21 +322,34 @@ mod tests {
     fn registry_round_trips_to_disk() {
         let dir = tempfile::tempdir().unwrap();
         let mem = MemCli::new(dir.path());
-        assert!(mem.connector_registry().unwrap().is_empty(), "opt-in: empty by default");
-        mem.connect_external("http://127.0.0.1:9/search", "stc").unwrap();
+        assert!(
+            mem.connector_registry().unwrap().is_empty(),
+            "opt-in: empty by default"
+        );
+        mem.connect_external("http://127.0.0.1:9/search", "stc")
+            .unwrap();
         let reg = mem.connector_registry().unwrap();
         assert_eq!(reg.sources.len(), 1);
         assert_eq!(reg.sources["stc"].url, "http://127.0.0.1:9/search");
-        assert!(mem.disconnect_external("stc").unwrap(), "remove reports it existed");
+        assert!(
+            mem.disconnect_external("stc").unwrap(),
+            "remove reports it existed"
+        );
         assert!(mem.connector_registry().unwrap().is_empty());
-        assert!(!mem.disconnect_external("stc").unwrap(), "second remove is a no-op");
+        assert!(
+            !mem.disconnect_external("stc").unwrap(),
+            "second remove is a no-op"
+        );
     }
 
     #[test]
     fn connect_external_rejects_non_http_urls() {
         let dir = tempfile::tempdir().unwrap();
         let mem = MemCli::new(dir.path());
-        assert!(mem.connect_external("ipns://libstc.cc", "stc").is_err(), "v1 is http-index only");
+        assert!(
+            mem.connect_external("ipns://libstc.cc", "stc").is_err(),
+            "v1 is http-index only"
+        );
     }
 
     #[test]
@@ -322,7 +364,10 @@ mod tests {
         server.join().unwrap();
         assert_eq!(hits.len(), 2);
         assert_eq!(hits[0].cid, "bafyA");
-        assert_eq!(hits[0].source_alias, "stc", "external content is always attributed");
+        assert_eq!(
+            hits[0].source_alias, "stc",
+            "external content is always attributed"
+        );
         assert_eq!(hits[0].snippet, "about widgets", "tolerant snippet field");
     }
 
@@ -339,7 +384,11 @@ mod tests {
         quarantine.quarantine("bad", "unsafe", 0);
         let hits = federate(&connectors, "q", 10, &quarantine);
         server.join().unwrap();
-        assert_eq!(hits.len(), 1, "the high-scoring but quarantined hit is withheld");
+        assert_eq!(
+            hits.len(),
+            1,
+            "the high-scoring but quarantined hit is withheld"
+        );
         assert_eq!(hits[0].cid, "good");
     }
 
@@ -347,7 +396,10 @@ mod tests {
     fn a_down_source_yields_nothing_rather_than_failing() {
         // Bind then drop → a closed port. federate swallows the error.
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let url = format!("http://127.0.0.1:{}/search", listener.local_addr().unwrap().port());
+        let url = format!(
+            "http://127.0.0.1:{}/search",
+            listener.local_addr().unwrap().port()
+        );
         drop(listener);
         let connectors: Vec<Box<dyn ExternalConnector>> =
             vec![Box::new(HttpIndexConnector::new("dead", &url))];

@@ -27,6 +27,9 @@ and **ideas** made it possible. We are grateful to every maintainer and contribu
 |---|---|---|
 | **[go-hamt-ipld](https://github.com/ipfs/go-hamt-ipld)** + **[fvm_ipld_hamt](https://github.com/filecoin-project/ref-fvm)** | the CHAMP/HAMT algorithm + node layout, hand-ported into the day-tier IPLD index | MIT + Apache-2.0 |
 | **Howard Hinnant's [chrono algorithms](https://howardhinnant.github.io/date_algorithms.html)** | days-from-civil / civil-from-days date math | public (boost-style) |
+| **[Impeccable](https://github.com/HonestFreak/impeccable)** (© 2025-2026 Paul Bakaus) | the deterministic design auditor (regex rule-engine + anti-pattern catalog, ported to Rust in `crates/core/src/design.rs`) **and** the bundled design-knowledge reference (`crates/mcp/src/guides/`) for the `concierge.design_audit` / `design_guide` tools. Impeccable itself builds on Anthropic's [frontend-design](https://github.com/anthropics/skills/tree/main/skills/frontend-design) skill (© 2025 Anthropic, Apache-2.0) and ehmo's [typecraft-guide-skill](https://github.com/ehmo/typecraft-guide-skill). See `crates/mcp/src/guides/IMPECCABLE-NOTICE.md`. | Apache-2.0 |
+| **[Three.js](https://github.com/mrdoob/three.js)** | the minified `three.module.min.js` build, vendored (`crates/mcp/src/engines/`) so AI-authored 3D media stays self-contained for IPFS — dropped in by `concierge.scaffold_engine` | MIT |
+| **[Phaser](https://github.com/phaserjs/phaser)** | the minified `phaser.min.js` build, vendored for AI-authored 2D games — dropped in by `concierge.scaffold_engine` | MIT |
 
 ## Design & pattern references (homage — no code incorporated)
 
@@ -44,6 +47,12 @@ We studied these to get the architecture *right*; we wrote our own implementatio
   and the crucial "websites need UnixFS, not DAG-CBOR" insight.
 - **[cyber / cyberia](https://github.com/cybercongress/go-cyber)** — graph-ranking and
   context-packing ideas behind the Librarian retrieval engine.
+- **[3mail](https://github.com/SidVishnoi/3mail)** — its self-sovereign **DID +
+  self-asserted profile + consent-gated exchange** model guided the Sovereign Naming
+  substrate (`crates/core/src/naming.rs`, Layers 1+2). We adopted the **W3C
+  [`did:key`](https://w3c-ccg.github.io/did-method-key/)** encoding for AgentIDs and
+  left out 3mail's Ceramic / Ethereum / SMTP / ENS-registry parts (Decisions
+  0012 / 0022 / 0024: no token economy, no global registry).
 
 ## Harnesses we integrate with
 

@@ -353,7 +353,11 @@ pub fn ingest_file<B: CoreBinding>(
     base_dir: &Path,
 ) -> std::io::Result<IngestReport> {
     let file = std::fs::File::open(path)?;
-    Ok(ingest_reader(std::io::BufReader::new(file), binding, base_dir))
+    Ok(ingest_reader(
+        std::io::BufReader::new(file),
+        binding,
+        base_dir,
+    ))
 }
 
 /// Incrementally ingest only the bytes appended past `offset` (Phase C watcher).
@@ -452,7 +456,9 @@ pub fn render_injection(
 
 /// Minimal XML attribute escaping for the injection block's `authority`/`reason`.
 fn escape_attr(s: &str) -> String {
-    s.replace('&', "&amp;").replace('"', "&quot;").replace('<', "&lt;")
+    s.replace('&', "&amp;")
+        .replace('"', "&quot;")
+        .replace('<', "&lt;")
 }
 
 #[cfg(test)]
@@ -474,11 +480,23 @@ mod tests {
             reason: "relevant prior context".to_string(),
             authority: "claude-code".to_string(),
         };
-        let previews = vec![("bafyA".to_string(), "the egress lock\nfences data".to_string())];
+        let previews = vec![(
+            "bafyA".to_string(),
+            "the egress lock\nfences data".to_string(),
+        )];
         let block = render_injection(&suggestion, &previews);
-        assert!(block.contains("authority=\"claude-code\""), "attributed to the grant");
-        assert!(block.contains("bafyA: the egress lock fences data"), "preview inlined, newline flattened");
-        assert!(block.contains("bafyMissing: (content unavailable)"), "missing content is explicit, not silent");
+        assert!(
+            block.contains("authority=\"claude-code\""),
+            "attributed to the grant"
+        );
+        assert!(
+            block.contains("bafyA: the egress lock fences data"),
+            "preview inlined, newline flattened"
+        );
+        assert!(
+            block.contains("bafyMissing: (content unavailable)"),
+            "missing content is explicit, not silent"
+        );
         assert!(block.starts_with("<suggested-context") && block.ends_with("</suggested-context>"));
     }
 
@@ -489,7 +507,10 @@ mod tests {
         // SessionStarted (with cwd) + UserPrompt + trailing CheckpointRequested.
         assert!(matches!(out[0].event, Event::SessionStarted { cwd: Some(ref c) } if c == "/proj"));
         assert!(matches!(&out[1].event, Event::UserPrompt { text } if text == "hello there"));
-        assert!(matches!(out.last().unwrap().event, Event::CheckpointRequested { .. }));
+        assert!(matches!(
+            out.last().unwrap().event,
+            Event::CheckpointRequested { .. }
+        ));
         assert_eq!(out[0].host_id, "claude-code");
         assert_eq!(out[1].session_id, "s1");
     }
@@ -518,13 +539,17 @@ mod tests {
             .iter()
             .find(|e| matches!(e.event, Event::ToolCallStarted { .. }))
             .unwrap();
-        assert!(matches!(&started.event, Event::ToolCallStarted { tool, args_json } if tool == "Read" && args_json.as_deref().unwrap().contains("x.rs")));
+        assert!(
+            matches!(&started.event, Event::ToolCallStarted { tool, args_json } if tool == "Read" && args_json.as_deref().unwrap().contains("x.rs"))
+        );
         // The result resolves the tool name from the earlier tool_use id.
         let finished = out
             .iter()
             .find(|e| matches!(e.event, Event::ToolCallFinished { .. }))
             .unwrap();
-        assert!(matches!(&finished.event, Event::ToolCallFinished { tool, ok, result_json } if tool == "Read" && *ok && result_json.as_deref() == Some("file body")));
+        assert!(
+            matches!(&finished.event, Event::ToolCallFinished { tool, ok, result_json } if tool == "Read" && *ok && result_json.as_deref() == Some("file body"))
+        );
     }
 
     #[test]
@@ -535,7 +560,9 @@ mod tests {
             .iter()
             .find(|e| matches!(e.event, Event::ToolCallFinished { .. }))
             .unwrap();
-        assert!(matches!(&finished.event, Event::ToolCallFinished { ok, result_json, .. } if !*ok && result_json.as_deref() == Some("line one\nline two")));
+        assert!(
+            matches!(&finished.event, Event::ToolCallFinished { ok, result_json, .. } if !*ok && result_json.as_deref() == Some("line one\nline two"))
+        );
     }
 
     #[test]
@@ -570,7 +597,10 @@ mod tests {
         assert_eq!(off2, off1);
 
         // Append a complete line + a partial (no trailing newline) line.
-        let mut f = std::fs::OpenOptions::new().append(true).open(&session).unwrap();
+        let mut f = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&session)
+            .unwrap();
         write!(f, "{ASSISTANT_LINE}\n{{\"partial").unwrap();
         let (r3, off3) = ingest_file_from_offset(&session, off2, &mem, dir.path()).unwrap();
         assert!(r3.events >= 1, "the new complete line is ingested");

@@ -154,12 +154,7 @@ impl RoomBook {
     }
 
     pub fn save(&self, path: &Path) -> Result<(), String> {
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent).map_err(|e| format!("room book dir: {e}"))?;
-        }
-        let text =
-            serde_json::to_string_pretty(self).map_err(|e| format!("serialize rooms: {e}"))?;
-        std::fs::write(path, text).map_err(|e| format!("write room book: {e}"))
+        crate::state::save_json(path, self).map_err(|e| e.to_string())
     }
 
     pub fn policy(&self, room: &str) -> RoomPolicy {

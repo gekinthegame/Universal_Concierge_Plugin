@@ -144,7 +144,10 @@ impl MemCli {
         }
         tips.sort();
         tips.dedup();
-        Ok(MergeOutcome { heads: tips, fast_forwarded })
+        Ok(MergeOutcome {
+            heads: tips,
+            fast_forwarded,
+        })
     }
 
     /// Record an accepted merge as a real, content-addressed node that **links both
@@ -171,7 +174,10 @@ impl MemCli {
         });
         let parents: Vec<Cid> = merge.parents.iter().cloned().map(Cid).collect();
         self.put_node_derived(
-            &Node { kind: "decision".to_string(), fields_json: body.to_string() },
+            &Node {
+                kind: "decision".to_string(),
+                fields_json: body.to_string(),
+            },
             &parents,
         )
     }
@@ -270,11 +276,18 @@ impl MergeCheckpoint {
         if self.author_capability.subject_id != self.author_id {
             return Err(MergeError::AuthorMismatch);
         }
-        if !self.author_capability.authorizes(Operation::MergeAccept, &namespace) {
+        if !self
+            .author_capability
+            .authorizes(Operation::MergeAccept, &namespace)
+        {
             return Err(MergeError::NotAMerger);
         }
-        if !verify_sig(&AgentId(self.author_id.clone()), &self.signing_bytes(), &self.signature)
-            .map_err(MergeError::Malformed)?
+        if !verify_sig(
+            &AgentId(self.author_id.clone()),
+            &self.signing_bytes(),
+            &self.signature,
+        )
+        .map_err(MergeError::Malformed)?
         {
             return Err(MergeError::BadSignature);
         }
@@ -316,24 +329,51 @@ mod tests {
     fn net() -> (Identity, NetworkDescriptor, Namespace) {
         let root = Identity::generate();
         let descriptor = NetworkDescriptor::create(&root, "team", 1000);
-        let ns = Namespace::new(descriptor.network_id.clone(), NamespaceScope::Project("atlas".into()));
+        let ns = Namespace::new(
+            descriptor.network_id.clone(),
+            NamespaceScope::Project("atlas".into()),
+        );
         (root, descriptor, ns)
     }
 
     fn merger_cap(root: &Identity, ns: &Namespace, subject: &str, epoch: u64) -> Capability {
-        Capability::issue(root, ns.clone(), subject, vec![Operation::MergeAccept], 1000, DAY, epoch, false)
+        Capability::issue(
+            root,
+            ns.clone(),
+            subject,
+            vec![Operation::MergeAccept],
+            1000,
+            DAY,
+            epoch,
+            false,
+        )
     }
 
     /// A base checkpoint and two concurrent children over it, in one store.
     fn diverged() -> (tempfile::TempDir, MemCli, Cid, Cid, Cid) {
         let dir = tempfile::tempdir().unwrap();
         let mem = MemCli::new(dir.path());
-        let n0 = mem.put_node(&Node { kind: "memory".into(), fields_json: r#"{"text":"base","kind":"reference"}"#.into() }).unwrap();
+        let n0 = mem
+            .put_node(&Node {
+                kind: "memory".into(),
+                fields_json: r#"{"text":"base","kind":"reference"}"#.into(),
+            })
+            .unwrap();
         let base = mem.checkpoint("base", &n0, None).unwrap();
         // Two concurrent writes, each a checkpoint whose parent is `base`.
-        let na = mem.put_node(&Node { kind: "memory".into(), fields_json: r#"{"text":"branch-a","kind":"reference"}"#.into() }).unwrap();
+        let na = mem
+            .put_node(&Node {
+                kind: "memory".into(),
+                fields_json: r#"{"text":"branch-a","kind":"reference"}"#.into(),
+            })
+            .unwrap();
         let ca = mem.checkpoint("a", &na, Some(&base)).unwrap();
-        let nb = mem.put_node(&Node { kind: "memory".into(), fields_json: r#"{"text":"branch-b","kind":"reference"}"#.into() }).unwrap();
+        let nb = mem
+            .put_node(&Node {
+                kind: "memory".into(),
+                fields_json: r#"{"text":"branch-b","kind":"reference"}"#.into(),
+            })
+            .unwrap();
         let cb = mem.checkpoint("b", &nb, Some(&base)).unwrap();
         (dir, mem, base, ca, cb)
     }
@@ -342,25 +382,45 @@ mod tests {
     fn an_ancestor_fast_forwards_and_concurrent_heads_are_preserved() {
         let (_d, mem, base, ca, cb) = diverged();
         // base is an ancestor of ca → fast-forward.
-        assert_eq!(mem.classify_heads(&base, &ca).unwrap(), HeadRelation::AAncestorOfB);
+        assert_eq!(
+            mem.classify_heads(&base, &ca).unwrap(),
+            HeadRelation::AAncestorOfB
+        );
         let ff = mem.merge_heads(&[base.0.clone(), ca.0.clone()]).unwrap();
-        assert_eq!(ff.heads, [ca.0.clone()], "the descendant wins the fast-forward");
+        assert_eq!(
+            ff.heads.as_slice(),
+            std::slice::from_ref(&ca.0),
+            "the descendant wins the fast-forward"
+        );
         assert!(ff.converged() && ff.fast_forwarded);
 
         // ca and cb are concurrent → both preserved.
-        assert_eq!(mem.classify_heads(&ca, &cb).unwrap(), HeadRelation::Concurrent);
+        assert_eq!(
+            mem.classify_heads(&ca, &cb).unwrap(),
+            HeadRelation::Concurrent
+        );
         let mut both = [ca.0.clone(), cb.0.clone()];
         both.sort();
         let outcome = mem.merge_heads(&[ca.0.clone(), cb.0.clone()]).unwrap();
-        assert_eq!(outcome.heads, both, "concurrent heads are retained, not dropped");
-        assert!(!outcome.converged(), "still two heads → needs a merge checkpoint");
+        assert_eq!(
+            outcome.heads, both,
+            "concurrent heads are retained, not dropped"
+        );
+        assert!(
+            !outcome.converged(),
+            "still two heads → needs a merge checkpoint"
+        );
     }
 
     #[test]
     fn merge_resolution_is_deterministic_regardless_of_input_order() {
         let (_d, mem, base, ca, cb) = diverged();
-        let one = mem.merge_heads(&[base.0.clone(), ca.0.clone(), cb.0.clone()]).unwrap();
-        let two = mem.merge_heads(&[cb.0.clone(), base.0.clone(), ca.0.clone()]).unwrap();
+        let one = mem
+            .merge_heads(&[base.0.clone(), ca.0.clone(), cb.0.clone()])
+            .unwrap();
+        let two = mem
+            .merge_heads(&[cb.0.clone(), base.0.clone(), ca.0.clone()])
+            .unwrap();
         assert_eq!(one, two, "same heads in any order → same outcome");
         // base collapses (ancestor of both); ca and cb remain.
         assert_eq!(one.heads.len(), 2);
@@ -370,21 +430,73 @@ mod tests {
     fn a_merge_checkpoint_needs_two_parents_and_merge_accept_authority() {
         let (root, descriptor, ns) = net();
         let author = Identity::generate();
-        let cap = merger_cap(&root, &ns, &author.agent_id().0, descriptor.membership_epoch);
+        let cap = merger_cap(
+            &root,
+            &ns,
+            &author.agent_id().0,
+            descriptor.membership_epoch,
+        );
 
         // Fewer than two parents is not a merge.
-        let one_parent = MergeCheckpoint::create(&author, &descriptor.network_id, &ns, "m", vec!["A".into()], "union-lossless", vec![], cap.clone(), 2000);
-        assert_eq!(one_parent.verify(&descriptor, 2000, &RevocationSet::new()), Err(MergeError::TooFewParents));
+        let one_parent = MergeCheckpoint::create(
+            &author,
+            &descriptor.network_id,
+            &ns,
+            "m",
+            vec!["A".into()],
+            "union-lossless",
+            vec![],
+            cap.clone(),
+            2000,
+        );
+        assert_eq!(
+            one_parent.verify(&descriptor, 2000, &RevocationSet::new()),
+            Err(MergeError::TooFewParents)
+        );
 
         // A valid two-parent merge by a merge_accept holder verifies.
-        let valid = MergeCheckpoint::create(&author, &descriptor.network_id, &ns, "m", vec!["A".into(), "B".into()], "union-lossless", vec![], cap, 2000);
-        assert!(valid.verify(&descriptor, 2000, &RevocationSet::new()).is_ok());
+        let valid = MergeCheckpoint::create(
+            &author,
+            &descriptor.network_id,
+            &ns,
+            "m",
+            vec!["A".into(), "B".into()],
+            "union-lossless",
+            vec![],
+            cap,
+            2000,
+        );
+        assert!(valid
+            .verify(&descriptor, 2000, &RevocationSet::new())
+            .is_ok());
 
         // A reader (no merge_accept) cannot author a merge.
         let reader = Identity::generate();
-        let read_cap = Capability::issue(&root, ns.clone(), &reader.agent_id().0, vec![Operation::SyncRead], 1000, DAY, descriptor.membership_epoch, false);
-        let forged = MergeCheckpoint::create(&reader, &descriptor.network_id, &ns, "m", vec!["A".into(), "B".into()], "union-lossless", vec![], read_cap, 2000);
-        assert_eq!(forged.verify(&descriptor, 2000, &RevocationSet::new()), Err(MergeError::NotAMerger));
+        let read_cap = Capability::issue(
+            &root,
+            ns.clone(),
+            &reader.agent_id().0,
+            vec![Operation::SyncRead],
+            1000,
+            DAY,
+            descriptor.membership_epoch,
+            false,
+        );
+        let forged = MergeCheckpoint::create(
+            &reader,
+            &descriptor.network_id,
+            &ns,
+            "m",
+            vec!["A".into(), "B".into()],
+            "union-lossless",
+            vec![],
+            read_cap,
+            2000,
+        );
+        assert_eq!(
+            forged.verify(&descriptor, 2000, &RevocationSet::new()),
+            Err(MergeError::NotAMerger)
+        );
     }
 
     #[test]
@@ -394,60 +506,126 @@ mod tests {
         // device-local lock is not part of the merge.
         let root = Identity::generate();
         let descriptor = NetworkDescriptor::create(&root, "team", 1000);
-        let ns = Namespace::new(descriptor.network_id.clone(), NamespaceScope::Project("atlas".into()));
+        let ns = Namespace::new(
+            descriptor.network_id.clone(),
+            NamespaceScope::Project("atlas".into()),
+        );
 
-        // Shared base, built identically on both devices (content-addressed → same CID).
-        let mk_base = |mem: &MemCli| {
-            let n0 = mem.put_node(&Node { kind: "memory".into(), fields_json: r#"{"text":"base","kind":"reference"}"#.into() }).unwrap();
-            mem.checkpoint("base", &n0, None).unwrap()
-        };
+        // Shared base, created once and synchronized before the devices disconnect.
         let dir_a = tempfile::tempdir().unwrap();
         let mem_a = MemCli::new(dir_a.path());
         let dir_b = tempfile::tempdir().unwrap();
         let mem_b = MemCli::new(dir_b.path());
-        let base_a = mk_base(&mem_a);
-        let base_b = mk_base(&mem_b);
-        assert_eq!(base_a, base_b, "the shared base is the same CID on both");
+        let n0 = mem_a
+            .put_node(&Node {
+                kind: "memory".into(),
+                fields_json: r#"{"text":"base","kind":"reference"}"#.into(),
+            })
+            .unwrap();
+        let base_a = mem_a.checkpoint("base", &n0, None).unwrap();
+        use crate::sync::SyncLimits;
+        mem_b
+            .pull_reachable(
+                std::slice::from_ref(&base_a.0),
+                |cid| mem_a.read_block(&Cid(cid.to_string())).ok(),
+                SyncLimits::default(),
+            )
+            .unwrap();
+        let base_b = base_a.clone();
 
         // Disconnected concurrent writes.
-        let na = mem_a.put_node(&Node { kind: "memory".into(), fields_json: r#"{"text":"branch-a","kind":"reference"}"#.into() }).unwrap();
+        let na = mem_a
+            .put_node(&Node {
+                kind: "memory".into(),
+                fields_json: r#"{"text":"branch-a","kind":"reference"}"#.into(),
+            })
+            .unwrap();
         let ca = mem_a.checkpoint("a", &na, Some(&base_a)).unwrap();
-        let nb = mem_b.put_node(&Node { kind: "memory".into(), fields_json: r#"{"text":"branch-b","kind":"reference"}"#.into() }).unwrap();
+        let nb = mem_b
+            .put_node(&Node {
+                kind: "memory".into(),
+                fields_json: r#"{"text":"branch-b","kind":"reference"}"#.into(),
+            })
+            .unwrap();
         let cb = mem_b.checkpoint("b", &nb, Some(&base_b)).unwrap();
 
         // A device-local publication lock on A — must never enter merge state.
         mem_a.lock_subgraph(&ca, "local-only").ok();
 
         // Reconnect: each device pulls the other's branch (Phase D sync).
-        use crate::sync::SyncLimits;
-        mem_a.pull_reachable(&[cb.0.clone()], |cid| mem_b.read_block(&Cid(cid.to_string())).ok(), SyncLimits::default()).unwrap();
-        mem_b.pull_reachable(&[ca.0.clone()], |cid| mem_a.read_block(&Cid(cid.to_string())).ok(), SyncLimits::default()).unwrap();
+        mem_a
+            .pull_reachable(
+                std::slice::from_ref(&cb.0),
+                |cid| mem_b.read_block(&Cid(cid.to_string())).ok(),
+                SyncLimits::default(),
+            )
+            .unwrap();
+        mem_b
+            .pull_reachable(
+                std::slice::from_ref(&ca.0),
+                |cid| mem_a.read_block(&Cid(cid.to_string())).ok(),
+                SyncLimits::default(),
+            )
+            .unwrap();
 
         // Both see the same concurrent head set.
         let heads_a = mem_a.merge_heads(&[ca.0.clone(), cb.0.clone()]).unwrap();
         let heads_b = mem_b.merge_heads(&[ca.0.clone(), cb.0.clone()]).unwrap();
         assert_eq!(heads_a, heads_b);
-        assert!(!heads_a.converged(), "two concurrent branches before the merge");
+        assert!(
+            !heads_a.converged(),
+            "two concurrent branches before the merge"
+        );
 
         // An authorized author creates one merge; both devices apply it.
         let author = Identity::generate();
-        let cap = merger_cap(&root, &ns, &author.agent_id().0, descriptor.membership_epoch);
-        let merge = MergeCheckpoint::create(
-            &author, &descriptor.network_id, &ns, "merge a+b",
-            vec![ca.0.clone(), cb.0.clone()], "union-lossless", vec![], cap, 3000,
+        let cap = merger_cap(
+            &root,
+            &ns,
+            &author.agent_id().0,
+            descriptor.membership_epoch,
         );
-        let head_a = mem_a.apply_merge(&merge, &descriptor, 3000, &RevocationSet::new()).unwrap();
-        let head_b = mem_b.apply_merge(&merge, &descriptor, 3000, &RevocationSet::new()).unwrap();
+        let merge = MergeCheckpoint::create(
+            &author,
+            &descriptor.network_id,
+            &ns,
+            "merge a+b",
+            vec![ca.0.clone(), cb.0.clone()],
+            "union-lossless",
+            vec![],
+            cap,
+            3000,
+        );
+        let head_a = mem_a
+            .apply_merge(&merge, &descriptor, 3000, &RevocationSet::new())
+            .unwrap();
+        let head_b = mem_b
+            .apply_merge(&merge, &descriptor, 3000, &RevocationSet::new())
+            .unwrap();
 
         // Converged: identical merged head on both, reaching BOTH branches.
-        assert_eq!(head_a, head_b, "both devices converge on the same merged head");
-        let reachable: Vec<String> = mem_a.walk(&head_a).unwrap().into_iter().map(|c| c.0).collect();
-        assert!(reachable.contains(&ca.0) && reachable.contains(&cb.0), "the merge references both histories");
+        assert_eq!(
+            head_a, head_b,
+            "both devices converge on the same merged head"
+        );
+        let reachable: Vec<String> = mem_a
+            .walk(&head_a)
+            .unwrap()
+            .into_iter()
+            .map(|c| c.0)
+            .collect();
+        assert!(
+            reachable.contains(&ca.0) && reachable.contains(&cb.0),
+            "the merge references both histories"
+        );
 
         // The local lock did not become merge state. A holds a lock on its own
         // branch `ca`; B (which synced the `ca` *block*) has no lock on it — the
         // device-local overlay never synchronized or merged.
-        assert!(mem_a.locks().unwrap().iter().any(|l| l.root == ca.0), "A holds its device-local lock");
+        assert!(
+            mem_a.locks().unwrap().iter().any(|l| l.root == ca.0),
+            "A holds its device-local lock"
+        );
         assert!(mem_b.has_block(&ca.0), "B did sync the ca block");
         assert!(
             !mem_b.locks().unwrap().iter().any(|l| l.root == ca.0),

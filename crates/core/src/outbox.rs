@@ -197,14 +197,23 @@ mod tests {
             drained[0].event,
             OutboundEvent::ContextSuggested(suggestion("bafyA"))
         );
-        assert!(mem.outbox_peek().unwrap().is_empty(), "nothing pending after drain");
+        assert!(
+            mem.outbox_peek().unwrap().is_empty(),
+            "nothing pending after drain"
+        );
 
         // A new arrival is delivered exactly once.
         mem.emit_context_suggested(&suggestion("bafyC")).unwrap();
         let again = mem.outbox_drain().unwrap();
         assert_eq!(again.len(), 1);
-        assert_eq!(again[0].event, OutboundEvent::ContextSuggested(suggestion("bafyC")));
-        assert!(mem.outbox_drain().unwrap().is_empty(), "second drain is empty");
+        assert_eq!(
+            again[0].event,
+            OutboundEvent::ContextSuggested(suggestion("bafyC"))
+        );
+        assert!(
+            mem.outbox_drain().unwrap().is_empty(),
+            "second drain is empty"
+        );
     }
 
     #[test]
@@ -231,12 +240,18 @@ mod tests {
             .proactive_wake("user_prompt", "egress lock device", Some("claude-code"))
             .unwrap()
             .expect("opt-in + grant + match → a suggestion");
-        assert_eq!(suggestion.authority, "claude-code", "attributed to the grant");
+        assert_eq!(
+            suggestion.authority, "claude-code",
+            "attributed to the grant"
+        );
 
         // …and it was enqueued on the outbox for the harness to drain.
         let pending = mem.outbox_peek().unwrap();
         assert_eq!(pending.len(), 1);
-        assert_eq!(pending[0].event, OutboundEvent::ContextSuggested(suggestion));
+        assert_eq!(
+            pending[0].event,
+            OutboundEvent::ContextSuggested(suggestion)
+        );
     }
 
     #[test]
@@ -244,8 +259,13 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let mem = MemCli::new(dir.path());
         // Default config: proactive off → no wake, no emission, even with a grant.
-        let out = mem.proactive_wake("user_prompt", "anything", Some("claude-code")).unwrap();
+        let out = mem
+            .proactive_wake("user_prompt", "anything", Some("claude-code"))
+            .unwrap();
         assert!(out.is_none(), "default node stays tool-only");
-        assert!(mem.outbox_peek().unwrap().is_empty(), "nothing written to the outbox");
+        assert!(
+            mem.outbox_peek().unwrap().is_empty(),
+            "nothing written to the outbox"
+        );
     }
 }

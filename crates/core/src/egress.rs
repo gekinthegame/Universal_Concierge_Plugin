@@ -590,7 +590,10 @@ impl MemCli {
             let locked_reachable = self
                 .walk_batched(&Cid(lock.root.clone()))
                 .map_err(|error| {
-                    Error::SecurityPolicy(format!("cannot verify locked root {}: {error}", lock.root))
+                    Error::SecurityPolicy(format!(
+                        "cannot verify locked root {}: {error}",
+                        lock.root
+                    ))
                 })?;
             let locked_set = locked_reachable
                 .iter()
@@ -603,8 +606,10 @@ impl MemCli {
                 .collect::<Vec<_>>();
             if let Some(first) = intersect.first() {
                 let mut intersecting_file_paths = BTreeSet::new();
-                let intersect_cids: Vec<Cid> =
-                    intersect.iter().map(|cid| Cid((*cid).to_string())).collect();
+                let intersect_cids: Vec<Cid> = intersect
+                    .iter()
+                    .map(|cid| Cid((*cid).to_string()))
+                    .collect();
                 let intersect_fetched = self.get_many(&intersect_cids)?;
                 for cid in &intersect {
                     if let Some(Record::Live { body_json, .. }) = intersect_fetched.get(*cid) {
@@ -638,7 +643,10 @@ impl MemCli {
         // dominant cost of the privacy panel on large subgraphs.
         let fetched = self.get_many(&manifest)?;
         for cid in &manifest {
-            if let Some(Record::Live { kind, body_json, .. }) = fetched.get(&cid.0) {
+            if let Some(Record::Live {
+                kind, body_json, ..
+            }) = fetched.get(&cid.0)
+            {
                 decoded_node_kinds.insert(kind.clone());
                 inspect_metadata(
                     body_json,
@@ -1307,7 +1315,9 @@ mod tests {
             .unwrap();
         assert!(plan.is_blocked(), "quarantined content cannot egress");
         assert!(
-            plan.blocking_locks.iter().any(|l| l.lock_label.contains("quarantined")),
+            plan.blocking_locks
+                .iter()
+                .any(|l| l.lock_label.contains("quarantined")),
             "blocked with a quarantine reason"
         );
         // Release → publishable again (reversible).

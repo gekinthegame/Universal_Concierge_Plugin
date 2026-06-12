@@ -629,7 +629,6 @@ impl MemCli {
         Ok(grants)
     }
 
-
     /// Delete every grant. The Data Platter calls this on startup so grants are
     /// ephemeral across restarts (plan: "Restart clears ephemeral grants").
     pub fn clear_all_grants(&self) -> Result<()> {
@@ -1179,7 +1178,6 @@ mod tests {
         ));
         let _ = std::fs::remove_dir_all(dir);
     }
-
 
     #[test]
     fn clear_all_grants_makes_them_ephemeral() {

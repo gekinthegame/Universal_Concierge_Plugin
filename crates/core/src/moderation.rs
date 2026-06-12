@@ -30,8 +30,8 @@ fn now_secs() -> u64 {
 /// Extensions blocked by default in shared rooms — executables and scripts that
 /// have no business propagating as "data" through a knowledge mesh.
 pub const DEFAULT_BLOCKED_EXTENSIONS: &[&str] = &[
-    "exe", "bat", "cmd", "com", "scr", "msi", "dll", "sh", "bash", "ps1", "psm1", "vbs",
-    "js", "jse", "wsf", "app", "apk", "jar", "bin", "deb", "rpm", "dmg",
+    "exe", "bat", "cmd", "com", "scr", "msi", "dll", "sh", "bash", "ps1", "psm1", "vbs", "js",
+    "jse", "wsf", "app", "apk", "jar", "bin", "deb", "rpm", "dmg",
 ];
 
 /// Per-room file-extension gate: a blocklist (default) or a strict allowlist.
@@ -53,7 +53,12 @@ impl Default for ExtensionPolicy {
 impl ExtensionPolicy {
     /// The default shared-room gate: block known executables/scripts.
     pub fn default_shared() -> Self {
-        Self::Block(DEFAULT_BLOCKED_EXTENSIONS.iter().map(|e| e.to_string()).collect())
+        Self::Block(
+            DEFAULT_BLOCKED_EXTENSIONS
+                .iter()
+                .map(|e| e.to_string())
+                .collect(),
+        )
     }
 
     pub fn block<I: IntoIterator<Item = String>>(exts: I) -> Self {
@@ -150,8 +155,7 @@ impl QuarantineRegistry {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        let text = serde_json::to_string_pretty(self)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+        let text = serde_json::to_string_pretty(self).map_err(std::io::Error::other)?;
         std::fs::write(path, text)
     }
 }
@@ -258,11 +262,17 @@ mod tests {
     fn extension_gate_blocks_executables_by_default() {
         let policy = ExtensionPolicy::default_shared();
         assert!(!policy.allows_path("setup.exe"), "exe blocked");
-        assert!(!policy.allows_path("/tmp/Payload.BAT"), "case-insensitive, path-aware");
+        assert!(
+            !policy.allows_path("/tmp/Payload.BAT"),
+            "case-insensitive, path-aware"
+        );
         assert!(!policy.allows_path("evil.sh"));
         assert!(policy.allows_path("notes.md"), "docs allowed");
         assert!(policy.allows_path("diagram.png"));
-        assert!(policy.allows_path("README"), "no extension allowed under a blocklist");
+        assert!(
+            policy.allows_path("README"),
+            "no extension allowed under a blocklist"
+        );
     }
 
     #[test]
@@ -270,7 +280,10 @@ mod tests {
         let policy = ExtensionPolicy::allow_only(["md".to_string(), "txt".to_string()]);
         assert!(policy.allows_path("notes.md"));
         assert!(!policy.allows_path("photo.png"), "not on the allowlist");
-        assert!(!policy.allows_path("README"), "no extension denied under an allowlist");
+        assert!(
+            !policy.allows_path("README"),
+            "no extension denied under an allowlist"
+        );
     }
 
     #[test]
@@ -334,7 +347,10 @@ mod tests {
     #[test]
     fn screen_file_blocks_disallowed_extensions() {
         let policy = ExtensionPolicy::default_shared();
-        assert!(matches!(Guardian::screen_file(&policy, "malware.exe"), Verdict::Block(_)));
+        assert!(matches!(
+            Guardian::screen_file(&policy, "malware.exe"),
+            Verdict::Block(_)
+        ));
         assert_eq!(Guardian::screen_file(&policy, "design.fig"), Verdict::Allow);
     }
 

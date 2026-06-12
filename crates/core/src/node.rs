@@ -77,6 +77,54 @@ fn ipfs_repo(store_dir: &Path) -> PathBuf {
     store_dir.join("ipfs")
 }
 
+/// Whether this store's dedicated private Kubo daemon is reachable. The repo's
+/// runtime `api` file identifies the exact daemon endpoint, so an unrelated
+/// system or public-publishing node cannot make Sidekick status look healthy.
+pub fn private_node_running(store_dir: &Path) -> bool {
+    let repo = ipfs_repo(store_dir);
+    let Ok(api) = std::fs::read_to_string(repo.join("api")) else {
+        return false;
+    };
+    Command::new(kubo_binary())
+        .env("IPFS_PATH", &repo)
+        .args(["--api", api.trim(), "id"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false)
+}
+
+fn stop_private_node(store_dir: &Path) -> Result<()> {
+    if !private_node_running(store_dir) {
+        return Ok(());
+    }
+    let repo = ipfs_repo(store_dir);
+    let status = Command::new(kubo_binary())
+        .env("IPFS_PATH", &repo)
+        .arg("shutdown")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map_err(|e| Error::Io(format!("stop private ipfs daemon: {e}")))?;
+    if !status.success() {
+        return Err(Error::BackendDown(
+            "private ipfs daemon did not accept shutdown".to_string(),
+        ));
+    }
+    for _ in 0..20 {
+        if !private_node_running(store_dir) {
+            return Ok(());
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    Err(Error::BackendDown(
+        "private ipfs daemon is still running after shutdown".to_string(),
+    ))
+}
+
 /// Make the node a **private swarm**, not just a private repo: write a swarm key
 /// (PSK) so only nodes holding the same key can connect, and drop the public
 /// bootstrap peers so the node doesn't dial public IPFS. Combined with
@@ -91,8 +139,11 @@ fn provision_private_swarm(repo: &Path) -> Result<()> {
         let mut bytes = [0u8; 32];
         OsRng.fill_bytes(&mut bytes);
         let hex: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
-        std::fs::write(&key_path, format!("/key/swarm/psk/1.0.0/\n/base16/\n{hex}\n"))
-            .map_err(|e| Error::Io(format!("write swarm key: {e}")))?;
+        std::fs::write(
+            &key_path,
+            format!("/key/swarm/psk/1.0.0/\n/base16/\n{hex}\n"),
+        )
+        .map_err(|e| Error::Io(format!("write swarm key: {e}")))?;
     }
     // Drop public bootstrap peers so the private node never dials public IPFS.
     let _ = Command::new(kubo_binary())
@@ -139,7 +190,9 @@ pub fn launch_private_node(store_dir: &Path) -> Result<()> {
             .status()
             .map_err(|e| Error::Io(format!("ipfs init: {e}")))?;
         if !init.success() {
-            return Err(Error::BackendDown("ipfs init failed for the private node".to_string()));
+            return Err(Error::BackendDown(
+                "ipfs init failed for the private node".to_string(),
+            ));
         }
     }
     // Make it a private swarm (key + no public bootstrap), not just a private repo.
@@ -216,7 +269,9 @@ pub fn launch_public_node(store_dir: &Path) -> Result<()> {
             .status()
             .map_err(|e| Error::Io(format!("ipfs init (public): {e}")))?;
         if !init.success() {
-            return Err(Error::BackendDown("ipfs init failed for the public node".to_string()));
+            return Err(Error::BackendDown(
+                "ipfs init failed for the public node".to_string(),
+            ));
         }
         // Move off the private node's default ports so both daemons coexist.
         let set = |args: &[&str]| {
@@ -227,8 +282,16 @@ pub fn launch_public_node(store_dir: &Path) -> Result<()> {
                 .stderr(Stdio::null())
                 .status();
         };
-        set(&["config", "Addresses.API", &format!("/ip4/127.0.0.1/tcp/{PUBLIC_API_PORT}")]);
-        set(&["config", "Addresses.Gateway", &format!("/ip4/127.0.0.1/tcp/{PUBLIC_GATEWAY_PORT}")]);
+        set(&[
+            "config",
+            "Addresses.API",
+            &format!("/ip4/127.0.0.1/tcp/{PUBLIC_API_PORT}"),
+        ]);
+        set(&[
+            "config",
+            "Addresses.Gateway",
+            &format!("/ip4/127.0.0.1/tcp/{PUBLIC_GATEWAY_PORT}"),
+        ]);
         set(&[
             "config",
             "--json",
@@ -391,8 +454,8 @@ impl MemCli {
     /// Current Sidekick/node status for the UI and CLI.
     pub fn sidekick_status(&self) -> SidekickStatus {
         let node_running = self
-            .config()
-            .map(|cfg| crate::publishing::selected_backend_reachable(&cfg))
+            .store_dir()
+            .map(|store| private_node_running(&store))
             .unwrap_or(false);
         let enabled = self.sidekick_enabled();
         SidekickStatus {
@@ -417,16 +480,43 @@ impl MemCli {
             std::fs::create_dir_all(parent)
                 .map_err(|e| Error::Io(format!("create store dir: {e}")))?;
         }
-        std::fs::write(&flag, b"enabled").map_err(|e| Error::Io(format!("persist sidekick flag: {e}")))?;
+        std::fs::write(&flag, b"enabled")
+            .map_err(|e| Error::Io(format!("persist sidekick flag: {e}")))?;
         Ok(self.sidekick_status())
     }
 
-    /// Disable the Sidekick (clears consent). The node is left to wind down with
-    /// the app; stopping it explicitly is best-effort and out of scope here.
+    /// Whether the host AI may use the MCP **write** tools (put_node/put_blob/bind/
+    /// write_site). Off by default (Decision 0028: write-enabled is opt-in). The MCP
+    /// server reads this dynamically, so the GUI toggle takes effect on the AI's next
+    /// call — no re-registration. A persistent sentinel under the store.
+    pub fn mcp_write_enabled(&self) -> bool {
+        self.store_dir()
+            .map(|dir| dir.join("mcp-write-enabled").exists())
+            .unwrap_or(false)
+    }
+
+    /// Enable/disable the MCP write tools (the GUI toggle).
+    pub fn set_mcp_write_enabled(&self, enabled: bool) -> Result<()> {
+        let path = self.store_dir()?.join("mcp-write-enabled");
+        if enabled {
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent).map_err(|e| Error::Io(e.to_string()))?;
+            }
+            std::fs::write(&path, b"enabled")
+                .map_err(|e| Error::Io(format!("set mcp write: {e}")))?;
+        } else if path.exists() {
+            std::fs::remove_file(&path).map_err(|e| Error::Io(format!("clear mcp write: {e}")))?;
+        }
+        Ok(())
+    }
+
+    /// Disable the Sidekick and stop its dedicated private node.
     pub fn disable_sidekick(&self) -> Result<SidekickStatus> {
+        stop_private_node(&self.store_dir()?)?;
         let flag = self.sidekick_flag_path()?;
         if flag.exists() {
-            std::fs::remove_file(&flag).map_err(|e| Error::Io(format!("clear sidekick flag: {e}")))?;
+            std::fs::remove_file(&flag)
+                .map_err(|e| Error::Io(format!("clear sidekick flag: {e}")))?;
         }
         Ok(self.sidekick_status())
     }

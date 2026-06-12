@@ -341,7 +341,11 @@ impl MemCli {
     /// is beyond it. **Honest limit (plan §Honest Limits):** this cannot un-send the
     /// *old* ciphertext blocks a removed device already fetched — it protects the
     /// re-rooted graph going forward. Requires the store password (vault unlock).
-    pub fn rotate_private_capability(&self, ciphertext_root: &str, password: &str) -> Result<RotationResult> {
+    pub fn rotate_private_capability(
+        &self,
+        ciphertext_root: &str,
+        password: &str,
+    ) -> Result<RotationResult> {
         let _policy_lock = self.policy_lock()?;
         self.verify_password_unlocked(password)?;
         let old_conversion = self
@@ -366,7 +370,11 @@ impl MemCli {
         let new_conversion = PrivateConversion {
             plaintext_root: old_conversion.plaintext_root.clone(),
             ciphertext_root: new_tree.root.cid.clone(),
-            ciphertext_manifest: new_tree.blocks.iter().map(|block| block.cid.clone()).collect(),
+            ciphertext_manifest: new_tree
+                .blocks
+                .iter()
+                .map(|block| block.cid.clone())
+                .collect(),
             destination_namespace: old_conversion.destination_namespace.clone(),
             recipients: old_conversion.recipients.clone(),
             capability_epoch,
@@ -376,7 +384,10 @@ impl MemCli {
         self.append_security_event_unlocked(
             "rotated_private_capability",
             &Cid(new_tree.root.cid.clone()),
-            &format!("rotated {ciphertext_root} -> {} (capability epoch {capability_epoch})", new_tree.root.cid),
+            &format!(
+                "rotated {ciphertext_root} -> {} (capability epoch {capability_epoch})",
+                new_tree.root.cid
+            ),
         )?;
 
         Ok(RotationResult {
@@ -813,21 +824,35 @@ mod tests {
     #[test]
     fn capability_key_rotation_relocks_the_graph_so_the_old_key_cannot_open_the_new_root() {
         let (_dir, mem, _) = store();
-        let result = mem.convert_and_share_private(&reviewed(&mem), "pw").unwrap();
+        let result = mem
+            .convert_and_share_private(&reviewed(&mem), "pw")
+            .unwrap();
         let old_root = result.conversion.ciphertext_root.clone();
         let old_read_cap = result.capability; // what a member (later revoked) holds
 
         // Rotate: re-encrypt under fresh keys at the next capability epoch.
         let rotation = mem.rotate_private_capability(&old_root, "pw").unwrap();
-        assert_ne!(rotation.new_ciphertext_root, old_root, "rotation re-roots under fresh keys");
-        assert_eq!(rotation.capability_epoch, 1, "the capability epoch advanced");
+        assert_ne!(
+            rotation.new_ciphertext_root, old_root,
+            "rotation re-roots under fresh keys"
+        );
+        assert_eq!(
+            rotation.capability_epoch, 1,
+            "the capability epoch advanced"
+        );
 
         // The NEW read capability recovers the original plaintext from the new root.
-        let recovered = mem.read_private_with_capability(&rotation.new_read_capability).unwrap();
-        assert!(recovered.blocks.iter().any(|(_, b)| b.windows(b"WETLANDS-CLASSIFIED".len()).any(|w| w == b"WETLANDS-CLASSIFIED")));
+        let recovered = mem
+            .read_private_with_capability(&rotation.new_read_capability)
+            .unwrap();
+        assert!(recovered.blocks.iter().any(|(_, b)| b
+            .windows(b"WETLANDS-CLASSIFIED".len())
+            .any(|w| w == b"WETLANDS-CLASSIFIED")));
 
         // Cryptographic cutoff: the OLD key cannot open the NEW root block.
-        let new_root_bytes = mem.read_block(&Cid(rotation.new_ciphertext_root.clone())).unwrap();
+        let new_root_bytes = mem
+            .read_block(&Cid(rotation.new_ciphertext_root.clone()))
+            .unwrap();
         assert!(
             matches!(
                 concierge_crypto::open_node(&old_read_cap.to_capability(), &new_root_bytes),
@@ -838,10 +863,16 @@ mod tests {
 
         // Honest limit: the old key still opens the OLD root (blocks already fetched).
         let old_recovered = mem.read_private_with_capability(&old_read_cap).unwrap();
-        assert!(old_recovered.blocks.iter().any(|(_, b)| b.windows(b"WETLANDS-CLASSIFIED".len()).any(|w| w == b"WETLANDS-CLASSIFIED")));
+        assert!(old_recovered.blocks.iter().any(|(_, b)| b
+            .windows(b"WETLANDS-CLASSIFIED".len())
+            .any(|w| w == b"WETLANDS-CLASSIFIED")));
 
         // The new generation is recorded at the advanced epoch.
-        assert!(mem.private_conversions().unwrap().iter().any(|c| c.ciphertext_root == rotation.new_ciphertext_root && c.capability_epoch == 1));
+        assert!(mem
+            .private_conversions()
+            .unwrap()
+            .iter()
+            .any(|c| c.ciphertext_root == rotation.new_ciphertext_root && c.capability_epoch == 1));
     }
 
     #[test]

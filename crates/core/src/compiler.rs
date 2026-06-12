@@ -123,8 +123,13 @@ mod tests {
         assert!(!config.proactive, "default is tool-only");
         // Even with a grant and a strong match, the default config emits nothing.
         let grant = TrustedAuthority::new("user");
-        assert!(ContextCompiler::suggest(&config, Some(&grant), &lib, "egress lock device").is_none());
-        assert!(!ContextCompiler::should_wake(&config, "user_prompt"), "default never wakes");
+        assert!(
+            ContextCompiler::suggest(&config, Some(&grant), &lib, "egress lock device").is_none()
+        );
+        assert!(
+            !ContextCompiler::should_wake(&config, "user_prompt"),
+            "default never wakes"
+        );
     }
 
     #[test]
@@ -138,10 +143,14 @@ mod tests {
         );
         // Proactive on WITH a grant → a suggestion, attributed to that authority.
         let grant = TrustedAuthority::new("claude-code");
-        let suggestion = ContextCompiler::suggest(&config, Some(&grant), &lib, "egress lock device")
-            .expect("opt-in + grant produces a suggestion");
+        let suggestion =
+            ContextCompiler::suggest(&config, Some(&grant), &lib, "egress lock device")
+                .expect("opt-in + grant produces a suggestion");
         assert!(!suggestion.cids.is_empty());
-        assert_eq!(suggestion.authority, "claude-code", "attributed to the granting authority");
+        assert_eq!(
+            suggestion.authority, "claude-code",
+            "attributed to the granting authority"
+        );
     }
 
     #[test]
@@ -154,13 +163,18 @@ mod tests {
             confidence: 100.0,
             ..Default::default()
         };
-        assert!(ContextCompiler::suggest(&strict, Some(&grant), &lib, "egress lock device").is_none());
+        assert!(
+            ContextCompiler::suggest(&strict, Some(&grant), &lib, "egress lock device").is_none()
+        );
     }
 
     #[test]
     fn wake_policy_fires_only_on_configured_triggers() {
         let config = on();
         assert!(ContextCompiler::should_wake(&config, "user_prompt"));
-        assert!(!ContextCompiler::should_wake(&config, "tool_call_started"), "not a default wake trigger");
+        assert!(
+            !ContextCompiler::should_wake(&config, "tool_call_started"),
+            "not a default wake trigger"
+        );
     }
 }

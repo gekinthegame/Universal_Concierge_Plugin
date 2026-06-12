@@ -27,21 +27,14 @@ impl Contacts {
     /// Load from `path`, or a fresh empty set if the file does not exist yet.
     pub fn load(path: &Path) -> Result<Self, String> {
         match std::fs::read_to_string(path) {
-            Ok(text) => {
-                serde_json::from_str(&text).map_err(|e| format!("parse contacts: {e}"))
-            }
+            Ok(text) => serde_json::from_str(&text).map_err(|e| format!("parse contacts: {e}")),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
             Err(error) => Err(format!("read contacts: {error}")),
         }
     }
 
-    /// Persist atomically-ish (write then rename would be better; a direct write
-    /// is fine for this small local file).
+    /// Persist with locked atomic replacement.
     pub fn save(&self, path: &Path) -> Result<(), String> {
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent).map_err(|e| format!("contacts dir: {e}"))?;
-        }
-        let text = serde_json::to_string_pretty(self).map_err(|e| e.to_string())?;
-        std::fs::write(path, text).map_err(|e| format!("write contacts: {e}"))
+        crate::state::save_json(path, self).map_err(|e| e.to_string())
     }
 }

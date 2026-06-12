@@ -8,3 +8,6 @@ license.workspace = true
 [dependencies]
 concierge-core = { path = "../core" }
 serde_json = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

@@ -146,7 +146,10 @@ pub fn verify_head_record(
     if record.signer_capability.subject_id != record.signer_id {
         return Err(SyncError::SignerMismatch);
     }
-    if !record.signer_capability.authorizes(Operation::SyncWrite, &namespace) {
+    if !record
+        .signer_capability
+        .authorizes(Operation::SyncWrite, &namespace)
+    {
         return Err(SyncError::NotAWriter);
     }
     // Heads must be a canonical set (so the record can't hide a fork by reordering).
@@ -156,8 +159,12 @@ pub fn verify_head_record(
     if canonical != record.heads {
         return Err(SyncError::NonCanonicalHeads);
     }
-    if !verify_sig(&AgentId(record.signer_id.clone()), &record.signing_bytes(), &record.signature)
-        .map_err(SyncError::Malformed)?
+    if !verify_sig(
+        &AgentId(record.signer_id.clone()),
+        &record.signing_bytes(),
+        &record.signature,
+    )
+    .map_err(SyncError::Malformed)?
     {
         return Err(SyncError::BadSignature);
     }
@@ -182,11 +189,23 @@ pub fn reconcile(
     remote: &HeadRecord,
     local_has: impl Fn(&str) -> bool,
 ) -> Reconciliation {
-    let mut converged: Vec<String> = local_heads.iter().chain(remote.heads.iter()).cloned().collect();
+    let mut converged: Vec<String> = local_heads
+        .iter()
+        .chain(remote.heads.iter())
+        .cloned()
+        .collect();
     converged.sort();
     converged.dedup();
-    let missing_heads = remote.heads.iter().filter(|h| !local_has(h)).cloned().collect();
-    Reconciliation { converged_heads: converged, missing_heads }
+    let missing_heads = remote
+        .heads
+        .iter()
+        .filter(|h| !local_has(h))
+        .cloned()
+        .collect();
+    Reconciliation {
+        converged_heads: converged,
+        missing_heads,
+    }
 }
 
 /// Bounds on a block transfer (plan §Request-Response Requirements).
@@ -198,7 +217,10 @@ pub struct SyncLimits {
 
 impl Default for SyncLimits {
     fn default() -> Self {
-        Self { max_blocks: DEFAULT_MAX_BLOCKS, max_bytes: DEFAULT_MAX_BYTES }
+        Self {
+            max_blocks: DEFAULT_MAX_BLOCKS,
+            max_bytes: DEFAULT_MAX_BYTES,
+        }
     }
 }
 
@@ -233,7 +255,11 @@ impl MemCli {
 
     /// Which CIDs of `manifest` are missing locally — the bounded fetch list.
     pub fn missing_blocks(&self, manifest: &[String]) -> Vec<String> {
-        manifest.iter().filter(|cid| !self.has_block(cid)).cloned().collect()
+        manifest
+            .iter()
+            .filter(|cid| !self.has_block(cid))
+            .cloned()
+            .collect()
     }
 
     /// Pull and durably import the missing blocks of `manifest` from a peer,
@@ -352,30 +378,38 @@ fn now_secs() -> u64 {
 }
 
 fn safe_key(s: &str) -> String {
-    s.chars().map(|c| if c.is_alphanumeric() { c } else { '_' }).collect()
+    s.chars()
+        .map(|c| if c.is_alphanumeric() { c } else { '_' })
+        .collect()
 }
 
 fn write_json<T: serde::Serialize>(path: &std::path::Path, value: &T) -> CoreResult<()> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| Error::Io(format!("create dir: {e}")))?;
-    }
-    let text = serde_json::to_string_pretty(value).map_err(|e| Error::Io(format!("serialize: {e}")))?;
-    std::fs::write(path, text).map_err(|e| Error::Io(format!("write {}: {e}", path.display())))
+    crate::state::save_json(path, value)
 }
 
 impl MemCli {
-    fn head_path(&self, network_id: &NetworkId, namespace_canonical: &str) -> CoreResult<std::path::PathBuf> {
-        Ok(self
-            .security_dir()?
-            .join("networks")
-            .join(format!("{}.head-{}.json", network_id.0, safe_key(namespace_canonical))))
+    fn head_path(
+        &self,
+        network_id: &NetworkId,
+        namespace_canonical: &str,
+    ) -> CoreResult<std::path::PathBuf> {
+        Ok(self.security_dir()?.join("networks").join(format!(
+            "{}.head-{}.json",
+            network_id.0,
+            safe_key(namespace_canonical)
+        )))
     }
 
-    fn local_heads_path(&self, network_id: &NetworkId, namespace_canonical: &str) -> CoreResult<std::path::PathBuf> {
-        Ok(self
-            .security_dir()?
-            .join("networks")
-            .join(format!("{}.localheads-{}.json", network_id.0, safe_key(namespace_canonical))))
+    fn local_heads_path(
+        &self,
+        network_id: &NetworkId,
+        namespace_canonical: &str,
+    ) -> CoreResult<std::path::PathBuf> {
+        Ok(self.security_dir()?.join("networks").join(format!(
+            "{}.localheads-{}.json",
+            network_id.0,
+            safe_key(namespace_canonical)
+        )))
     }
 
     /// **Sign and store** a head advertisement for `namespace` (a writer's act).
@@ -407,16 +441,25 @@ impl MemCli {
             signer_capability,
             now_secs(),
         );
-        write_json(&self.head_path(&descriptor.network_id, &canonical)?, &record)?;
+        write_json(
+            &self.head_path(&descriptor.network_id, &canonical)?,
+            &record,
+        )?;
         // A writer's own current heads are also its local heads.
         self.set_local_heads(&descriptor.network_id, &canonical, &heads)?;
         Ok(record)
     }
 
     /// The signed head record this device serves for a namespace, if any.
-    pub fn stored_head(&self, network_id: &NetworkId, namespace_canonical: &str) -> CoreResult<Option<HeadRecord>> {
+    pub fn stored_head(
+        &self,
+        network_id: &NetworkId,
+        namespace_canonical: &str,
+    ) -> CoreResult<Option<HeadRecord>> {
         match std::fs::read_to_string(self.head_path(network_id, namespace_canonical)?) {
-            Ok(text) => serde_json::from_str(&text).map(Some).map_err(|e| Error::Io(format!("parse head: {e}"))),
+            Ok(text) => serde_json::from_str(&text)
+                .map(Some)
+                .map_err(|e| Error::Io(format!("parse head: {e}"))),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
             Err(e) => Err(Error::Io(format!("read head: {e}"))),
         }
@@ -435,12 +478,20 @@ impl MemCli {
     }
 
     /// Record this device's converged head view for a namespace.
-    pub fn set_local_heads(&self, network_id: &NetworkId, namespace_canonical: &str, heads: &[String]) -> CoreResult<()> {
+    pub fn set_local_heads(
+        &self,
+        network_id: &NetworkId,
+        namespace_canonical: &str,
+        heads: &[String],
+    ) -> CoreResult<()> {
         self.ensure_security_dir()?;
         let mut sorted = heads.to_vec();
         sorted.sort();
         sorted.dedup();
-        write_json(&self.local_heads_path(network_id, namespace_canonical)?, &sorted)
+        write_json(
+            &self.local_heads_path(network_id, namespace_canonical)?,
+            &sorted,
+        )
     }
 }
 
@@ -455,8 +506,14 @@ mod tests {
 
     fn writer_cap(root: &Identity, ns: &Namespace, subject: &str, epoch: u64) -> Capability {
         Capability::issue(
-            root, ns.clone(), subject,
-            vec![Operation::SyncRead, Operation::SyncWrite], 1000, DAY, epoch, false,
+            root,
+            ns.clone(),
+            subject,
+            vec![Operation::SyncRead, Operation::SyncWrite],
+            1000,
+            DAY,
+            epoch,
+            false,
         )
     }
 
@@ -464,25 +521,54 @@ mod tests {
     fn a_head_record_from_a_writer_verifies_but_a_reader_cannot_advertise() {
         let root = Identity::generate();
         let descriptor = NetworkDescriptor::create(&root, "team", 1000);
-        let ns = Namespace::new(descriptor.network_id.clone(), NamespaceScope::Project("atlas".into()));
+        let ns = Namespace::new(
+            descriptor.network_id.clone(),
+            NamespaceScope::Project("atlas".into()),
+        );
         let writer = Identity::generate();
 
         // A writer (sync_write) signs a valid head record.
-        let cap = writer_cap(&root, &ns, &writer.agent_id().0, descriptor.membership_epoch);
+        let cap = writer_cap(
+            &root,
+            &ns,
+            &writer.agent_id().0,
+            descriptor.membership_epoch,
+        );
         let record = HeadRecord::create(
-            &writer, &descriptor.network_id, &ns, vec!["bafyHEAD".into()],
-            1, descriptor.membership_epoch, 0, cap, 2000,
+            &writer,
+            &descriptor.network_id,
+            &ns,
+            vec!["bafyHEAD".into()],
+            1,
+            descriptor.membership_epoch,
+            0,
+            cap,
+            2000,
         );
         assert!(verify_head_record(&record, &descriptor, 2000, &RevocationSet::new()).is_ok());
 
         // A read-only holder cannot advertise heads.
         let reader = Identity::generate();
         let read_cap = Capability::issue(
-            &root, ns.clone(), &reader.agent_id().0, vec![Operation::SyncRead], 1000, DAY, descriptor.membership_epoch, false,
+            &root,
+            ns.clone(),
+            &reader.agent_id().0,
+            vec![Operation::SyncRead],
+            1000,
+            DAY,
+            descriptor.membership_epoch,
+            false,
         );
         let forged = HeadRecord::create(
-            &reader, &descriptor.network_id, &ns, vec!["bafyHEAD".into()],
-            1, descriptor.membership_epoch, 0, read_cap, 2000,
+            &reader,
+            &descriptor.network_id,
+            &ns,
+            vec!["bafyHEAD".into()],
+            1,
+            descriptor.membership_epoch,
+            0,
+            read_cap,
+            2000,
         );
         assert_eq!(
             verify_head_record(&forged, &descriptor, 2000, &RevocationSet::new()),
@@ -494,12 +580,27 @@ mod tests {
     fn a_tampered_head_record_is_rejected() {
         let root = Identity::generate();
         let descriptor = NetworkDescriptor::create(&root, "team", 1000);
-        let ns = Namespace::new(descriptor.network_id.clone(), NamespaceScope::Project("atlas".into()));
+        let ns = Namespace::new(
+            descriptor.network_id.clone(),
+            NamespaceScope::Project("atlas".into()),
+        );
         let writer = Identity::generate();
-        let cap = writer_cap(&root, &ns, &writer.agent_id().0, descriptor.membership_epoch);
+        let cap = writer_cap(
+            &root,
+            &ns,
+            &writer.agent_id().0,
+            descriptor.membership_epoch,
+        );
         let mut record = HeadRecord::create(
-            &writer, &descriptor.network_id, &ns, vec!["bafyHEAD".into()],
-            1, descriptor.membership_epoch, 0, cap, 2000,
+            &writer,
+            &descriptor.network_id,
+            &ns,
+            vec!["bafyHEAD".into()],
+            1,
+            descriptor.membership_epoch,
+            0,
+            cap,
+            2000,
         );
         record.heads.push("bafyINJECTED".into()); // add a head after signing
         assert!(verify_head_record(&record, &descriptor, 2000, &RevocationSet::new()).is_err());
@@ -509,16 +610,35 @@ mod tests {
     fn reconcile_preserves_concurrent_heads_and_lists_what_is_missing() {
         let root = Identity::generate();
         let descriptor = NetworkDescriptor::create(&root, "team", 1000);
-        let ns = Namespace::new(descriptor.network_id.clone(), NamespaceScope::Project("atlas".into()));
+        let ns = Namespace::new(
+            descriptor.network_id.clone(),
+            NamespaceScope::Project("atlas".into()),
+        );
         let writer = Identity::generate();
-        let cap = writer_cap(&root, &ns, &writer.agent_id().0, descriptor.membership_epoch);
+        let cap = writer_cap(
+            &root,
+            &ns,
+            &writer.agent_id().0,
+            descriptor.membership_epoch,
+        );
         let remote = HeadRecord::create(
-            &writer, &descriptor.network_id, &ns, vec!["A".into(), "B".into()],
-            1, descriptor.membership_epoch, 0, cap, 2000,
+            &writer,
+            &descriptor.network_id,
+            &ns,
+            vec!["A".into(), "B".into()],
+            1,
+            descriptor.membership_epoch,
+            0,
+            cap,
+            2000,
         );
         // Local has A and a concurrent head C; remote has A and B.
         let recon = reconcile(&["A".to_string(), "C".to_string()], &remote, |h| h == "A");
-        assert_eq!(recon.converged_heads, ["A", "B", "C"], "union preserves all heads");
+        assert_eq!(
+            recon.converged_heads,
+            ["A", "B", "C"],
+            "union preserves all heads"
+        );
         assert_eq!(recon.missing_heads, ["B"], "only B must be pulled");
     }
 
@@ -529,27 +649,61 @@ mod tests {
         let dir_a = tempfile::tempdir().unwrap();
         let mem_a = MemCli::new(dir_a.path());
         // A builds a small graph: a checkpoint over a node.
-        let child = mem_a.put_node(&Node { kind: "memory".into(), fields_json: r#"{"text":"shared fact","kind":"reference"}"#.into() }).unwrap();
+        let child = mem_a
+            .put_node(&Node {
+                kind: "memory".into(),
+                fields_json: r#"{"text":"shared fact","kind":"reference"}"#.into(),
+            })
+            .unwrap();
         let head = mem_a.checkpoint("latest", &child, None).unwrap();
-        let manifest: Vec<String> = mem_a.walk(&head).unwrap().into_iter().map(|c| c.0).collect();
+        let manifest: Vec<String> = mem_a
+            .walk(&head)
+            .unwrap()
+            .into_iter()
+            .map(|c| c.0)
+            .collect();
         assert!(manifest.len() >= 2);
 
         // B starts empty and pulls reachable blocks from A (A is the fetch source).
         let dir_b = tempfile::tempdir().unwrap();
         let mem_b = MemCli::new(dir_b.path());
-        assert_eq!(mem_b.missing_blocks(&manifest).len(), manifest.len(), "B is missing everything");
+        assert_eq!(
+            mem_b.missing_blocks(&manifest).len(),
+            manifest.len(),
+            "B is missing everything"
+        );
 
         let fetch = |cid: &str| mem_a.read_block(&Cid(cid.to_string())).ok();
-        let report = mem_b.pull_reachable(&[head.0.clone()], fetch, SyncLimits::default()).unwrap();
+        let report = mem_b
+            .pull_reachable(std::slice::from_ref(&head.0), fetch, SyncLimits::default())
+            .unwrap();
         assert_eq!(report.imported, manifest.len(), "pulled exactly the graph");
 
         // Converged: B now has every block and can walk A's head as its own.
-        assert!(mem_b.missing_blocks(&manifest).is_empty(), "B has the full graph");
-        let b_walk: Vec<String> = mem_b.walk(&head).unwrap().into_iter().map(|c| c.0).collect();
-        assert_eq!(b_walk.len(), manifest.len(), "B reconstructs the same subgraph");
+        assert!(
+            mem_b.missing_blocks(&manifest).is_empty(),
+            "B has the full graph"
+        );
+        let b_walk: Vec<String> = mem_b
+            .walk(&head)
+            .unwrap()
+            .into_iter()
+            .map(|c| c.0)
+            .collect();
+        assert_eq!(
+            b_walk.len(),
+            manifest.len(),
+            "B reconstructs the same subgraph"
+        );
 
         // Re-pulling is a no-op (dedup): nothing new imported.
-        let again = mem_b.pull_reachable(&[head.0.clone()], |cid| mem_a.read_block(&Cid(cid.to_string())).ok(), SyncLimits::default()).unwrap();
+        let again = mem_b
+            .pull_reachable(
+                std::slice::from_ref(&head.0),
+                |cid| mem_a.read_block(&Cid(cid.to_string())).ok(),
+                SyncLimits::default(),
+            )
+            .unwrap();
         assert_eq!(again.imported, 0, "second sync imports nothing");
         assert_eq!(again.already_present, manifest.len());
     }
@@ -562,44 +716,95 @@ mod tests {
         // the conversion runs scrypt password derivation.)
         let dir_a = tempfile::tempdir().unwrap();
         let mem_a = MemCli::new(dir_a.path());
-        let child = mem_a.put_node(&Node { kind: "memory".into(), fields_json: r#"{"text":"WETLANDS-CLASSIFIED","kind":"project"}"#.into() }).unwrap();
+        let child = mem_a
+            .put_node(&Node {
+                kind: "memory".into(),
+                fields_json: r#"{"text":"WETLANDS-CLASSIFIED","kind":"project"}"#.into(),
+            })
+            .unwrap();
         let root = mem_a.checkpoint("latest", &child, None).unwrap();
         mem_a.bind("latest", &root).unwrap();
         mem_a.set_password("pw").unwrap();
         let descriptor = mem_a.create_network("team").unwrap();
-        let ns = Namespace::new(descriptor.network_id.clone(), NamespaceScope::Project("atlas".into()));
+        let ns = Namespace::new(
+            descriptor.network_id.clone(),
+            NamespaceScope::Project("atlas".into()),
+        );
         let recipient = Identity::generate();
-        let plan = mem_a.build_encrypt_and_share_plan("latest", &ns.canonical(), &[recipient.agent_id().0]).unwrap();
-        mem_a.create_encrypt_and_share_private_grant(&plan, "pw").unwrap();
+        let plan = mem_a
+            .build_encrypt_and_share_plan("latest", &ns.canonical(), &[recipient.agent_id().0])
+            .unwrap();
+        mem_a
+            .create_encrypt_and_share_private_grant(&plan, "pw")
+            .unwrap();
         let conversion = mem_a.convert_and_share_private(&plan, "pw").unwrap();
-        let manifest = mem_a.private_conversions().unwrap()[0].ciphertext_manifest.clone();
+        let manifest = mem_a.private_conversions().unwrap()[0]
+            .ciphertext_manifest
+            .clone();
 
         // B is a distinct device; it pulls the ciphertext manifest from A.
         let dir_b = tempfile::tempdir().unwrap();
         let mem_b = MemCli::new(dir_b.path());
-        let report = mem_b.pull_blocks(&manifest, |cid| mem_a.read_block(&Cid(cid.to_string())).ok(), SyncLimits::default()).unwrap();
-        assert_eq!(report.imported, manifest.len(), "pulled the whole ciphertext graph");
-        assert!(mem_b.missing_blocks(&manifest).is_empty(), "B converged on the ciphertext head");
+        let report = mem_b
+            .pull_blocks(
+                &manifest,
+                |cid| mem_a.read_block(&Cid(cid.to_string())).ok(),
+                SyncLimits::default(),
+            )
+            .unwrap();
+        assert_eq!(
+            report.imported,
+            manifest.len(),
+            "pulled the whole ciphertext graph"
+        );
+        assert!(
+            mem_b.missing_blocks(&manifest).is_empty(),
+            "B converged on the ciphertext head"
+        );
         // Inert ciphertext only — the plaintext secret never reached B.
         for cid in &manifest {
             let bytes = mem_b.read_block(&Cid(cid.clone())).unwrap();
-            assert!(!bytes.windows(b"WETLANDS-CLASSIFIED".len()).any(|w| w == b"WETLANDS-CLASSIFIED"), "no plaintext crossed the wire");
+            assert!(
+                !bytes
+                    .windows(b"WETLANDS-CLASSIFIED".len())
+                    .any(|w| w == b"WETLANDS-CLASSIFIED"),
+                "no plaintext crossed the wire"
+            );
         }
-        assert_eq!(conversion.conversion.ciphertext_root, manifest.iter().find(|c| **c == conversion.conversion.ciphertext_root).cloned().unwrap());
+        assert_eq!(
+            conversion.conversion.ciphertext_root,
+            manifest
+                .iter()
+                .find(|c| **c == conversion.conversion.ciphertext_root)
+                .cloned()
+                .unwrap()
+        );
     }
 
     #[test]
     fn a_tampered_block_never_enters_the_store() {
         let dir_a = tempfile::tempdir().unwrap();
         let mem_a = MemCli::new(dir_a.path());
-        let cid = mem_a.put_node(&Node { kind: "memory".into(), fields_json: r#"{"text":"honest","kind":"reference"}"#.into() }).unwrap();
+        let cid = mem_a
+            .put_node(&Node {
+                kind: "memory".into(),
+                fields_json: r#"{"text":"honest","kind":"reference"}"#.into(),
+            })
+            .unwrap();
 
         let dir_b = tempfile::tempdir().unwrap();
         let mem_b = MemCli::new(dir_b.path());
         // A hostile peer serves corrupted bytes for the CID.
         let tampered = |_cid: &str| Some(b"not the real block".to_vec());
-        let result = mem_b.pull_blocks(&[cid.0.clone()], tampered, SyncLimits::default());
-        assert!(result.is_err(), "a wrong-CID block is rejected by content-addressing");
+        let result = mem_b.pull_blocks(
+            std::slice::from_ref(&cid.0),
+            tampered,
+            SyncLimits::default(),
+        );
+        assert!(
+            result.is_err(),
+            "a wrong-CID block is rejected by content-addressing"
+        );
         assert!(!mem_b.has_block(&cid.0), "nothing was imported");
     }
 
@@ -607,14 +812,30 @@ mod tests {
     fn the_block_budget_is_enforced() {
         let dir_a = tempfile::tempdir().unwrap();
         let mem_a = MemCli::new(dir_a.path());
-        let c1 = mem_a.put_node(&Node { kind: "memory".into(), fields_json: r#"{"text":"one","kind":"reference"}"#.into() }).unwrap();
-        let c2 = mem_a.put_node(&Node { kind: "memory".into(), fields_json: r#"{"text":"two","kind":"reference"}"#.into() }).unwrap();
+        let c1 = mem_a
+            .put_node(&Node {
+                kind: "memory".into(),
+                fields_json: r#"{"text":"one","kind":"reference"}"#.into(),
+            })
+            .unwrap();
+        let c2 = mem_a
+            .put_node(&Node {
+                kind: "memory".into(),
+                fields_json: r#"{"text":"two","kind":"reference"}"#.into(),
+            })
+            .unwrap();
 
         let dir_b = tempfile::tempdir().unwrap();
         let mem_b = MemCli::new(dir_b.path());
         let fetch = |cid: &str| mem_a.read_block(&Cid(cid.to_string())).ok();
-        let tight = SyncLimits { max_blocks: 1, max_bytes: DEFAULT_MAX_BYTES };
+        let tight = SyncLimits {
+            max_blocks: 1,
+            max_bytes: DEFAULT_MAX_BYTES,
+        };
         let result = mem_b.pull_blocks(&[c1.0.clone(), c2.0.clone()], fetch, tight);
-        assert!(result.is_err(), "pulling 2 blocks under a 1-block budget is refused");
+        assert!(
+            result.is_err(),
+            "pulling 2 blocks under a 1-block budget is refused"
+        );
     }
 }

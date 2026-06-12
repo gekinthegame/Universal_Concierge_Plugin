@@ -120,8 +120,14 @@ mod tests {
         let mine = signed_message(&me, "hi", vec![]);
         let theirs = signed_message(&peer, "hello", vec![]);
 
-        assert_eq!(message_trust_tier(&mine, &me.agent_id().0), TrustTier::Local);
-        assert_eq!(message_trust_tier(&theirs, &me.agent_id().0), TrustTier::GlobalSigned);
+        assert_eq!(
+            message_trust_tier(&mine, &me.agent_id().0),
+            TrustTier::Local
+        );
+        assert_eq!(
+            message_trust_tier(&theirs, &me.agent_id().0),
+            TrustTier::GlobalSigned
+        );
     }
 
     #[test]
@@ -130,7 +136,10 @@ mod tests {
         let peer = Identity::generate();
         let mut theirs = signed_message(&peer, "original", vec![]);
         theirs.payload = "tampered".to_string(); // mutate after signing
-        assert_eq!(message_trust_tier(&theirs, &me.agent_id().0), TrustTier::Unverified);
+        assert_eq!(
+            message_trust_tier(&theirs, &me.agent_id().0),
+            TrustTier::Unverified
+        );
     }
 
     #[test]
@@ -139,9 +148,15 @@ mod tests {
         // can only ever return tiers whose crypto actually ships.
         let me = Identity::generate();
         let peer = Identity::generate();
-        for env in [signed_message(&me, "a", vec![]), signed_message(&peer, "b", vec![])] {
+        for env in [
+            signed_message(&me, "a", vec![]),
+            signed_message(&peer, "b", vec![]),
+        ] {
             let tier = message_trust_tier(&env, &me.agent_id().0);
-            assert!(matches!(tier, TrustTier::Local | TrustTier::GlobalSigned | TrustTier::Unverified));
+            assert!(matches!(
+                tier,
+                TrustTier::Local | TrustTier::GlobalSigned | TrustTier::Unverified
+            ));
         }
     }
 
@@ -149,7 +164,11 @@ mod tests {
     fn structural_importance_counts_what_a_message_ties_together() {
         let me = Identity::generate();
         let orphan = signed_message(&me, "aside", vec![]);
-        let hub = signed_message(&me, "decision recap", vec!["bafyDecision".into(), "bafyFile".into()]);
+        let hub = signed_message(
+            &me,
+            "decision recap",
+            vec!["bafyDecision".into(), "bafyFile".into()],
+        );
         assert_eq!(structural_importance(&orphan), 0);
         assert_eq!(structural_importance(&hub), 2, "two things tied together");
         // Importance is structural (links), not engagement — re-reading changes nothing.
@@ -160,8 +179,15 @@ mod tests {
     fn the_social_lens_brightens_followed_authors_and_is_purely_local() {
         let mut follows = BTreeSet::new();
         follows.insert("agent-friend".to_string());
-        assert!(social_gravity_factor("agent-friend", &follows) > 1.0, "a followed author brightens");
-        assert_eq!(social_gravity_factor("agent-stranger", &follows), 1.0, "others are neutral, not penalized");
+        assert!(
+            social_gravity_factor("agent-friend", &follows) > 1.0,
+            "a followed author brightens"
+        );
+        assert_eq!(
+            social_gravity_factor("agent-stranger", &follows),
+            1.0,
+            "others are neutral, not penalized"
+        );
         // No global score is produced — the factor is a pure function of the user's
         // own follow set, computed on demand, never stored about anyone.
     }

@@ -33,7 +33,7 @@ use libp2p::{
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 
 /// Re-exported so callers can parse/construct addresses without depending on
 /// `libp2p` directly (e.g. the CLI's `--relay`/`--dial` flags).
@@ -74,10 +74,9 @@ pub enum SyncResponse {
     Heads(Option<Vec<u8>>),
     /// Whether a pushed block was accepted (CID verified, within limits).
     Stored(bool),
-    /// Bare ack that a [`SyncRequest::Deliver`] was received by the peer. Delivery
-    /// to the peer's process, not application acceptance — the receiver still
-    /// verifies the envelope before trusting it.
-    Delivered,
+    /// Whether the receiving application accepted or durably queued a direct
+    /// message after authenticating and applying its consent policy.
+    Delivered(bool),
 }
 
 /// The serve side: answers inbound [`SyncRequest`]s from the local store. The
@@ -87,6 +86,7 @@ pub type SyncProvider = Arc<dyn Fn(SyncRequest) -> SyncResponse + Send + Sync>;
 
 /// The largest single block a store-and-forward relay will accept on a push.
 pub const MAX_PUSH_BLOCK_BYTES: usize = 16 * 1024 * 1024;
+const MAX_PENDING_DIRECT_MESSAGES: usize = 1024;
 
 fn noop_provider() -> SyncProvider {
     Arc::new(|request| match request {
@@ -95,7 +95,7 @@ fn noop_provider() -> SyncProvider {
         SyncRequest::PutBlock(_, _) => SyncResponse::Stored(false),
         // Direct messages are intercepted in `run()` before the provider is
         // consulted; this arm only satisfies exhaustiveness.
-        SyncRequest::Deliver(_) => SyncResponse::Delivered,
+        SyncRequest::Deliver(_) => SyncResponse::Delivered(false),
     })
 }
 
@@ -119,7 +119,7 @@ pub fn store_provider(mem: Arc<concierge_core::MemCli>) -> SyncProvider {
         SyncRequest::PutBlock(_, _) => SyncResponse::Stored(false),
         // Direct messages are intercepted in `run()` before the provider is
         // consulted; this arm only satisfies exhaustiveness.
-        SyncRequest::Deliver(_) => SyncResponse::Delivered,
+        SyncRequest::Deliver(_) => SyncResponse::Delivered(false),
     })
 }
 
@@ -146,15 +146,21 @@ pub fn relay_provider(mem: Arc<concierge_core::MemCli>) -> SyncProvider {
         }
         // Direct messages are intercepted in `run()` before the provider is
         // consulted; this arm only satisfies exhaustiveness.
-        SyncRequest::Deliver(_) => SyncResponse::Delivered,
+        SyncRequest::Deliver(_) => SyncResponse::Delivered(false),
     })
 }
 
 /// What a pending outbound request was asking for, so its response can be labeled.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 enum Pending {
-    Block(String),
-    Heads(String),
+    Block {
+        cid: String,
+        reply: Option<oneshot::Sender<Option<Vec<u8>>>>,
+    },
+    Heads {
+        namespace: String,
+        reply: Option<oneshot::Sender<Option<Vec<u8>>>>,
+    },
     Push(String),
 }
 
@@ -169,7 +175,7 @@ enum Pending {
 #[allow(clippy::too_many_arguments)]
 pub async fn sync_from_peer(
     node: &ConciergeNode,
-    events: &mut mpsc::UnboundedReceiver<NodeEvent>,
+    _events: &mut mpsc::UnboundedReceiver<NodeEvent>,
     peer: PeerId,
     mem: &concierge_core::MemCli,
     descriptor: &concierge_core::NetworkDescriptor,
@@ -184,13 +190,17 @@ pub async fn sync_from_peer(
     let canonical = namespace.canonical();
 
     // 1. Exchange heads — fetch and verify the peer's signed advertisement.
-    let head_bytes = fetch_head(node, events, peer, &canonical, deadline)
+    let head_bytes = fetch_head(node, peer, &canonical, deadline)
         .await
         .ok_or_else(|| "peer did not return a head record".to_string())?;
     let remote: HeadRecord =
         serde_json::from_slice(&head_bytes).map_err(|e| format!("malformed head record: {e}"))?;
-    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
-    verify_head_record(&remote, descriptor, now, revoked).map_err(|e| format!("head record rejected: {e}"))?;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    verify_head_record(&remote, descriptor, now, revoked)
+        .map_err(|e| format!("head record rejected: {e}"))?;
 
     // 2. Reconcile against our local view.
     let local = mem.local_heads(&descriptor.network_id, &canonical);
@@ -206,11 +216,12 @@ pub async fn sync_from_peer(
             continue;
         }
         if !mem.has_block(&cid) {
-            let bytes = fetch_block(node, events, peer, &cid, deadline)
+            let bytes = fetch_block(node, peer, &cid, deadline)
                 .await
                 .ok_or_else(|| format!("could not fetch block {cid}"))?;
             // CID-verified before durable import; a tampered block aborts the sync.
-            mem.import_verified_block(&cid, &bytes).map_err(|e| format!("import {cid}: {e}"))?;
+            mem.import_verified_block(&cid, &bytes)
+                .map_err(|e| format!("import {cid}: {e}"))?;
             imported += 1;
             bytes_total += bytes.len() as u64;
         }
@@ -225,7 +236,8 @@ pub async fn sync_from_peer(
     }
 
     // 4. Durable commit done — adopt the converged head set.
-    let _ = mem.set_local_heads(&descriptor.network_id, &canonical, &recon.converged_heads);
+    mem.set_local_heads(&descriptor.network_id, &canonical, &recon.converged_heads)
+        .map_err(|error| format!("commit converged heads: {error}"))?;
     Ok(concierge_core::SyncReceipt {
         network_id: descriptor.network_id.0.clone(),
         namespace: canonical,
@@ -241,25 +253,18 @@ pub async fn sync_from_peer(
 /// up or the deadline passes.
 async fn fetch_head(
     node: &ConciergeNode,
-    events: &mut mpsc::UnboundedReceiver<NodeEvent>,
     peer: PeerId,
     namespace: &str,
     deadline: tokio::time::Instant,
 ) -> Option<Vec<u8>> {
     use tokio::time::Instant;
     while Instant::now() < deadline {
-        if node.request_heads(peer, namespace).is_err() {
-            return None;
-        }
         let slice = (deadline - Instant::now()).min(std::time::Duration::from_millis(700));
-        match await_event(events, Instant::now() + slice, |ev| match ev {
-            NodeEvent::HeadsReceived { namespace: ns, heads } if ns == namespace => Some(heads.clone()),
-            _ => None,
-        })
-        .await
-        {
-            Some(Some(bytes)) => return Some(bytes),
-            Some(None) | None => tokio::time::sleep(std::time::Duration::from_millis(80)).await,
+        match tokio::time::timeout(slice, node.request_heads_response(peer, namespace)).await {
+            Ok(Ok(Some(bytes))) => return Some(bytes),
+            Ok(Ok(None)) | Ok(Err(_)) | Err(_) => {
+                tokio::time::sleep(std::time::Duration::from_millis(80)).await
+            }
         }
     }
     None
@@ -268,51 +273,21 @@ async fn fetch_head(
 /// Request one block from `peer`, retrying until served or the deadline passes.
 async fn fetch_block(
     node: &ConciergeNode,
-    events: &mut mpsc::UnboundedReceiver<NodeEvent>,
     peer: PeerId,
     cid: &str,
     deadline: tokio::time::Instant,
 ) -> Option<Vec<u8>> {
     use tokio::time::Instant;
     while Instant::now() < deadline {
-        if node.request_block(peer, cid).is_err() {
-            return None;
-        }
         let slice = (deadline - Instant::now()).min(std::time::Duration::from_millis(700));
-        match await_event(events, Instant::now() + slice, |ev| match ev {
-            NodeEvent::BlockReceived { cid: c, bytes } if c == cid => Some(bytes.clone()),
-            _ => None,
-        })
-        .await
-        {
-            Some(Some(bytes)) => return Some(bytes),
-            Some(None) | None => tokio::time::sleep(std::time::Duration::from_millis(80)).await,
+        match tokio::time::timeout(slice, node.request_block_response(peer, cid)).await {
+            Ok(Ok(Some(bytes))) => return Some(bytes),
+            Ok(Ok(None)) | Ok(Err(_)) | Err(_) => {
+                tokio::time::sleep(std::time::Duration::from_millis(80)).await
+            }
         }
     }
     None
-}
-
-/// Consume events until `f` matches one or the deadline passes. `Some(t)` = matched;
-/// `None` = deadline/closed.
-async fn await_event<F, T>(
-    events: &mut mpsc::UnboundedReceiver<NodeEvent>,
-    deadline: tokio::time::Instant,
-    mut f: F,
-) -> Option<T>
-where
-    F: FnMut(&NodeEvent) -> Option<T>,
-{
-    use tokio::time::timeout_at;
-    loop {
-        match timeout_at(deadline, events.recv()).await {
-            Ok(Some(ev)) => {
-                if let Some(t) = f(&ev) {
-                    return Some(t);
-                }
-            }
-            Ok(None) | Err(_) => return None,
-        }
-    }
 }
 
 /// Topic prefix so Concierge rooms don't collide with other gossipsub apps.
@@ -528,6 +503,7 @@ pub enum NodeEvent {
     DirectMessage {
         from_peer: String,
         data: Vec<u8>,
+        delivery_id: u64,
     },
     /// A direct message we sent was acknowledged as received by `to_peer`. The
     /// `message_id` is `content_message_id(data)` of the data we sent, so the
@@ -574,9 +550,9 @@ enum Command {
     Reserve(Multiaddr),
     AddExternalAddress(Multiaddr),
     /// Ask a peer for one block by CID (Phase F sync).
-    RequestBlock(PeerId, String),
+    RequestBlock(PeerId, String, Option<oneshot::Sender<Option<Vec<u8>>>>),
     /// Ask a peer for a namespace's signed head record (Phase F sync).
-    RequestHeads(PeerId, String),
+    RequestHeads(PeerId, String, Option<oneshot::Sender<Option<Vec<u8>>>>),
     /// Push a block to a store-and-forward relay (Phase F).
     PushBlock(PeerId, String, Vec<u8>),
     /// Register this node under a namespace at a rendezvous point.
@@ -588,9 +564,11 @@ enum Command {
     /// Send an opaque, app-signed message-envelope directly to a peer over the
     /// concierge-only point-to-point protocol (not a public topic).
     SendDirect(PeerId, Vec<u8>),
+    AcknowledgeDirect(u64, bool),
 }
 
 /// A handle to a running node.
+#[derive(Clone)]
 pub struct ConciergeNode {
     cmd: mpsc::UnboundedSender<Command>,
     pub peer_id: PeerId,
@@ -651,13 +629,35 @@ impl ConciergeNode {
     /// Ask `peer` for one block by CID. The reply arrives as
     /// [`NodeEvent::BlockReceived`]; the caller CID-verifies before importing.
     pub fn request_block(&self, peer: PeerId, cid: &str) -> Result<(), String> {
-        self.send(Command::RequestBlock(peer, cid.to_string()))
+        self.send(Command::RequestBlock(peer, cid.to_string(), None))
     }
 
     /// Ask `peer` for a namespace's signed head record (arrives as
     /// [`NodeEvent::HeadsReceived`]).
     pub fn request_heads(&self, peer: PeerId, namespace: &str) -> Result<(), String> {
-        self.send(Command::RequestHeads(peer, namespace.to_string()))
+        self.send(Command::RequestHeads(peer, namespace.to_string(), None))
+    }
+
+    pub async fn request_block_response(
+        &self,
+        peer: PeerId,
+        cid: &str,
+    ) -> Result<Option<Vec<u8>>, String> {
+        let (tx, rx) = oneshot::channel();
+        self.send(Command::RequestBlock(peer, cid.to_string(), Some(tx)))?;
+        rx.await
+            .map_err(|_| "network node stopped before returning the block".to_string())
+    }
+
+    pub async fn request_heads_response(
+        &self,
+        peer: PeerId,
+        namespace: &str,
+    ) -> Result<Option<Vec<u8>>, String> {
+        let (tx, rx) = oneshot::channel();
+        self.send(Command::RequestHeads(peer, namespace.to_string(), Some(tx)))?;
+        rx.await
+            .map_err(|_| "network node stopped before returning heads".to_string())
     }
 
     /// Push a block to a store-and-forward `relay` so it can hold it for offline
@@ -695,6 +695,10 @@ impl ConciergeNode {
     /// dial and the send fails as an outbound failure.
     pub fn send_dm(&self, peer: PeerId, data: Vec<u8>) -> Result<(), String> {
         self.send(Command::SendDirect(peer, data))
+    }
+
+    pub fn acknowledge_dm(&self, delivery_id: u64, accepted: bool) -> Result<(), String> {
+        self.send(Command::AcknowledgeDirect(delivery_id, accepted))
     }
 
     fn send(&self, command: Command) -> Result<(), String> {
@@ -766,7 +770,7 @@ pub fn peer_id_from_ed25519_hex(hex: &str) -> Option<PeerId> {
 
 /// Decode an even-length hex string into bytes (no external dependency).
 fn decode_hex(hex: &str) -> Option<Vec<u8>> {
-    if hex.len() % 2 != 0 {
+    if !hex.len().is_multiple_of(2) {
         return None;
     }
     (0..hex.len())
@@ -870,7 +874,9 @@ fn build_swarm(
                 rendezvous_client: rendezvous::client::Behaviour::new(key.clone()),
                 rendezvous_server: behaviour_config
                     .rendezvous_point
-                    .then(|| rendezvous::server::Behaviour::new(rendezvous::server::Config::default()))
+                    .then(|| {
+                        rendezvous::server::Behaviour::new(rendezvous::server::Config::default())
+                    })
                     .into(),
                 kademlia: kademlia.into(),
                 mdns: mdns.into(),
@@ -948,6 +954,9 @@ async fn run(
         request_response::OutboundRequestId,
         (PeerId, String),
     > = std::collections::HashMap::new();
+    let mut inbound_dms: HashMap<u64, request_response::ResponseChannel<SyncResponse>> =
+        HashMap::new();
+    let mut next_delivery_id = 1u64;
     // PeerIDs we've been asked to route to (via `find_peer`), so a closest-peers
     // query result for one of them is recognised and dialed.
     let mut routing: HashSet<PeerId> = HashSet::new();
@@ -961,7 +970,7 @@ async fn run(
             command = cmd.recv() => match command {
                 Some(Command::Listen(addr)) => {
                     if let Err(error) = swarm.listen_on(addr) {
-                        failed(&evt, "listen", error);
+                        failed(&evt, "listen", format!("{error:?}"));
                     }
                 }
                 Some(Command::Dial(addr)) => {
@@ -980,13 +989,13 @@ async fn run(
                         address: addr.to_string(),
                     });
                 }
-                Some(Command::RequestBlock(peer, cid)) => {
+                Some(Command::RequestBlock(peer, cid, reply)) => {
                     let id = swarm.behaviour_mut().sync.send_request(&peer, SyncRequest::GetBlock(cid.clone()));
-                    pending.insert(id, Pending::Block(cid));
+                    pending.insert(id, Pending::Block { cid, reply });
                 }
-                Some(Command::RequestHeads(peer, namespace)) => {
+                Some(Command::RequestHeads(peer, namespace, reply)) => {
                     let id = swarm.behaviour_mut().sync.send_request(&peer, SyncRequest::GetHeads(namespace.clone()));
-                    pending.insert(id, Pending::Heads(namespace));
+                    pending.insert(id, Pending::Heads { namespace, reply });
                 }
                 Some(Command::PushBlock(peer, cid, bytes)) => {
                     let id = swarm.behaviour_mut().sync.send_request(&peer, SyncRequest::PutBlock(cid.clone(), bytes));
@@ -1003,6 +1012,14 @@ async fn run(
                     let message_id = content_message_id(&data);
                     let request_id = swarm.behaviour_mut().sync.send_request(&peer, SyncRequest::Deliver(data));
                     outbound_dms.insert(request_id, (peer, message_id));
+                }
+                Some(Command::AcknowledgeDirect(delivery_id, accepted)) => {
+                    if let Some(channel) = inbound_dms.remove(&delivery_id) {
+                        let _ = swarm
+                            .behaviour_mut()
+                            .sync
+                            .send_response(channel, SyncResponse::Delivered(accepted));
+                    }
                 }
                 Some(Command::RegisterRendezvous(point, namespace)) => {
                     match rendezvous::Namespace::new(namespace) {
@@ -1153,13 +1170,24 @@ async fn run(
                     } => {
                         // A direct message: this is concierge-only point-to-point
                         // traffic, NOT block/head sync — it must not reach the store
-                        // `provider`. Surface the opaque envelope (the app verifies
-                        // its signature) and ack delivery on the channel.
+                        // `provider`. Surface the opaque envelope and wait for the
+                        // receiving application to authenticate, apply consent, and
+                        // explicitly acknowledge acceptance.
+                        if inbound_dms.len() >= MAX_PENDING_DIRECT_MESSAGES {
+                            let _ = swarm
+                                .behaviour_mut()
+                                .sync
+                                .send_response(channel, SyncResponse::Delivered(false));
+                            continue;
+                        }
+                        let delivery_id = next_delivery_id;
+                        next_delivery_id = next_delivery_id.wrapping_add(1).max(1);
+                        inbound_dms.insert(delivery_id, channel);
                         emit(&evt, NodeEvent::DirectMessage {
                             from_peer: peer.to_string(),
                             data,
+                            delivery_id,
                         });
-                        let _ = swarm.behaviour_mut().sync.send_response(channel, SyncResponse::Delivered);
                     }
                     request_response::Message::Request { request, channel, .. } => {
                         // Serve from the local store via the application's provider
@@ -1172,21 +1200,31 @@ async fn run(
                         // A `Delivered` ack belongs to an outbound direct message, not
                         // a block/head request — match it against `outbound_dms` so the
                         // sender learns delivery succeeded and stops retrying.
-                        if let SyncResponse::Delivered = response {
+                        if let SyncResponse::Delivered(accepted) = response {
                             if let Some((to_peer, message_id)) = outbound_dms.remove(&request_id) {
-                                emit(&evt, NodeEvent::DirectMessageDelivered {
-                                    to_peer: to_peer.to_string(),
-                                    message_id,
-                                });
+                                if accepted {
+                                    emit(&evt, NodeEvent::DirectMessageDelivered {
+                                        to_peer: to_peer.to_string(),
+                                        message_id,
+                                    });
+                                }
                             }
                             continue;
                         }
                         match (pending.remove(&request_id), response) {
-                            (Some(Pending::Block(cid)), SyncResponse::Block(bytes)) => {
-                                emit(&evt, NodeEvent::BlockReceived { cid, bytes });
+                            (Some(Pending::Block { cid, reply }), SyncResponse::Block(bytes)) => {
+                                if let Some(reply) = reply {
+                                    let _ = reply.send(bytes);
+                                } else {
+                                    emit(&evt, NodeEvent::BlockReceived { cid, bytes });
+                                }
                             }
-                            (Some(Pending::Heads(namespace)), SyncResponse::Heads(heads)) => {
-                                emit(&evt, NodeEvent::HeadsReceived { namespace, heads });
+                            (Some(Pending::Heads { namespace, reply }), SyncResponse::Heads(heads)) => {
+                                if let Some(reply) = reply {
+                                    let _ = reply.send(heads);
+                                } else {
+                                    emit(&evt, NodeEvent::HeadsReceived { namespace, heads });
+                                }
                             }
                             (Some(Pending::Push(cid)), SyncResponse::Stored(ok)) => {
                                 emit(&evt, NodeEvent::BlockStored { cid, ok });
@@ -1205,8 +1243,20 @@ async fn run(
                     outbound_dms.remove(&request_id);
                     // Surface the failure under the right shape so the caller can retry.
                     match pending.remove(&request_id) {
-                        Some(Pending::Block(cid)) => emit(&evt, NodeEvent::BlockReceived { cid, bytes: None }),
-                        Some(Pending::Heads(namespace)) => emit(&evt, NodeEvent::HeadsReceived { namespace, heads: None }),
+                        Some(Pending::Block { cid, reply }) => {
+                            if let Some(reply) = reply {
+                                let _ = reply.send(None);
+                            } else {
+                                emit(&evt, NodeEvent::BlockReceived { cid, bytes: None });
+                            }
+                        }
+                        Some(Pending::Heads { namespace, reply }) => {
+                            if let Some(reply) = reply {
+                                let _ = reply.send(None);
+                            } else {
+                                emit(&evt, NodeEvent::HeadsReceived { namespace, heads: None });
+                            }
+                        }
                         Some(Pending::Push(cid)) => emit(&evt, NodeEvent::BlockStored { cid, ok: false }),
                         None => {}
                     }
@@ -1327,6 +1377,10 @@ mod tests {
         loop {
             match rx.recv().await {
                 Some(NodeEvent::Listening(addr)) => return addr,
+                Some(NodeEvent::OperationFailed {
+                    operation: "listen",
+                    error,
+                }) => panic!("listen failed: {error}"),
                 Some(_) => {}
                 None => panic!("node event stream closed before a listen address arrived"),
             }
@@ -1453,6 +1507,33 @@ mod tests {
         }
     }
 
+    async fn next_direct_message(rx: &mut mpsc::UnboundedReceiver<NodeEvent>) -> (Vec<u8>, u64) {
+        loop {
+            match rx.recv().await {
+                Some(NodeEvent::DirectMessage {
+                    data, delivery_id, ..
+                }) => return (data, delivery_id),
+                Some(_) => {}
+                None => panic!("node event stream closed before a direct message arrived"),
+            }
+        }
+    }
+
+    async fn next_direct_delivery(rx: &mut mpsc::UnboundedReceiver<NodeEvent>) -> (String, String) {
+        loop {
+            match rx.recv().await {
+                Some(NodeEvent::DirectMessageDelivered {
+                    to_peer,
+                    message_id,
+                }) => return (to_peer, message_id),
+                Some(_) => {}
+                None => {
+                    panic!("node event stream closed before a delivery acknowledgement arrived")
+                }
+            }
+        }
+    }
+
     /// Drive `a` to publish until `b` receives `payload` (or the timeout fires).
     async fn await_delivery(
         a: &ConciergeNode,
@@ -1514,6 +1595,92 @@ mod tests {
         let payload = b"protect the wetlands".to_vec();
         let received = await_delivery(&a, &mut b_rx, "conservation", &payload).await;
         assert_eq!(received, payload, "B receives the exact bytes A published");
+    }
+
+    #[tokio::test]
+    async fn sync_responses_do_not_consume_direct_messages_and_acceptance_controls_acknowledgement()
+    {
+        let provider: SyncProvider = Arc::new(|request| match request {
+            SyncRequest::GetHeads(namespace) if namespace == "shared" => {
+                SyncResponse::Heads(Some(b"signed-heads".to_vec()))
+            }
+            SyncRequest::GetBlock(_) => SyncResponse::Block(None),
+            SyncRequest::GetHeads(_) => SyncResponse::Heads(None),
+            SyncRequest::PutBlock(_, _) => SyncResponse::Stored(false),
+            SyncRequest::Deliver(_) => SyncResponse::Delivered(false),
+        });
+        let (a, mut a_rx) =
+            ConciergeNode::spawn_with_provider(key(3), NodeConfig::default(), provider)
+                .expect("node a");
+        let (b, mut b_rx) = ConciergeNode::spawn(key(4)).expect("node b");
+
+        a.listen("/ip4/127.0.0.1/tcp/0".parse().unwrap())
+            .expect("queue listen");
+        let a_addr = timeout(Duration::from_secs(5), next_listen(&mut a_rx))
+            .await
+            .expect("a should report a listen addr");
+        b.dial(a_addr.parse().unwrap()).expect("queue dial");
+        timeout(Duration::from_secs(5), async {
+            loop {
+                if let Some(NodeEvent::ConnectionEstablished { peer_id, .. }) = b_rx.recv().await {
+                    if peer_id == a.peer_id.to_string() {
+                        break;
+                    }
+                }
+            }
+        })
+        .await
+        .expect("b should connect to a");
+        timeout(Duration::from_secs(5), async {
+            loop {
+                if let Some(NodeEvent::ConnectionEstablished { peer_id, .. }) = a_rx.recv().await {
+                    if peer_id == b.peer_id.to_string() {
+                        break;
+                    }
+                }
+            }
+        })
+        .await
+        .expect("a should observe b's connection");
+
+        let payload = b"authenticated direct envelope".to_vec();
+        a.send_dm(b.peer_id, payload.clone())
+            .expect("queue direct message");
+        assert_eq!(
+            b.request_heads_response(a.peer_id, "shared")
+                .await
+                .expect("head request"),
+            Some(b"signed-heads".to_vec())
+        );
+        let (received, rejected_delivery) =
+            timeout(Duration::from_secs(5), next_direct_message(&mut b_rx))
+                .await
+                .expect("direct message remains available after sync");
+        assert_eq!(received, payload);
+
+        b.acknowledge_dm(rejected_delivery, false)
+            .expect("reject direct message");
+        assert!(
+            timeout(Duration::from_millis(500), next_direct_delivery(&mut a_rx))
+                .await
+                .is_err(),
+            "a rejected message must not be reported as delivered"
+        );
+
+        a.send_dm(b.peer_id, payload.clone())
+            .expect("retry direct message");
+        let (_, accepted_delivery) =
+            timeout(Duration::from_secs(5), next_direct_message(&mut b_rx))
+                .await
+                .expect("retried direct message");
+        b.acknowledge_dm(accepted_delivery, true)
+            .expect("accept direct message");
+        let (to_peer, message_id) =
+            timeout(Duration::from_secs(5), next_direct_delivery(&mut a_rx))
+                .await
+                .expect("accepted direct message is acknowledged");
+        assert_eq!(to_peer, b.peer_id.to_string());
+        assert_eq!(message_id, content_message_id(&payload));
     }
 
     #[tokio::test]
@@ -1872,40 +2039,49 @@ mod tests {
         let block = b"the verified bytes".to_vec();
         let served = (cid.clone(), block.clone());
         let provider: SyncProvider = Arc::new(move |req| match req {
-            SyncRequest::GetBlock(c) if c == served.0 => SyncResponse::Block(Some(served.1.clone())),
+            SyncRequest::GetBlock(c) if c == served.0 => {
+                SyncResponse::Block(Some(served.1.clone()))
+            }
             SyncRequest::GetBlock(_) => SyncResponse::Block(None),
             SyncRequest::GetHeads(_) => SyncResponse::Heads(None),
             SyncRequest::PutBlock(_, _) => SyncResponse::Stored(false),
-            SyncRequest::Deliver(_) => SyncResponse::Delivered,
+            SyncRequest::Deliver(_) => SyncResponse::Delivered(false),
         });
-        let (a, mut a_rx) = ConciergeNode::spawn_with_provider(key(21), NodeConfig::default(), provider).expect("a");
+        let (a, mut a_rx) =
+            ConciergeNode::spawn_with_provider(key(21), NodeConfig::default(), provider)
+                .expect("a");
         let (b, mut b_rx) = ConciergeNode::spawn(key(22)).expect("b");
 
-        a.listen("/ip4/127.0.0.1/tcp/0".parse().unwrap()).expect("queue listen");
-        let a_addr = timeout(Duration::from_secs(5), next_listen(&mut a_rx)).await.expect("a listen addr");
+        a.listen("/ip4/127.0.0.1/tcp/0".parse().unwrap())
+            .expect("queue listen");
+        let a_addr = timeout(Duration::from_secs(5), next_listen(&mut a_rx))
+            .await
+            .expect("a listen addr");
         b.dial(a_addr.parse().unwrap()).expect("queue dial");
 
         // Fetch the served CID, retrying until the connection is up.
         let got = timeout(Duration::from_secs(20), async {
             loop {
                 b.request_block(a.peer_id, &cid).expect("queue request");
-                if let Ok(Some(NodeEvent::BlockReceived { bytes, .. })) =
-                    timeout(Duration::from_millis(500), async {
-                        loop {
-                            match b_rx.recv().await {
-                                Some(e @ NodeEvent::BlockReceived { .. }) => return Some(e),
-                                Some(_) => {}
-                                None => return None,
-                            }
+                if let Ok(Some(NodeEvent::BlockReceived {
+                    bytes: Some(bytes), ..
+                })) = timeout(Duration::from_millis(500), async {
+                    loop {
+                        match b_rx.recv().await {
+                            Some(e @ NodeEvent::BlockReceived { .. }) => return Some(e),
+                            Some(_) => {}
+                            None => return None,
                         }
-                    }).await
-                {
-                    if let Some(bytes) = bytes {
-                        return bytes;
                     }
+                })
+                .await
+                {
+                    return bytes;
                 }
             }
-        }).await.expect("block should arrive");
+        })
+        .await
+        .expect("block should arrive");
         assert_eq!(got, block, "B receives the exact served block bytes");
     }
 
@@ -1917,12 +2093,25 @@ mod tests {
 
         let dir_a = tempfile::tempdir().unwrap();
         let mem_a = Arc::new(MemCli::new(dir_a.path()));
-        let cid = mem_a.put_node(&Node { kind: "memory".into(), fields_json: r#"{"text":"over the wire","kind":"reference"}"#.into() }).unwrap();
+        let cid = mem_a
+            .put_node(&Node {
+                kind: "memory".into(),
+                fields_json: r#"{"text":"over the wire","kind":"reference"}"#.into(),
+            })
+            .unwrap();
 
-        let (a, mut a_rx) = ConciergeNode::spawn_with_provider(key(25), NodeConfig::default(), store_provider(mem_a.clone())).expect("a");
+        let (a, mut a_rx) = ConciergeNode::spawn_with_provider(
+            key(25),
+            NodeConfig::default(),
+            store_provider(mem_a.clone()),
+        )
+        .expect("a");
         let (b, mut b_rx) = ConciergeNode::spawn(key(26)).expect("b");
-        a.listen("/ip4/127.0.0.1/tcp/0".parse().unwrap()).expect("queue listen");
-        let a_addr = timeout(Duration::from_secs(5), next_listen(&mut a_rx)).await.expect("a listen addr");
+        a.listen("/ip4/127.0.0.1/tcp/0".parse().unwrap())
+            .expect("queue listen");
+        let a_addr = timeout(Duration::from_secs(5), next_listen(&mut a_rx))
+            .await
+            .expect("a listen addr");
         b.dial(a_addr.parse().unwrap()).expect("queue dial");
 
         let dir_b = tempfile::tempdir().unwrap();
@@ -1933,16 +2122,33 @@ mod tests {
         let bytes = timeout(Duration::from_secs(20), async {
             loop {
                 b.request_block(a.peer_id, &cid.0).expect("queue request");
-                if let Ok((_c, Some(bytes))) = timeout(Duration::from_millis(500), next_block(&mut b_rx)).await {
+                if let Ok((_c, Some(bytes))) =
+                    timeout(Duration::from_millis(500), next_block(&mut b_rx)).await
+                {
                     return bytes;
                 }
             }
-        }).await.expect("the real block should arrive");
+        })
+        .await
+        .expect("the real block should arrive");
 
         // The application verifies + imports (the transport never touched the store).
-        mem_b.pull_blocks(&[cid.0.clone()], |_| Some(bytes.clone()), SyncLimits::default()).unwrap();
-        assert!(mem_b.has_block(&cid.0), "B converged: the verified block is in its store");
-        assert_eq!(mem_b.block_bytes(&cid.0), Some(bytes), "exact bytes, CID-verified");
+        mem_b
+            .pull_blocks(
+                std::slice::from_ref(&cid.0),
+                |_| Some(bytes.clone()),
+                SyncLimits::default(),
+            )
+            .unwrap();
+        assert!(
+            mem_b.has_block(&cid.0),
+            "B converged: the verified block is in its store"
+        );
+        assert_eq!(
+            mem_b.block_bytes(&cid.0),
+            Some(bytes),
+            "exact bytes, CID-verified"
+        );
     }
 
     async fn next_registered(rx: &mut mpsc::UnboundedReceiver<NodeEvent>) -> String {
@@ -1969,15 +2175,25 @@ mod tests {
     async fn peers_find_each_other_through_a_rendezvous_point() {
         // Phase F discovery: A registers at a rendezvous point; B discovers A there —
         // no manually-exchanged address between A and B.
-        let rdv_config = NodeConfig { rendezvous_point: true, ..NodeConfig::default() };
-        let (rdv, mut rdv_rx) = ConciergeNode::spawn_with_config(key(50), rdv_config).expect("rendezvous point");
-        rdv.listen("/ip4/127.0.0.1/tcp/0".parse().unwrap()).expect("queue listen");
-        let rdv_addr = timeout(Duration::from_secs(5), next_listen(&mut rdv_rx)).await.expect("rdv addr");
+        let rdv_config = NodeConfig {
+            rendezvous_point: true,
+            ..NodeConfig::default()
+        };
+        let (rdv, mut rdv_rx) =
+            ConciergeNode::spawn_with_config(key(50), rdv_config).expect("rendezvous point");
+        rdv.listen("/ip4/127.0.0.1/tcp/0".parse().unwrap())
+            .expect("queue listen");
+        let rdv_addr = timeout(Duration::from_secs(5), next_listen(&mut rdv_rx))
+            .await
+            .expect("rdv addr");
 
         // A: advertise its own address, connect to the point, and register.
         let (a, mut a_rx) = ConciergeNode::spawn(key(51)).expect("a");
-        a.listen("/ip4/127.0.0.1/tcp/0".parse().unwrap()).expect("queue listen");
-        let a_addr = timeout(Duration::from_secs(5), next_listen(&mut a_rx)).await.expect("a addr");
+        a.listen("/ip4/127.0.0.1/tcp/0".parse().unwrap())
+            .expect("queue listen");
+        let a_addr = timeout(Duration::from_secs(5), next_listen(&mut a_rx))
+            .await
+            .expect("a addr");
         let mut a_external: Multiaddr = a_addr.parse().unwrap();
         if matches!(a_external.iter().last(), Some(Protocol::P2p(_))) {
             a_external.pop();
@@ -2001,7 +2217,9 @@ mod tests {
         let found = timeout(Duration::from_secs(25), async {
             loop {
                 b.discover_rendezvous(rdv.peer_id, "concierge").ok();
-                if let Ok(peer) = timeout(Duration::from_millis(800), next_discovered(&mut b_rx)).await {
+                if let Ok(peer) =
+                    timeout(Duration::from_millis(800), next_discovered(&mut b_rx)).await
+                {
                     if peer == a.peer_id.to_string() {
                         return peer;
                     }
@@ -2031,41 +2249,68 @@ mod tests {
 
         let dir_w = tempfile::tempdir().unwrap();
         let mem_w = MemCli::new(dir_w.path());
-        let cid = mem_w.put_node(&Node { kind: "memory".into(), fields_json: r#"{"text":"for offline peers","kind":"reference"}"#.into() }).unwrap();
+        let cid = mem_w
+            .put_node(&Node {
+                kind: "memory".into(),
+                fields_json: r#"{"text":"for offline peers","kind":"reference"}"#.into(),
+            })
+            .unwrap();
         let bytes = mem_w.block_bytes(&cid.0).unwrap();
 
         // The relay accepts pushes (store-and-forward).
         let dir_r = tempfile::tempdir().unwrap();
         let mem_r = Arc::new(MemCli::new(dir_r.path()));
-        let (relay, mut relay_rx) = ConciergeNode::spawn_with_provider(key(40), NodeConfig::default(), relay_provider(mem_r.clone())).expect("relay");
-        relay.listen("/ip4/127.0.0.1/tcp/0".parse().unwrap()).expect("queue listen");
-        let relay_addr = timeout(Duration::from_secs(5), next_listen(&mut relay_rx)).await.expect("relay addr");
+        let (relay, mut relay_rx) = ConciergeNode::spawn_with_provider(
+            key(40),
+            NodeConfig::default(),
+            relay_provider(mem_r.clone()),
+        )
+        .expect("relay");
+        relay
+            .listen("/ip4/127.0.0.1/tcp/0".parse().unwrap())
+            .expect("queue listen");
+        let relay_addr = timeout(Duration::from_secs(5), next_listen(&mut relay_rx))
+            .await
+            .expect("relay addr");
 
         // Writer pushes the block to the relay.
         let (w, mut w_rx) = ConciergeNode::spawn(key(41)).expect("writer");
         w.dial(relay_addr.parse().unwrap()).expect("dial");
         let stored = timeout(Duration::from_secs(20), async {
             loop {
-                w.push_block(relay.peer_id, &cid.0, bytes.clone()).expect("queue push");
+                w.push_block(relay.peer_id, &cid.0, bytes.clone())
+                    .expect("queue push");
                 if let Ok(ok) = timeout(Duration::from_millis(500), next_stored(&mut w_rx)).await {
-                    if ok { return true; }
+                    if ok {
+                        return true;
+                    }
                 }
             }
-        }).await.expect("push should be accepted");
+        })
+        .await
+        .expect("push should be accepted");
         assert!(stored);
-        assert!(mem_r.has_block(&cid.0), "the relay now holds the (inert) block");
+        assert!(
+            mem_r.has_block(&cid.0),
+            "the relay now holds the (inert) block"
+        );
 
         // A different peer pulls the block from the relay — the writer is irrelevant now.
         let (b, mut b_rx) = ConciergeNode::spawn(key(42)).expect("offline-returning peer");
         b.dial(relay_addr.parse().unwrap()).expect("dial");
         let got = timeout(Duration::from_secs(20), async {
             loop {
-                b.request_block(relay.peer_id, &cid.0).expect("queue request");
-                if let Ok((_c, Some(bytes))) = timeout(Duration::from_millis(500), next_block(&mut b_rx)).await {
+                b.request_block(relay.peer_id, &cid.0)
+                    .expect("queue request");
+                if let Ok((_c, Some(bytes))) =
+                    timeout(Duration::from_millis(500), next_block(&mut b_rx)).await
+                {
                     return bytes;
                 }
             }
-        }).await.expect("the relayed block should arrive");
+        })
+        .await
+        .expect("the relayed block should arrive");
         assert_eq!(got, bytes, "the peer fetched the block from the relay");
     }
 
@@ -2075,51 +2320,105 @@ mod tests {
         // the whole sync loop (exchange heads → verify → reconcile → pull missing,
         // verified → adopt heads) over the live connection and converges.
         use concierge_core::{
-            Capability, CoreBinding, Identity, MemCli, Namespace, NamespaceScope, NetworkDescriptor,
-            Node, Operation, RevocationSet,
+            Capability, CoreBinding, MemCli, Namespace, NamespaceScope, NetworkDescriptor, Node,
+            Operation, RevocationSet,
         };
 
         // --- A: found a network, build a graph, publish a signed head ---
         let dir_a = tempfile::tempdir().unwrap();
         let mem_a = Arc::new(MemCli::new(dir_a.path()));
         let descriptor: NetworkDescriptor = mem_a.create_network("research-team").unwrap();
-        let ns = Namespace::new(descriptor.network_id.clone(), NamespaceScope::Project("atlas".into()));
+        let ns = Namespace::new(
+            descriptor.network_id.clone(),
+            NamespaceScope::Project("atlas".into()),
+        );
 
-        let child = mem_a.put_node(&Node { kind: "memory".into(), fields_json: r#"{"text":"shared fact","kind":"reference"}"#.into() }).unwrap();
+        let child = mem_a
+            .put_node(&Node {
+                kind: "memory".into(),
+                fields_json: r#"{"text":"shared fact","kind":"reference"}"#.into(),
+            })
+            .unwrap();
         let head = mem_a.checkpoint("latest", &child, None).unwrap();
         let graph_size = mem_a.walk(&head).unwrap().len();
         assert!(graph_size >= 2);
 
         // A is a writer: a root-signed sync_write capability for the namespace.
-        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
         let a_cap = Capability::issue(
-            &mem_a.user_identity().unwrap(), ns.clone(), &mem_a.identity().unwrap().agent_id().0,
-            vec![Operation::SyncRead, Operation::SyncWrite], now, 24 * 3600, descriptor.membership_epoch, false,
+            &mem_a.user_identity().unwrap(),
+            ns.clone(),
+            &mem_a.identity().unwrap().agent_id().0,
+            vec![Operation::SyncRead, Operation::SyncWrite],
+            now,
+            24 * 3600,
+            descriptor.membership_epoch,
+            false,
         );
-        mem_a.publish_head(&descriptor, &ns, vec![head.0.clone()], a_cap).unwrap();
+        mem_a
+            .publish_head(&descriptor, &ns, vec![head.0.clone()], a_cap)
+            .unwrap();
 
-        let (a, mut a_rx) = ConciergeNode::spawn_with_provider(key(30), NodeConfig::default(), store_provider(mem_a.clone())).expect("a");
+        let (a, mut a_rx) = ConciergeNode::spawn_with_provider(
+            key(30),
+            NodeConfig::default(),
+            store_provider(mem_a.clone()),
+        )
+        .expect("a");
         let (b, mut b_rx) = ConciergeNode::spawn(key(31)).expect("b");
-        a.listen("/ip4/127.0.0.1/tcp/0".parse().unwrap()).expect("queue listen");
-        let a_addr = timeout(Duration::from_secs(5), next_listen(&mut a_rx)).await.expect("a listen addr");
+        a.listen("/ip4/127.0.0.1/tcp/0".parse().unwrap())
+            .expect("queue listen");
+        let a_addr = timeout(Duration::from_secs(5), next_listen(&mut a_rx))
+            .await
+            .expect("a listen addr");
         b.dial(a_addr.parse().unwrap()).expect("queue dial");
 
         // --- B: drive the sync to convergence ---
         let dir_b = tempfile::tempdir().unwrap();
         let mem_b = MemCli::new(dir_b.path());
-        let receipt = sync_from_peer(&b, &mut b_rx, a.peer_id, &mem_b, &descriptor, &ns, &RevocationSet::new(), Duration::from_secs(25))
-            .await
-            .expect("sync should converge");
+        let receipt = sync_from_peer(
+            &b,
+            &mut b_rx,
+            a.peer_id,
+            &mem_b,
+            &descriptor,
+            &ns,
+            &RevocationSet::new(),
+            Duration::from_secs(25),
+        )
+        .await
+        .expect("sync should converge");
 
-        assert_eq!(receipt.blocks_imported, graph_size, "pulled exactly the missing graph");
+        assert_eq!(
+            receipt.blocks_imported, graph_size,
+            "pulled exactly the missing graph"
+        );
         assert_eq!(receipt.heads, vec![head.0.clone()], "converged on A's head");
-        assert!(mem_b.has_block(&head.0) && mem_b.has_block(&child.0), "B has the full graph");
-        assert_eq!(mem_b.local_heads(&descriptor.network_id, &ns.canonical()), vec![head.0.clone()]);
+        assert!(
+            mem_b.has_block(&head.0) && mem_b.has_block(&child.0),
+            "B has the full graph"
+        );
+        assert_eq!(
+            mem_b.local_heads(&descriptor.network_id, &ns.canonical()),
+            vec![head.0.clone()]
+        );
 
         // A second sync is a no-op (already converged).
-        let again = sync_from_peer(&b, &mut b_rx, a.peer_id, &mem_b, &descriptor, &ns, &RevocationSet::new(), Duration::from_secs(25))
-            .await
-            .expect("second sync");
+        let again = sync_from_peer(
+            &b,
+            &mut b_rx,
+            a.peer_id,
+            &mem_b,
+            &descriptor,
+            &ns,
+            &RevocationSet::new(),
+            Duration::from_secs(25),
+        )
+        .await
+        .expect("second sync");
         assert_eq!(again.blocks_imported, 0, "nothing left to pull");
     }
 
@@ -2128,18 +2427,29 @@ mod tests {
         // A serves nothing; B asks for a CID and gets a deterministic "not here".
         let (a, mut a_rx) = ConciergeNode::spawn(key(23)).expect("a");
         let (b, mut b_rx) = ConciergeNode::spawn(key(24)).expect("b");
-        a.listen("/ip4/127.0.0.1/tcp/0".parse().unwrap()).expect("queue listen");
-        let a_addr = timeout(Duration::from_secs(5), next_listen(&mut a_rx)).await.expect("a listen addr");
+        a.listen("/ip4/127.0.0.1/tcp/0".parse().unwrap())
+            .expect("queue listen");
+        let a_addr = timeout(Duration::from_secs(5), next_listen(&mut a_rx))
+            .await
+            .expect("a listen addr");
         b.dial(a_addr.parse().unwrap()).expect("queue dial");
 
         let (_cid, bytes) = timeout(Duration::from_secs(20), async {
             loop {
-                b.request_block(a.peer_id, "bafyMISSING").expect("queue request");
-                if let Ok(received) = timeout(Duration::from_millis(500), next_block(&mut b_rx)).await {
+                b.request_block(a.peer_id, "bafyMISSING")
+                    .expect("queue request");
+                if let Ok(received) =
+                    timeout(Duration::from_millis(500), next_block(&mut b_rx)).await
+                {
                     return received;
                 }
             }
-        }).await.expect("a negative reply should arrive");
-        assert!(bytes.is_none(), "an unserved CID yields None, not an error or another block");
+        })
+        .await
+        .expect("a negative reply should arrive");
+        assert!(
+            bytes.is_none(),
+            "an unserved CID yields None, not an error or another block"
+        );
     }
 }

@@ -12,16 +12,77 @@ use std::path::PathBuf;
 use rand_core::{OsRng, RngCore};
 
 use crate::config::Config;
-use crate::error::{Error, Result};
-use crate::identity::{AgentId, Identity};
 use crate::contacts::Contacts;
 use crate::dm_outbox::{DmOutbox, OutboundDm};
-use crate::sites::{SiteRecord, Sites};
+use crate::error::{Error, Result};
+use crate::identity::{AgentId, Identity};
 use crate::messaging::{message_order, MessageEnvelope, RoomBook};
+use crate::naming::{self, ContactCard, Introduction, NameSource, ResolvedName};
 use crate::publishing::{
     available_backends, backend_exists, share_via_selected_backend, BackendInfo,
 };
+use crate::sites::{SiteRecord, Sites};
 use crate::social::SocialBook;
+
+const MAX_CONTACT_CARD_BYTES: usize = 128 * 1024;
+const MAX_CONTACT_NAME_BYTES: usize = 128;
+const MAX_CONTACT_BIO_BYTES: usize = 4 * 1024;
+const MAX_CONTACT_AVATAR_BYTES: usize = 64 * 1024;
+const MAX_CONTACT_SITE_BYTES: usize = 512;
+const MAX_CONTACT_ROOMS: usize = 64;
+const MAX_CONTACT_ROOM_BYTES: usize = 128;
+const MAX_INTRODUCTION_BYTES: usize = 16 * 1024;
+const MAX_INTRODUCTION_NAME_BYTES: usize = 128;
+
+fn validate_contact_card_limits(card: &ContactCard) -> Result<()> {
+    let bounded = card.display_name.len() <= MAX_CONTACT_NAME_BYTES
+        && card
+            .bio
+            .as_ref()
+            .is_none_or(|value| value.len() <= MAX_CONTACT_BIO_BYTES)
+        && card
+            .avatar
+            .as_ref()
+            .is_none_or(|value| value.len() <= MAX_CONTACT_AVATAR_BYTES)
+        && card
+            .site_ipns
+            .as_ref()
+            .is_none_or(|value| value.len() <= MAX_CONTACT_SITE_BYTES)
+        && card.rooms.len() <= MAX_CONTACT_ROOMS
+        && card
+            .rooms
+            .iter()
+            .all(|room| room.len() <= MAX_CONTACT_ROOM_BYTES);
+    if !bounded {
+        return Err(Error::SecurityPolicy(
+            "contact card exceeds field limits".to_string(),
+        ));
+    }
+    let bytes =
+        serde_json::to_vec(card).map_err(|e| Error::Io(format!("serialize contact card: {e}")))?;
+    if bytes.len() > MAX_CONTACT_CARD_BYTES {
+        return Err(Error::SecurityPolicy(
+            "contact card exceeds size limit".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_introduction_limits(intro: &Introduction) -> Result<()> {
+    if intro.asserted_name.len() > MAX_INTRODUCTION_NAME_BYTES {
+        return Err(Error::SecurityPolicy(
+            "introduction name exceeds size limit".to_string(),
+        ));
+    }
+    let bytes =
+        serde_json::to_vec(intro).map_err(|e| Error::Io(format!("serialize introduction: {e}")))?;
+    if bytes.len() > MAX_INTRODUCTION_BYTES {
+        return Err(Error::SecurityPolicy(
+            "introduction exceeds size limit".to_string(),
+        ));
+    }
+    Ok(())
+}
 
 /// Content identifier.
 ///
@@ -579,7 +640,6 @@ impl MemCli {
         Config::load_from_project_root(&self.working_dir).map_err(|e| Error::Io(e.to_string()))
     }
 
-
     fn put_json_value(&self, value: serde_json::Value) -> Result<Cid> {
         let obj = value
             .as_object()
@@ -643,7 +703,9 @@ impl MemCli {
     /// as a linked node (e.g. opaque ciphertext).
     pub fn block_links(&self, cid: &Cid) -> Result<Vec<Cid>> {
         match self.get(&CidOrName::Cid(cid.clone())) {
-            Ok(Record::Live { body_json, .. }) => Ok(self.record_links(&body_json).unwrap_or_default()),
+            Ok(Record::Live { body_json, .. }) => {
+                Ok(self.record_links(&body_json).unwrap_or_default())
+            }
             _ => Ok(Vec::new()),
         }
     }
@@ -747,7 +809,10 @@ impl MemCli {
             .map_err(|e| Error::Io(format!("load day hamt: {e}")))?;
         let mut out = Vec::new();
         hamt.for_each(|key, cid| {
-            out.push((String::from_utf8_lossy(key).into_owned(), Cid(cid.to_string())));
+            out.push((
+                String::from_utf8_lossy(key).into_owned(),
+                Cid(cid.to_string()),
+            ));
             Ok(())
         })
         .map_err(|e| Error::Io(format!("hamt iterate: {e}")))?;
@@ -1121,62 +1186,406 @@ impl MemCli {
         ))
     }
 
-    /// **Publish a folder as a website** (the Planet Pattern). A password-gated
-    /// egress act (Decision 0026): the AI/user *stages* the folder; this is the
-    /// deliberate, authenticated publish. Ensures the public node is up, mints (or
-    /// reuses) the site's stable IPNS key, `add`s the folder as a real UnixFS
-    /// directory a gateway will serve, points IPNS at the new CID, and records a
-    /// signed receipt + the site registry. Runs against the PUBLIC node, never the
-    /// private mesh node. Updating a site is the same call (same name → same IPNS).
-    pub fn publish_site(
+    fn site_deploy_destination(&self, name: &str, platform: &str) -> Result<String> {
+        let credentials = self.deploy_credentials()?;
+        match platform {
+            "ipfs" => Ok(format!(
+                "ipfs-public:{}",
+                crate::node::public_repo_for(&self.store_dir()?).display()
+            )),
+            "github" => credentials
+                .github
+                .map(|c| {
+                    format!(
+                        "https://api.github.com/repos/{}/{}/branches/{}",
+                        c.owner, c.repo, c.branch
+                    )
+                })
+                .ok_or_else(|| Error::Io("no github credentials yet".to_string())),
+            "netlify" => credentials
+                .netlify
+                .map(|c| {
+                    format!(
+                        "https://api.netlify.com/site/{}",
+                        c.site_id.unwrap_or_else(|| format!("new:{name}"))
+                    )
+                })
+                .ok_or_else(|| Error::Io("no netlify credentials yet".to_string())),
+            "vercel" => credentials
+                .vercel
+                .map(|c| {
+                    format!(
+                        "https://api.vercel.com/project/{}/team/{}",
+                        c.project.unwrap_or_else(|| name.to_string()),
+                        c.team_id.unwrap_or_else(|| "default".to_string())
+                    )
+                })
+                .ok_or_else(|| Error::Io("no vercel credentials yet".to_string())),
+            "cloudflare" => credentials
+                .cloudflare
+                .map(|c| {
+                    format!(
+                        "https://api.cloudflare.com/client/v4/accounts/{}/pages/projects/{}",
+                        c.account_id, c.project
+                    )
+                })
+                .ok_or_else(|| Error::Io("no cloudflare credentials yet".to_string())),
+            "ftp" => Err(Error::SecurityPolicy(
+                "plaintext FTP deployment is disabled".to_string(),
+            )),
+            other => Err(Error::Io(format!("unsupported platform: {other}"))),
+        }
+    }
+
+    fn build_site_deploy_plan(
         &self,
         name: &str,
         folder: &str,
         kind: &str,
-        password: &str,
-    ) -> Result<PublishReceipt> {
-        self.verify_password(password)?;
+        platform: &str,
+    ) -> Result<crate::deploy::SiteDeployPlan> {
         let folder_path = std::path::Path::new(folder);
         if !folder_path.is_dir() {
             return Err(Error::Io(format!("not a folder: {folder}")));
         }
-        // Stage the front-end (gallery/player generate index.html; site needs one).
+        let files = crate::deploy::walk_files(folder_path).map_err(Error::Io)?;
+        crate::deploy::SiteDeployPlan::from_files(
+            name,
+            folder_path,
+            kind,
+            platform,
+            &self.site_deploy_destination(name, platform)?,
+            &files,
+        )
+        .map_err(Error::Io)
+    }
+
+    /// Build the exact website deployment plan that the user must review before
+    /// entering a password. Generated gallery/player front-ends are staged before
+    /// the manifest is calculated so they are included in the review.
+    pub fn review_site_deploy(
+        &self,
+        name: &str,
+        folder: &str,
+        kind: &str,
+        platform: &str,
+    ) -> Result<crate::deploy::SiteDeployPlan> {
+        let folder_path = std::path::Path::new(folder);
+        if !folder_path.is_dir() {
+            return Err(Error::Io(format!("not a folder: {folder}")));
+        }
         crate::site::write_index(folder_path, crate::site::SiteKind::parse(kind), name)?;
-        let store = self.store_dir()?;
-        let repo = crate::node::public_repo_for(&store);
-        crate::node::launch_public_node(&store)?;
-        self.wait_for_public_node()?;
-        let ipns = crate::node::ipns_key_gen(&repo, name)?;
-        let cid = crate::node::unixfs_add_dir(&repo, folder_path)?;
-        let published = crate::node::ipns_publish(&repo, &cid, name)?;
+        self.build_site_deploy_plan(name, folder, kind, platform)
+    }
+
+    /// Publish exactly one previously reviewed website manifest. The folder and
+    /// destination are recomputed and compared while the security policy lock is
+    /// held, immediately before egress.
+    pub fn publish_site(
+        &self,
+        reviewed: &crate::deploy::SiteDeployPlan,
+        password: &str,
+    ) -> Result<PublishReceipt> {
+        let _policy_lock = self.policy_lock()?;
+        self.verify_password_unlocked(password)?;
+        let current = self.build_site_deploy_plan(
+            &reviewed.name,
+            &reviewed.folder,
+            &reviewed.kind,
+            &reviewed.platform,
+        )?;
+        if current != *reviewed {
+            return Err(Error::EgressPlanChanged(
+                "website files, destination, or deployment metadata changed after review"
+                    .to_string(),
+            ));
+        }
+        let event_root = Cid(format!("external-manifest:{}", reviewed.manifest_digest));
+        self.append_security_event_unlocked(
+            "site_deploy_approved",
+            &event_root,
+            &format!("{} via {}", reviewed.name, reviewed.destination),
+        )?;
+        let folder_path = std::path::Path::new(&reviewed.folder);
+        let files = crate::deploy::walk_files(folder_path).map_err(Error::Io)?;
+
+        match reviewed.platform.as_str() {
+            "ipfs" => {
+                let store = self.store_dir()?;
+                let repo = crate::node::public_repo_for(&store);
+                crate::node::launch_public_node(&store)?;
+                self.wait_for_public_node()?;
+                let ipns = crate::node::ipns_key_gen(&repo, &reviewed.name)?;
+                let cid = crate::node::unixfs_add_dir(&repo, folder_path)?;
+                let published = crate::node::ipns_publish(&repo, &cid, &reviewed.name)?;
+                let identity = self.identity()?;
+                let receipt = PublishReceipt {
+                    root: cid.clone(),
+                    backend: "ipfs-public".to_string(),
+                    unix_time: now_secs(),
+                    gateway_url: format!("https://ipfs.io/ipns/{published}"),
+                    agent_id: identity.agent_id().0,
+                    signature: identity.sign(cid.as_bytes()),
+                    ipns_name: Some(published.clone()),
+                    site_name: Some(reviewed.name.clone()),
+                };
+                self.append_receipt(&receipt)?;
+                self.record_publication(&receipt)?;
+                // Reuse the existing IPNS address if the site was published before.
+                let path = self.sites_path()?;
+                crate::state::update_json::<Sites, _>(&path, |sites| {
+                    let ipns = sites
+                        .sites
+                        .get(&reviewed.name)
+                        .map(|site| site.ipns.clone())
+                        .unwrap_or(ipns);
+                    sites.sites.insert(
+                        reviewed.name.clone(),
+                        SiteRecord {
+                            name: reviewed.name.clone(),
+                            ipns,
+                            dir: reviewed.folder.clone(),
+                            last_cid: Some(cid),
+                            published_at: now_secs() as i64,
+                        },
+                    );
+                    Ok(())
+                })?;
+                Ok(receipt)
+            }
+            "github" | "netlify" | "vercel" | "cloudflare" => {
+                self.publish_external(reviewed, &files)
+            }
+            "ftp" => Err(Error::SecurityPolicy(
+                "plaintext FTP deployment is disabled".to_string(),
+            )),
+            _ => Err(Error::Io(format!(
+                "unsupported platform: {}",
+                reviewed.platform
+            ))),
+        }
+    }
+
+    /// Path to the on-device deploy-credentials vault (`<store>/security/deploy.json`,
+    /// 0600). Tokens live here and never go anywhere but their own platform's API.
+    fn deploy_credentials_path(&self) -> Result<PathBuf> {
+        Ok(self.security_dir()?.join("deploy.json"))
+    }
+
+    /// Load the stored deploy credentials (empty if none configured yet).
+    pub fn deploy_credentials(&self) -> Result<crate::deploy::DeployCredentials> {
+        let path = self.deploy_credentials_path()?;
+        if path
+            .try_exists()
+            .map_err(|error| Error::Io(format!("inspect deploy credentials: {error}")))?
+        {
+            crate::egress::validate_private_file(&path)?;
+        }
+        match std::fs::read(&path) {
+            Ok(bytes) => serde_json::from_slice(&bytes)
+                .map_err(|e| Error::Io(format!("parse deploy credentials: {e}"))),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                Ok(crate::deploy::DeployCredentials::default())
+            }
+            Err(e) => Err(Error::Io(format!("read deploy credentials: {e}"))),
+        }
+    }
+
+    /// Set (merge) the credentials for one platform from a JSON object, written
+    /// 0600. `fields_json` is the platform's credential block (e.g. the GitHub
+    /// `{token,owner,repo,branch?}`); an explicit JSON `null` clears it.
+    pub fn set_deploy_credentials(&self, platform: &str, fields_json: &str) -> Result<()> {
+        let mut creds = self.deploy_credentials()?;
+        let value: serde_json::Value = serde_json::from_str(fields_json)
+            .map_err(|e| Error::Io(format!("parse credential fields: {e}")))?;
+        let cleared = value.is_null();
+        macro_rules! merge {
+            ($field:ident) => {{
+                if cleared {
+                    creds.$field = None;
+                } else {
+                    creds.$field =
+                        Some(serde_json::from_value(value.clone()).map_err(|e| {
+                            Error::Io(format!("invalid {platform} credentials: {e}"))
+                        })?);
+                }
+            }};
+        }
+        match platform {
+            "github" => merge!(github),
+            "netlify" => merge!(netlify),
+            "vercel" => merge!(vercel),
+            "cloudflare" => merge!(cloudflare),
+            "ftp" => {
+                return Err(Error::SecurityPolicy(
+                    "plaintext FTP credentials are not accepted".to_string(),
+                ))
+            }
+            other => return Err(Error::Io(format!("unknown deploy platform: {other}"))),
+        }
+        let required = |label: &str, value: &str| -> Result<()> {
+            if value.trim().is_empty() || value.chars().any(char::is_control) {
+                Err(Error::SecurityPolicy(format!(
+                    "{label} must be non-empty and contain no control characters"
+                )))
+            } else {
+                Ok(())
+            }
+        };
+        match platform {
+            "github" if !cleared => {
+                let c = creds
+                    .github
+                    .as_ref()
+                    .expect("github credentials were just parsed");
+                required("github token", &c.token)?;
+                required("github owner", &c.owner)?;
+                required("github repository", &c.repo)?;
+                required("github branch", &c.branch)?;
+                if c.owner.contains('/') || c.repo.contains('/') || c.branch.contains("..") {
+                    return Err(Error::SecurityPolicy(
+                        "github owner, repository, or branch contains an unsafe path component"
+                            .to_string(),
+                    ));
+                }
+            }
+            "netlify" if !cleared => {
+                required(
+                    "netlify token",
+                    &creds
+                        .netlify
+                        .as_ref()
+                        .expect("netlify credentials were just parsed")
+                        .token,
+                )?;
+            }
+            "vercel" if !cleared => {
+                required(
+                    "vercel token",
+                    &creds
+                        .vercel
+                        .as_ref()
+                        .expect("vercel credentials were just parsed")
+                        .token,
+                )?;
+            }
+            "cloudflare" if !cleared => {
+                let c = creds
+                    .cloudflare
+                    .as_ref()
+                    .expect("cloudflare credentials were just parsed");
+                required("cloudflare token", &c.token)?;
+                required("cloudflare account id", &c.account_id)?;
+                required("cloudflare project", &c.project)?;
+                if c.account_id.contains('/') || c.project.contains('/') {
+                    return Err(Error::SecurityPolicy(
+                        "cloudflare account or project contains an unsafe path component"
+                            .to_string(),
+                    ));
+                }
+            }
+            _ => {}
+        }
+        self.ensure_security_dir()?;
+        let bytes = serde_json::to_vec_pretty(&creds)
+            .map_err(|e| Error::Io(format!("serialize deploy credentials: {e}")))?;
+        crate::egress::atomic_private_write(&self.deploy_credentials_path()?, &bytes)
+    }
+
+    /// Non-secret status: which platforms are configured + their public fields
+    /// (owner/repo/project/host). Tokens/passwords are NEVER returned to the GUI.
+    pub fn deploy_status(&self) -> Result<serde_json::Value> {
+        let c = self.deploy_credentials()?;
+        Ok(serde_json::json!({
+            "github": c.github.as_ref().map(|g| serde_json::json!({
+                "owner": g.owner, "repo": g.repo, "branch": g.branch })),
+            "netlify": c.netlify.as_ref().map(|n| serde_json::json!({
+                "site_id": n.site_id })),
+            "vercel": c.vercel.as_ref().map(|v| serde_json::json!({
+                "project": v.project, "team_id": v.team_id })),
+            "cloudflare": c.cloudflare.as_ref().map(|c| serde_json::json!({
+                "account_id": c.account_id, "project": c.project })),
+        }))
+    }
+
+    /// Deploy the staged folder to an external Web2 host using the stored
+    /// credentials. Password is already verified upstream (`publish_site`); this is
+    /// explicit, gated egress. Returns a real receipt with the live URL.
+    fn publish_external(
+        &self,
+        reviewed: &crate::deploy::SiteDeployPlan,
+        files: &[crate::deploy::DeployFile],
+    ) -> Result<PublishReceipt> {
         let identity = self.identity()?;
+        let creds = self.deploy_credentials()?;
+        let platform = reviewed.platform.as_str();
+
+        let missing = || {
+            Error::Io(format!(
+                "no {platform} credentials yet — add them in Studio → Deploy settings"
+            ))
+        };
+        let url = match platform {
+            "github" => crate::deploy::deploy_github(&creds.github.ok_or_else(missing)?, files),
+            "netlify" => crate::deploy::deploy_netlify(
+                &creds.netlify.ok_or_else(missing)?,
+                files,
+                &reviewed.name,
+            ),
+            "vercel" => crate::deploy::deploy_vercel(
+                &creds.vercel.ok_or_else(missing)?,
+                files,
+                &reviewed.name,
+            ),
+            "cloudflare" => {
+                crate::deploy::deploy_cloudflare(&creds.cloudflare.ok_or_else(missing)?, files)
+            }
+            other => return Err(Error::Io(format!("unsupported platform: {other}"))),
+        }
+        .map_err(Error::Io)?;
+
+        let signed = format!(
+            "{}\n{}\n{}\n{}",
+            reviewed.manifest_digest, reviewed.destination, platform, url
+        );
         let receipt = PublishReceipt {
-            root: cid.clone(),
-            backend: "ipfs-public".to_string(),
+            root: format!("external-manifest:{}", reviewed.manifest_digest),
+            backend: platform.to_string(),
             unix_time: now_secs(),
-            gateway_url: format!("https://ipfs.io/ipns/{published}"),
+            gateway_url: url.clone(),
             agent_id: identity.agent_id().0,
-            signature: identity.sign(cid.as_bytes()),
-            ipns_name: Some(published.clone()),
-            site_name: Some(name.to_string()),
+            signature: identity.sign(signed.as_bytes()),
+            ipns_name: None,
+            site_name: Some(reviewed.name.clone()),
         };
         self.append_receipt(&receipt)?;
-        // Reuse the existing IPNS address if the site was published before.
-        let path = self.sites_path()?;
-        let mut sites = Sites::load(&path).map_err(Error::Io)?;
-        let ipns = sites.sites.get(name).map(|s| s.ipns.clone()).unwrap_or(ipns);
-        sites.sites.insert(
-            name.to_string(),
-            SiteRecord {
-                name: name.to_string(),
-                ipns,
-                dir: folder.to_string(),
-                last_cid: Some(cid),
-                published_at: now_secs() as i64,
-            },
-        );
-        sites.save(&path).map_err(Error::Io)?;
+        self.record_publication(&receipt)?;
         Ok(receipt)
+    }
+
+    /// Verify that an external-site receipt authenticates this exact reviewed
+    /// manifest, destination, platform, and returned live URL.
+    pub fn verify_external_site_receipt(
+        &self,
+        receipt: &PublishReceipt,
+        reviewed: &crate::deploy::SiteDeployPlan,
+    ) -> Result<bool> {
+        if receipt.root != format!("external-manifest:{}", reviewed.manifest_digest)
+            || receipt.backend != reviewed.platform
+            || receipt.site_name.as_deref() != Some(reviewed.name.as_str())
+        {
+            return Ok(false);
+        }
+        let signed = format!(
+            "{}\n{}\n{}\n{}",
+            reviewed.manifest_digest, reviewed.destination, reviewed.platform, receipt.gateway_url
+        );
+        crate::identity::verify(
+            &AgentId(receipt.agent_id.clone()),
+            signed.as_bytes(),
+            &receipt.signature,
+        )
+        .map_err(Error::Io)
     }
 
     /// The published sites this install knows.
@@ -1191,11 +1600,10 @@ impl MemCli {
     /// Forget a site from the registry (does not unpin or revoke the IPNS key).
     pub fn site_unpublish(&self, name: &str) -> Result<()> {
         let path = self.sites_path()?;
-        let mut sites = Sites::load(&path).map_err(Error::Io)?;
-        if sites.sites.remove(name).is_some() {
-            sites.save(&path).map_err(Error::Io)?;
-        }
-        Ok(())
+        crate::state::update_json::<Sites, _>(&path, |sites| {
+            sites.sites.remove(name);
+            Ok(())
+        })
     }
 
     /// Export a site's IPNS private key to `out_path` for backup/portability.
@@ -1289,17 +1697,293 @@ impl MemCli {
     /// Follow an AgentID (persisted to the local book; also the inbound allowlist).
     pub fn follow(&self, agent_id: &str) -> Result<()> {
         let path = self.social_path()?;
-        let mut book = SocialBook::load(&path).map_err(Error::Io)?;
-        book.follow(agent_id);
-        book.save(&path).map_err(Error::Io)
+        crate::state::update_json::<SocialBook, _>(&path, |book| {
+            book.follow(agent_id);
+            Ok(())
+        })
     }
 
     /// Give an AgentID a local petname.
     pub fn set_nickname(&self, agent_id: &str, nickname: &str) -> Result<()> {
         let path = self.social_path()?;
-        let mut book = SocialBook::load(&path).map_err(Error::Io)?;
-        book.set_nickname(agent_id, nickname);
-        book.save(&path).map_err(Error::Io)
+        crate::state::update_json::<SocialBook, _>(&path, |book| {
+            book.set_nickname(agent_id, nickname);
+            Ok(())
+        })
+    }
+
+    /// Remove a petname.
+    pub fn remove_nickname(&self, agent_id: &str) -> Result<()> {
+        let path = self.social_path()?;
+        crate::state::update_json::<SocialBook, _>(&path, |book| {
+            book.remove_nickname(agent_id);
+            Ok(())
+        })
+    }
+
+    // ── Sovereign naming: Layer 2 contact cards + resolution + introductions ──
+
+    fn own_card_path(&self) -> Result<PathBuf> {
+        Ok(self.store_dir()?.join("contact-card.json"))
+    }
+    fn cards_dir(&self) -> Result<PathBuf> {
+        Ok(self.store_dir()?.join("cards"))
+    }
+    fn introductions_path(&self) -> Result<PathBuf> {
+        Ok(self.store_dir()?.join("introductions.json"))
+    }
+
+    /// Edit the local user's own contact card (the self-asserted profile fields).
+    /// Stored unsigned; [`MemCli::my_card`] signs a fresh copy on demand. `None`
+    /// fields are left unchanged; an empty string clears an optional field.
+    pub fn update_my_card(
+        &self,
+        display_name: Option<&str>,
+        bio: Option<&str>,
+        avatar: Option<&str>,
+        site_ipns: Option<&str>,
+    ) -> Result<()> {
+        let path = self.own_card_path()?;
+        crate::state::update_json::<ContactCard, _>(&path, |card| {
+            if let Some(n) = display_name {
+                card.display_name = n.to_string();
+            }
+            let opt = |v: &str| (!v.trim().is_empty()).then(|| v.trim().to_string());
+            if let Some(b) = bio {
+                card.bio = opt(b);
+            }
+            if let Some(a) = avatar {
+                card.avatar = opt(a);
+            }
+            if let Some(s) = site_ipns {
+                card.site_ipns = opt(s);
+            }
+            card.sig = String::new();
+            validate_contact_card_limits(card)
+        })
+    }
+
+    /// Build and **sign** the user's current contact card (refreshing `updated_at`).
+    pub fn my_card(&self) -> Result<ContactCard> {
+        let identity = self.identity()?;
+        let aid = identity.agent_id();
+        let did = naming::did_key_from_agent(&aid).map_err(Error::Io)?;
+        let mut card: ContactCard = std::fs::read_to_string(self.own_card_path()?)
+            .ok()
+            .and_then(|s| serde_json::from_str(&s).ok())
+            .unwrap_or_default();
+        card.did = did;
+        if card.display_name.trim().is_empty() {
+            card.display_name = naming::short_agent(&aid.0);
+        }
+        card.updated_at = now_secs();
+        card.sign(&identity);
+        validate_contact_card_limits(&card)?;
+        Ok(card)
+    }
+
+    /// Import a peer's signed card: verify the signature, then cache it. Only the
+    /// self-authenticating part is trusted; the name stays a hint until petnamed.
+    /// Returns the author's AgentID hex.
+    pub fn import_card(&self, card_json: &str) -> Result<String> {
+        let card: ContactCard = serde_json::from_str(card_json)
+            .map_err(|e| Error::Io(format!("parse contact card: {e}")))?;
+        if !card.verify() {
+            return Err(Error::Io(
+                "contact card signature does not verify".to_string(),
+            ));
+        }
+        validate_contact_card_limits(&card)?;
+        let aid = card.agent_id().map_err(Error::Io)?;
+        let dir = self.cards_dir()?;
+        std::fs::create_dir_all(&dir).map_err(|e| Error::Io(e.to_string()))?;
+        let path = dir.join(format!("{}.json", aid.0));
+        if let Some(existing) = self.card_of(&aid.0)? {
+            if card.updated_at <= existing.updated_at {
+                return Err(Error::SecurityPolicy(
+                    "stale or duplicate contact card update rejected".to_string(),
+                ));
+            }
+        }
+        crate::state::save_json(&path, &card)?;
+        Ok(aid.0)
+    }
+
+    /// The cached, verified card for an AgentID, if any.
+    pub fn card_of(&self, agent_id: &str) -> Result<Option<ContactCard>> {
+        let path = self.cards_dir()?.join(format!("{agent_id}.json"));
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            return Ok(None);
+        };
+        let card: ContactCard = match serde_json::from_str(&text) {
+            Ok(c) => c,
+            Err(_) => return Ok(None),
+        };
+        // Re-verify on read — a cached file is only trusted if it still verifies.
+        Ok(card.verify().then_some(card))
+    }
+
+    fn load_introductions(&self) -> Vec<Introduction> {
+        std::fs::read_to_string(self.introductions_path().unwrap_or_default())
+            .ok()
+            .and_then(|s| serde_json::from_str::<Vec<Introduction>>(&s).ok())
+            .unwrap_or_default()
+    }
+
+    /// Resolve an AgentID to a display name with provenance: petname (pinned) >
+    /// introduction (from someone you follow) > self-asserted card (hint) > short id.
+    pub fn resolve_display(&self, agent_id: &str) -> ResolvedName {
+        if let Ok(book) = self.social_book() {
+            if let Some(petname) = book.nickname_of(agent_id) {
+                return ResolvedName::new(petname.clone(), NameSource::Petname);
+            }
+            // An introduction from someone you follow is a strong hint.
+            let intros = self.load_introductions();
+            let from_followed = intros.iter().find(|i| {
+                i.verify()
+                    && i.subject_agent().ok().map(|a| a.0).as_deref() == Some(agent_id)
+                    && naming::agent_id_from_did(&i.from)
+                        .map(|a| book.is_following(&a.0))
+                        .unwrap_or(false)
+            });
+            if let Some(i) = from_followed {
+                return ResolvedName::new(i.asserted_name.clone(), NameSource::Introduced);
+            }
+        }
+        if let Ok(Some(card)) = self.card_of(agent_id) {
+            if !card.display_name.trim().is_empty() {
+                return ResolvedName::new(card.display_name, NameSource::Card);
+            }
+        }
+        ResolvedName::new(naming::short_agent(agent_id), NameSource::Unknown)
+    }
+
+    /// Reverse lookup: a query like `alice` → every AgentID it could mean, across
+    /// petnames, introductions, and cached cards. Returns the full candidate set so
+    /// the UI can disambiguate (it never silently picks one).
+    pub fn resolve_name(&self, query: &str) -> Vec<(String, ResolvedName)> {
+        let q = query.trim().trim_start_matches('@').to_lowercase();
+        if q.is_empty() {
+            return Vec::new();
+        }
+        let mut out: Vec<(String, ResolvedName)> = Vec::new();
+        let mut seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+        let push = |aid: String,
+                    name: ResolvedName,
+                    out: &mut Vec<_>,
+                    seen: &mut std::collections::BTreeSet<String>| {
+            if seen.insert(format!("{aid}:{:?}", name.source)) {
+                out.push((aid, name));
+            }
+        };
+        if let Ok(book) = self.social_book() {
+            for (aid, petname) in &book.nicknames {
+                if petname.to_lowercase().contains(&q) {
+                    push(
+                        aid.clone(),
+                        ResolvedName::new(petname.clone(), NameSource::Petname),
+                        &mut out,
+                        &mut seen,
+                    );
+                }
+            }
+        }
+        for intro in self.load_introductions() {
+            if intro.verify() && intro.asserted_name.to_lowercase().contains(&q) {
+                if let Ok(aid) = intro.subject_agent() {
+                    push(
+                        aid.0,
+                        ResolvedName::new(intro.asserted_name, NameSource::Introduced),
+                        &mut out,
+                        &mut seen,
+                    );
+                }
+            }
+        }
+        if let Ok(dir) = self.cards_dir() {
+            if let Ok(entries) = std::fs::read_dir(&dir) {
+                for entry in entries.flatten() {
+                    if let Ok(text) = std::fs::read_to_string(entry.path()) {
+                        if let Ok(card) = serde_json::from_str::<ContactCard>(&text) {
+                            if card.verify() && card.display_name.to_lowercase().contains(&q) {
+                                if let Ok(aid) = card.agent_id() {
+                                    push(
+                                        aid.0,
+                                        ResolvedName::new(card.display_name, NameSource::Card),
+                                        &mut out,
+                                        &mut seen,
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    /// Build a signed introduction vouching that `subject_agent` goes by `name`,
+    /// to hand to a contact (it travels over the chat channel).
+    pub fn make_introduction(&self, subject_agent: &str, name: &str) -> Result<Introduction> {
+        let identity = self.identity()?;
+        let from = naming::did_key_from_agent(&identity.agent_id()).map_err(Error::Io)?;
+        let subject_did =
+            naming::did_key_from_agent(&AgentId(subject_agent.to_string())).map_err(Error::Io)?;
+        let card_ipns = self
+            .card_of(subject_agent)
+            .ok()
+            .flatten()
+            .and_then(|c| c.site_ipns);
+        let mut intro = Introduction {
+            from,
+            subject_did,
+            asserted_name: name.to_string(),
+            card_ipns,
+            updated_at: now_secs(),
+            sig: String::new(),
+        };
+        intro.sign(&identity);
+        Ok(intro)
+    }
+
+    /// Accept a received introduction: verify + store it as a name *candidate*
+    /// (still petname-gated). Returns the subject AgentID.
+    pub fn accept_introduction(&self, intro_json: &str) -> Result<String> {
+        let intro: Introduction = serde_json::from_str(intro_json)
+            .map_err(|e| Error::Io(format!("parse introduction: {e}")))?;
+        if !intro.verify() {
+            return Err(Error::Io(
+                "introduction signature does not verify".to_string(),
+            ));
+        }
+        validate_introduction_limits(&intro)?;
+        let subject = intro.subject_agent().map_err(Error::Io)?.0;
+        let path = self.introductions_path()?;
+        crate::state::update_json::<Vec<Introduction>, _>(&path, |intros| {
+            if intros.iter().any(|existing| {
+                existing.from == intro.from
+                    && existing.subject_did == intro.subject_did
+                    && existing.updated_at >= intro.updated_at
+            }) {
+                return Err(Error::SecurityPolicy(
+                    "stale or duplicate introduction update rejected".to_string(),
+                ));
+            }
+            intros.retain(|existing| {
+                !(existing.from == intro.from && existing.subject_did == intro.subject_did)
+            });
+            intros.insert(0, intro);
+            intros.truncate(500);
+            Ok(())
+        })?;
+        Ok(subject)
+    }
+
+    /// The DNSLink TXT record value for a site's IPNS — an optional Web2 bridge a
+    /// domain owner pastes at their registrar (no chain, no dependency).
+    pub fn dnslink_txt(&self, site_ipns: &str) -> String {
+        format!("dnslink=/ipns/{}", site_ipns.trim())
     }
 
     fn room_book_path(&self) -> Result<PathBuf> {
@@ -1348,17 +2032,19 @@ impl MemCli {
     /// Set a room's AI-send lever: `"off"` (Human-only), `"on"`, or `"on_mention"`.
     pub fn set_room_ai_send(&self, room: &str, value: &str) -> Result<()> {
         let path = self.room_book_path()?;
-        let mut book = RoomBook::load(&path).map_err(Error::Io)?;
-        book.set_ai_send(room, value);
-        book.save(&path).map_err(Error::Io)
+        crate::state::update_json::<RoomBook, _>(&path, |book| {
+            book.set_ai_send(room, value);
+            Ok(())
+        })
     }
 
     /// Mute an AgentID in a room (receiver-side; muted messages stay in the DAG).
     pub fn mute_in_room(&self, room: &str, agent_id: &str) -> Result<()> {
         let path = self.room_book_path()?;
-        let mut book = RoomBook::load(&path).map_err(Error::Io)?;
-        book.mute(room, agent_id);
-        book.save(&path).map_err(Error::Io)
+        crate::state::update_json::<RoomBook, _>(&path, |book| {
+            book.mute(room, agent_id);
+            Ok(())
+        })
     }
 
     /// Post a signed message to a room, returning its CID. Enforces the AI-send
@@ -1490,11 +2176,28 @@ impl MemCli {
     /// when *we* initiate a conversation (initiating implies trust).
     pub fn add_contact(&self, username: &str) -> Result<()> {
         let path = self.contacts_path()?;
-        let mut contacts = Contacts::load(&path).map_err(Error::Io)?;
-        if contacts.approved.insert(username.to_string()) {
-            contacts.save(&path).map_err(Error::Io)?;
-        }
-        Ok(())
+        crate::state::update_json::<Contacts, _>(&path, |contacts| {
+            contacts.approved.insert(username.to_string());
+            Ok(())
+        })
+    }
+
+    /// The approved contacts — usernames (hex AgentIDs) whose direct messages we
+    /// accept into threads. Sorted (the underlying set is ordered).
+    pub fn approved_contacts(&self) -> Result<Vec<String>> {
+        let path = self.contacts_path()?;
+        let contacts = Contacts::load(&path).map_err(Error::Io)?;
+        Ok(contacts.approved.iter().cloned().collect())
+    }
+
+    /// Revoke approval for `username` so their future messages are held as requests
+    /// again (the user can re-approve). Returns whether they were approved. Thread
+    /// history already received is not touched.
+    pub fn remove_contact(&self, username: &str) -> Result<bool> {
+        let path = self.contacts_path()?;
+        crate::state::update_json::<Contacts, _>(&path, |contacts| {
+            Ok(contacts.approved.remove(username))
+        })
     }
 
     /// The consent gate for **inbound** messages (the "only an approved concierge"
@@ -1520,12 +2223,13 @@ impl MemCli {
         }
         // Unknown sender: hold it as a request (de-duped by signature).
         let path = self.contacts_path()?;
-        let mut contacts = Contacts::load(&path).map_err(Error::Io)?;
-        let queue = contacts.requests.entry(env.key.clone()).or_default();
-        if !queue.iter().any(|held| held.contains(&env.sig)) {
-            queue.push(env_json.to_string());
-        }
-        contacts.save(&path).map_err(Error::Io)?;
+        crate::state::update_json::<Contacts, _>(&path, |contacts| {
+            let queue = contacts.requests.entry(env.key.clone()).or_default();
+            if !queue.iter().any(|held| held.contains(&env.sig)) {
+                queue.push(env_json.to_string());
+            }
+            Ok(())
+        })?;
         Ok("pending")
     }
 
@@ -1549,10 +2253,10 @@ impl MemCli {
     /// into its thread. Returns how many were delivered.
     pub fn accept_contact(&self, username: &str) -> Result<usize> {
         let path = self.contacts_path()?;
-        let mut contacts = Contacts::load(&path).map_err(Error::Io)?;
-        contacts.approved.insert(username.to_string());
-        let held = contacts.requests.remove(username).unwrap_or_default();
-        contacts.save(&path).map_err(Error::Io)?;
+        let held = crate::state::update_json::<Contacts, _>(&path, |contacts| {
+            contacts.approved.insert(username.to_string());
+            Ok(contacts.requests.remove(username).unwrap_or_default())
+        })?;
         let mut delivered = 0;
         for env_json in &held {
             if self.accept_message(env_json).is_ok() {
@@ -1566,10 +2270,10 @@ impl MemCli {
     /// approving them (they stay blocked).
     pub fn decline_contact(&self, username: &str) -> Result<()> {
         let path = self.contacts_path()?;
-        let mut contacts = Contacts::load(&path).map_err(Error::Io)?;
-        contacts.requests.remove(username);
-        contacts.save(&path).map_err(Error::Io)?;
-        Ok(())
+        crate::state::update_json::<Contacts, _>(&path, |contacts| {
+            contacts.requests.remove(username);
+            Ok(())
+        })
     }
 
     /// The sender-side store-and-forward outbox for undelivered direct messages.
@@ -1581,25 +2285,27 @@ impl MemCli {
     /// keyed by its transport content `id` (idempotent — re-queuing is a no-op).
     pub fn queue_outbound(&self, id: &str, recipient: &str, envelope: &str) -> Result<()> {
         let path = self.dm_outbox_path()?;
-        let mut outbox = DmOutbox::load(&path).map_err(Error::Io)?;
-        outbox.pending.entry(id.to_string()).or_insert_with(|| OutboundDm {
-            recipient: recipient.to_string(),
-            envelope: envelope.to_string(),
-            queued_at: now_secs() as i64,
-        });
-        outbox.prune(now_secs() as i64);
-        outbox.save(&path).map_err(Error::Io)
+        crate::state::update_json::<DmOutbox, _>(&path, |outbox| {
+            outbox
+                .pending
+                .entry(id.to_string())
+                .or_insert_with(|| OutboundDm {
+                    recipient: recipient.to_string(),
+                    envelope: envelope.to_string(),
+                    queued_at: now_secs() as i64,
+                });
+            outbox.prune(now_secs() as i64);
+            Ok(())
+        })
     }
 
     /// Undelivered direct messages to retry: `(content id, recipient, envelope)`.
     pub fn pending_outbound(&self) -> Result<Vec<(String, String, String)>> {
         let path = self.dm_outbox_path()?;
-        let mut outbox = DmOutbox::load(&path).map_err(Error::Io)?;
-        let before = outbox.pending.len();
-        outbox.prune(now_secs() as i64);
-        if outbox.pending.len() != before {
-            let _ = outbox.save(&path);
-        }
+        let outbox = crate::state::update_json::<DmOutbox, _>(&path, |outbox| {
+            outbox.prune(now_secs() as i64);
+            Ok(outbox.clone())
+        })?;
         Ok(outbox
             .pending
             .iter()
@@ -1610,11 +2316,10 @@ impl MemCli {
     /// Clear an outbound message once its recipient acknowledged receipt.
     pub fn mark_outbound_delivered(&self, id: &str) -> Result<()> {
         let path = self.dm_outbox_path()?;
-        let mut outbox = DmOutbox::load(&path).map_err(Error::Io)?;
-        if outbox.pending.remove(id).is_some() {
-            outbox.save(&path).map_err(Error::Io)?;
-        }
-        Ok(())
+        crate::state::update_json::<DmOutbox, _>(&path, |outbox| {
+            outbox.pending.remove(id);
+            Ok(())
+        })
     }
 
     /// Assemble a room's thread in chronological order by walking parent links
@@ -1763,6 +2468,61 @@ impl MemCli {
         Ok(())
     }
 
+    /// Record a website publish as a real DAG node, filed into the day calendar so
+    /// it shows up in Records/Graph like any other node — the store is the single
+    /// CID ledger. The published bytes themselves live in Kubo (UnixFS) or the
+    /// external host; this `publication` node *references* that root + its IPNS/URL
+    /// so the published CID is never invisible to the explorer. The receipt trail
+    /// (`publish-receipts.jsonl`) stays as the signed egress log; this is the
+    /// in-store, content-addressed counterpart.
+    fn record_publication(&self, receipt: &PublishReceipt) -> Result<()> {
+        let ts = receipt.unix_time;
+        // A `memory` node of kind `reference` (a publication *is* a reference to
+        // external published content). The mem node-kind enum AND its memory-kind
+        // sub-enum are both closed, and the on-disk store is also read by the
+        // external `mem` CLI, so we don't add a new variant — the published root
+        // CID, IPNS, and URL are encoded in the `text` so the explorer surfaces them.
+        let ipns_part = receipt
+            .ipns_name
+            .as_deref()
+            .map(|ipns| format!(" · ipns {ipns}"))
+            .unwrap_or_default();
+        let text = format!(
+            "Published \"{}\" to {} — root {}{} · {}",
+            receipt.site_name.as_deref().unwrap_or("site"),
+            receipt.backend,
+            receipt.root,
+            ipns_part,
+            receipt.gateway_url,
+        );
+        let node = Node {
+            kind: "memory".to_string(),
+            fields_json: serde_json::json!({ "kind": "reference", "text": text }).to_string(),
+        };
+        let cid = self.put_node(&node)?;
+        // One record per publish event (ts is unique per publish; IPFS roots also
+        // change each time). Files into today's day so it appears under Records.
+        let event_key = format!("publication-{}-{ts}", receipt.backend);
+        self.record_event_in_day(&utc_date(ts), &event_key, &cid)?;
+        Ok(())
+    }
+
+    /// Save the current Studio draft as a checkpoint at any time — no publish, no
+    /// egress. The HTML is content-addressed as a blob (a real CID), wrapped in a
+    /// genuine `checkpoint` node (retained + egress-locked like any checkpoint), and
+    /// that node is filed into the day calendar so it appears in Records. Returns the
+    /// snapshot's content CID + the timestamp.
+    pub fn save_site_checkpoint(&self, name: &str, html: &str) -> Result<(String, u64)> {
+        let ts = now_secs();
+        let root = self.put_blob(html.as_bytes(), "text/html")?;
+        let checkpoint = self.checkpoint(&format!("studio:{name}"), &root, None)?;
+        let event_key = format!("studio-checkpoint-{name}-{ts}");
+        // Best-effort calendar filing — the node + blob are already content-addressed
+        // even if the day index can't be updated.
+        let _ = self.record_event_in_day(&utc_date(ts), &event_key, &checkpoint);
+        Ok((root.0, ts))
+    }
+
     fn import_verified_car(
         &self,
         root: &cid::Cid,
@@ -1908,7 +2668,9 @@ impl CoreBinding for MemCli {
             "media_type".to_string(),
             serde_json::Value::String(media_type.to_string()),
         );
-        self.put_json_value(serde_json::Value::Object(map))
+        // A blob's identity is its bytes plus media type. Wall-clock metadata
+        // would make identical content produce different CIDs across seconds.
+        self.put_json_value_at(serde_json::Value::Object(map), 0)
     }
 
     fn bind(&self, name: &str, cid: &Cid) -> Result<()> {
@@ -2201,6 +2963,68 @@ mod tests {
     }
 
     #[test]
+    fn naming_petname_precedence_card_import_and_resolution() {
+        let dir = temp_workdir("naming");
+        let mem = MemCli::new(&dir);
+        let me = mem.agent_id().unwrap().0;
+
+        // A peer signs their own card; we import it (verifies).
+        let peer = crate::identity::Identity::generate();
+        let peer_aid = peer.agent_id().0;
+        let mut card = crate::naming::ContactCard::new(&peer.agent_id(), "Jason", 100).unwrap();
+        card.site_ipns = Some("k51peer".into());
+        card.sign(&peer);
+        assert_eq!(
+            mem.import_card(&serde_json::to_string(&card).unwrap())
+                .unwrap(),
+            peer_aid
+        );
+
+        // No petname yet → the card name is a Card *hint* (unverified).
+        let r = mem.resolve_display(&peer_aid);
+        assert_eq!(r.text, "Jason");
+        assert_eq!(r.source, NameSource::Card);
+        assert!(!r.verified);
+
+        // Petname wins and is verified (anti-spoofing precedence).
+        mem.set_nickname(&peer_aid, "J-dawg").unwrap();
+        let r = mem.resolve_display(&peer_aid);
+        assert_eq!(r.text, "J-dawg");
+        assert_eq!(r.source, NameSource::Petname);
+        assert!(r.verified);
+
+        // A tampered card is rejected at import.
+        let mut forged = card.clone();
+        forged.display_name = "Mallory".into();
+        assert!(mem
+            .import_card(&serde_json::to_string(&forged).unwrap())
+            .is_err());
+
+        // The user's own card builds + self-verifies for their AgentID.
+        mem.update_my_card(Some("Me"), Some("hi"), None, Some("k51mine"))
+            .unwrap();
+        let my = mem.my_card().unwrap();
+        assert_eq!(my.display_name, "Me");
+        assert_eq!(my.site_ipns.as_deref(), Some("k51mine"));
+        assert!(my.verify());
+        assert_eq!(my.agent_id().unwrap().0, me);
+
+        // Reverse lookup finds the petname candidate.
+        assert!(mem
+            .resolve_name("@j-dawg")
+            .iter()
+            .any(|(a, n)| a == &peer_aid && n.text == "J-dawg"));
+
+        // A signed introduction round-trips through accept_introduction.
+        let intro = mem.make_introduction(&peer_aid, "Jason from work").unwrap();
+        assert_eq!(
+            mem.accept_introduction(&serde_json::to_string(&intro).unwrap())
+                .unwrap(),
+            peer_aid
+        );
+    }
+
+    #[test]
     fn put_bind_resolve_get_roundtrip_survives_restart() {
         let dir = temp_workdir("restart");
 
@@ -2282,11 +3106,17 @@ mod tests {
                 assert_eq!(got, cid);
                 assert_eq!(kind, "blob");
                 let value: serde_json::Value = serde_json::from_str(&body_json).unwrap();
+                assert_eq!(value["created_at"], serde_json::json!(0));
                 assert_eq!(value["body"]["bytes"], serde_json::json!([104, 105]));
                 assert_eq!(value["body"]["media_type"], serde_json::json!("text/plain"));
             }
             other => panic!("expected live blob record, got {other:?}"),
         }
+        assert_eq!(
+            mem.put_blob(b"hi", "text/plain").expect("repeat put_blob"),
+            cid,
+            "identical blobs have one stable content address"
+        );
         assert_eq!(mem.walk(&cid).expect("walk blob"), vec![cid]);
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -2314,13 +3144,19 @@ mod tests {
         let day_name = format!("day-{date}");
 
         // Two events on the same day fold into ONE re-bound day root.
-        mem.record_event_in_day(&date, "evt-1", &prompt).expect("record evt-1");
-        let day_cid = mem.record_event_in_day(&date, "evt-2", &response).expect("record evt-2");
+        mem.record_event_in_day(&date, "evt-1", &prompt)
+            .expect("record evt-1");
+        let day_cid = mem
+            .record_event_in_day(&date, "evt-2", &response)
+            .expect("record evt-2");
         assert_eq!(mem.resolve(&day_name).expect("resolve day"), day_cid);
 
         // The day's HAMT holds both events, keyed by their stable ids.
         let blocks = mem.blockstore().unwrap();
-        let hamt_root = mem.day_hamt_root(&day_name).unwrap().expect("day hamt root");
+        let hamt_root = mem
+            .day_hamt_root(&day_name)
+            .unwrap()
+            .expect("day hamt root");
         let hamt: mem::hamt::Hamt<_, mem::cid::Cid> =
             mem::hamt::Hamt::load(&blocks, &hamt_root).unwrap();
         let prompt_cid: mem::cid::Cid = prompt.0.parse().unwrap();
@@ -2345,6 +3181,94 @@ mod tests {
             .record_event_in_day(&date2, "evt-3", &prompt)
             .expect("record next day");
         assert_ne!(next_day, day_cid);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn publish_is_recorded_as_a_store_node_in_the_day_calendar() {
+        // A published site's CID must also be a node in the store so it appears in
+        // Records — not just in the receipt trail / Studio sidecar.
+        let dir = temp_workdir("publish-record");
+        let mem = MemCli::new(&dir);
+        let ts = 1_700_000_000u64;
+        let receipt = PublishReceipt {
+            root: "bafyTESTsiteroot".to_string(),
+            backend: "ipfs-public".to_string(),
+            unix_time: ts,
+            gateway_url: "https://ipfs.io/ipns/k51TESTipns".to_string(),
+            agent_id: "deadbeef".to_string(),
+            signature: String::new(),
+            ipns_name: Some("k51TESTipns".to_string()),
+            site_name: Some("ConciergeSideKick".to_string()),
+        };
+        mem.record_publication(&receipt)
+            .expect("record publication");
+
+        // It lands in today's day calendar under a stable per-publish key.
+        let date = utc_date(ts);
+        let events = mem.day_events(&date).expect("day events");
+        let (_key, node_cid) = events
+            .iter()
+            .find(|(k, _)| k == "publication-ipfs-public-1700000000")
+            .expect("publication event filed in the day");
+
+        // And the node is a real, content-addressed `publication` record carrying
+        // the published root + IPNS so the explorer can surface the CID.
+        match mem
+            .get(&CidOrName::Cid(node_cid.clone()))
+            .expect("get node")
+        {
+            Record::Live {
+                kind, body_json, ..
+            } => {
+                assert_eq!(kind, "memory");
+                assert!(body_json.contains("Published"), "reads as a publication");
+                assert!(
+                    body_json.contains("bafyTESTsiteroot"),
+                    "carries the published root CID"
+                );
+                assert!(body_json.contains("k51TESTipns"), "carries the IPNS name");
+                assert!(body_json.contains("ipfs-public"), "carries the platform");
+            }
+            other => panic!("expected live publication record, got {other:?}"),
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn studio_checkpoint_saves_a_content_addressed_node_in_the_day_calendar() {
+        // "Save checkpoint" snapshots the draft any time — a real CID + a checkpoint
+        // node filed into Records, with no publish/egress.
+        let dir = temp_workdir("studio-ckpt");
+        let mem = MemCli::new(&dir);
+        let (cid, ts) = mem
+            .save_site_checkpoint("portfolio", "<h1>draft v1</h1>")
+            .expect("save checkpoint");
+        assert!(!cid.is_empty(), "snapshot is content-addressed");
+
+        // Filed into today's calendar under a studio-checkpoint key so Records shows it.
+        let events = mem.day_events(&utc_date(ts)).expect("day events");
+        let (_key, node_cid) = events
+            .iter()
+            .find(|(k, _)| k.starts_with("studio-checkpoint-portfolio-"))
+            .expect("studio checkpoint filed in the day");
+
+        // The node is a real `checkpoint` over the snapshot blob.
+        match mem
+            .get(&CidOrName::Cid(node_cid.clone()))
+            .expect("get node")
+        {
+            Record::Live {
+                kind, body_json, ..
+            } => {
+                assert_eq!(kind, "checkpoint");
+                assert!(
+                    body_json.contains("studio:portfolio"),
+                    "labelled as the studio checkpoint"
+                );
+            }
+            other => panic!("expected live checkpoint record, got {other:?}"),
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -2380,7 +3304,10 @@ mod tests {
                 .collect()
         };
 
-        assert_eq!(labels("month-2026-06", "days"), ["2026-06-09", "2026-06-10"]);
+        assert_eq!(
+            labels("month-2026-06", "days"),
+            ["2026-06-09", "2026-06-10"]
+        );
         assert_eq!(labels("month-2026-07", "days"), ["2026-07-01"]);
         assert_eq!(labels("year-2026", "months"), ["2026-06", "2026-07"]);
 
@@ -2400,15 +3327,21 @@ mod tests {
         let dir = temp_workdir("calendar-deterministic");
         let mem = MemCli::new(&dir);
         let rec = mem
-            .put_node(&Node { kind: "prompt".into(), fields_json: serde_json::json!({ "text": "x" }).to_string() })
+            .put_node(&Node {
+                kind: "prompt".into(),
+                fields_json: serde_json::json!({ "text": "x" }).to_string(),
+            })
             .expect("put");
         mem.record_event_in_day("2026-06-09", "e1", &rec).unwrap();
         mem.roll_up_calendar().unwrap();
 
         let created_at = |name: &str| -> u64 {
             match mem.get(&CidOrName::Name(name.to_string())).unwrap() {
-                Record::Live { body_json, .. } => serde_json::from_str::<serde_json::Value>(&body_json)
-                    .unwrap()["created_at"].as_u64().unwrap(),
+                Record::Live { body_json, .. } => {
+                    serde_json::from_str::<serde_json::Value>(&body_json).unwrap()["created_at"]
+                        .as_u64()
+                        .unwrap()
+                }
                 other => panic!("expected live manifest, got {other:?}"),
             }
         };
@@ -2418,7 +3351,10 @@ mod tests {
         assert_eq!(created_at("month-2026-06"), period_start_unix("2026-06"));
         assert_eq!(created_at("month-2026-06"), 1_780_272_000, "Jun 1 2026 UTC");
         // It is the period start, deterministically — never the wall clock.
-        assert!(created_at("year-2026") < now_secs(), "a fixed past timestamp, not 'now'");
+        assert!(
+            created_at("year-2026") < now_secs(),
+            "a fixed past timestamp, not 'now'"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -3230,6 +4166,150 @@ mod tests {
             "from me",
             "but the message is still in the DAG (mute != deafen)"
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn contact_and_naming_state_preserves_concurrent_and_fresh_updates() {
+        let dir = temp_workdir("state-race");
+        let mem = MemCli::new(&dir);
+        let mut joins = Vec::new();
+        for index in 0..16 {
+            let mem = mem.clone();
+            joins.push(std::thread::spawn(move || {
+                mem.add_contact(&format!("contact-{index}")).unwrap();
+            }));
+        }
+        for join in joins {
+            join.join().unwrap();
+        }
+        assert_eq!(mem.approved_contacts().unwrap().len(), 16);
+
+        let peer = Identity::generate();
+        let mut newer = ContactCard::new(&peer.agent_id(), "new", 20).unwrap();
+        newer.sign(&peer);
+        mem.import_card(&serde_json::to_string(&newer).unwrap())
+            .unwrap();
+        let mut older = ContactCard::new(&peer.agent_id(), "old", 10).unwrap();
+        older.sign(&peer);
+        assert!(mem
+            .import_card(&serde_json::to_string(&older).unwrap())
+            .is_err());
+        assert_eq!(
+            mem.card_of(&peer.agent_id().0)
+                .unwrap()
+                .unwrap()
+                .display_name,
+            "new"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn naming_metadata_limits_fail_closed() {
+        let dir = temp_workdir("naming-limits");
+        let mem = MemCli::new(&dir);
+        let peer = Identity::generate();
+        let mut card =
+            ContactCard::new(&peer.agent_id(), &"x".repeat(MAX_CONTACT_NAME_BYTES + 1), 1).unwrap();
+        card.sign(&peer);
+        assert!(mem
+            .import_card(&serde_json::to_string(&card).unwrap())
+            .is_err());
+        assert!(mem
+            .update_my_card(
+                Some(&"x".repeat(MAX_CONTACT_NAME_BYTES + 1)),
+                None,
+                None,
+                None
+            )
+            .is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn reviewed_external_site_deploy_rejects_folder_changes_before_network_egress() {
+        let dir = temp_workdir("site-deploy-review");
+        let mem = MemCli::new(&dir);
+        mem.set_password("pw").unwrap();
+        mem.set_deploy_credentials(
+            "github",
+            r#"{"token":"token","owner":"owner","repo":"repo","branch":"gh-pages"}"#,
+        )
+        .unwrap();
+        let site = dir.join("site");
+        std::fs::create_dir_all(&site).unwrap();
+        std::fs::write(site.join("index.html"), "<h1>reviewed</h1>").unwrap();
+        let reviewed = mem
+            .review_site_deploy("site", site.to_str().unwrap(), "site", "github")
+            .unwrap();
+        std::fs::write(site.join("index.html"), "<h1>changed</h1>").unwrap();
+        let error = mem.publish_site(&reviewed, "pw").unwrap_err().to_string();
+        assert!(error.contains("changed after review"), "{error}");
+        assert!(mem.publish_receipts().unwrap().is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn deploy_credentials_reject_symlinked_vault_files() {
+        use std::os::unix::fs::symlink;
+
+        let dir = temp_workdir("deploy-credential-symlink");
+        let mem = MemCli::new(&dir);
+        mem.set_deploy_credentials(
+            "github",
+            r#"{"token":"token","owner":"owner","repo":"repo","branch":"gh-pages"}"#,
+        )
+        .unwrap();
+        let path = mem.deploy_credentials_path().unwrap();
+        std::fs::remove_file(&path).unwrap();
+        let outside = dir.join("outside.json");
+        std::fs::write(&outside, "{}").unwrap();
+        symlink(&outside, &path).unwrap();
+        assert!(mem.deploy_credentials().is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn external_site_receipt_verification_binds_the_exact_reviewed_plan() {
+        let dir = temp_workdir("site-deploy-receipt");
+        let mem = MemCli::new(&dir);
+        let identity = mem.identity().unwrap();
+        let site = dir.join("site");
+        std::fs::create_dir_all(&site).unwrap();
+        std::fs::write(site.join("index.html"), "<h1>site</h1>").unwrap();
+        let files = crate::deploy::walk_files(&site).unwrap();
+        let plan = crate::deploy::SiteDeployPlan::from_files(
+            "site",
+            &site,
+            "site",
+            "github",
+            "https://api.github.com/repos/o/r/branches/gh-pages",
+            &files,
+        )
+        .unwrap();
+        let url = "https://o.github.io/r/";
+        let signed = format!(
+            "{}\n{}\n{}\n{}",
+            plan.manifest_digest, plan.destination, plan.platform, url
+        );
+        let receipt = PublishReceipt {
+            root: format!("external-manifest:{}", plan.manifest_digest),
+            backend: plan.platform.clone(),
+            unix_time: now_secs(),
+            gateway_url: url.to_string(),
+            agent_id: identity.agent_id().0,
+            signature: identity.sign(signed.as_bytes()),
+            ipns_name: None,
+            site_name: Some(plan.name.clone()),
+        };
+        assert!(mem.verify_external_site_receipt(&receipt, &plan).unwrap());
+        let mut changed = plan.clone();
+        changed.destination.push_str("/other");
+        assert!(!mem
+            .verify_external_site_receipt(&receipt, &changed)
+            .unwrap());
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

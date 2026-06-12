@@ -2,7 +2,6 @@
 /target
 **/*.rs.bk
 **/*.orig
-Cargo.lock
 
 # --- Python ---
 __pycache__/
@@ -57,3 +56,7 @@ ENV/
 # --- Logs ---
 *.log
 events.jsonl
+
+# --- Local reference checkouts (not product source) ---
+/3mail-main/
+/Planet-main/

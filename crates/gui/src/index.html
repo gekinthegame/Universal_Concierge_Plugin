@@ -21,25 +21,40 @@
     linear-gradient(135deg, #070715, var(--black) 58%); font: 13px/1.45 var(--body); }
   button, input, select { font: inherit; }
   button { cursor: pointer; }
-  header { height: 68px; display: grid; grid-template-columns: 270px 270px 1fr; align-items: stretch;
+  header { height: 68px; display: flex; align-items: stretch;
     background: rgba(8,9,7,.92); border-bottom: 1px solid var(--line); }
-  .brand-area, .mounted { border-right: 1px solid var(--line); padding: 2px 20px; display: flex; flex-direction: column; justify-content: center; }
+  .brand-area { border-right: 1px solid var(--line); padding: 2px 20px; display: flex; flex-direction: column; justify-content: center; flex: 0 0 auto; }
+  /* Mounted-model block now also holds the Kubo-sidekick toggle + Claude capture control. */
+  .mounted { border-right: 1px solid var(--line); padding: 2px 18px; display: flex; flex-direction: row; align-items: center; gap: 16px; flex: 0 0 auto; }
+  .mounted-info { display: flex; flex-direction: column; justify-content: center; flex: 0 0 auto; }
   .brand { color: var(--gold); font: 600 22px/1 var(--display); letter-spacing: .16em; text-transform: uppercase; }
   .brand small { color: var(--patina); font: 9px var(--mono); letter-spacing: .22em; }
   .store-select { margin-top: 7px; border: 0; color: var(--muted); background: transparent; font: 10px var(--mono); }
   .eyebrow { color: var(--faint); font: 9px var(--mono); letter-spacing: .16em; text-transform: uppercase; }
   .model { margin-top: 5px; display: flex; align-items: center; gap: 8px; color: var(--ink); font: 11px var(--mono); }
   .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--patina); box-shadow: 0 0 8px var(--patina); }
-  .timeline { display: flex; align-items: center; gap: 6px; padding: 10px 18px; overflow-x: auto; }
-  .tick { flex: 0 0 auto; min-width: 12px; height: 24px; padding: 0; border: 0; border-left: 3px solid var(--graphite); background: transparent; position: relative; }
-  .tick:hover, .tick.active { border-left-color: var(--gold); }
-  .tick span { display: none; position: absolute; bottom: 30px; left: -4px; white-space: nowrap; z-index: 6;
-    color: var(--ink); background: var(--deep); border: 1px solid var(--gold); border-radius: 3px; padding: 4px 7px; font: 9px var(--mono); }
-  /* Hover tooltips pop ABOVE the bars; the always-open active checkpoint sits
-     BELOW so the two never overlap. */
-  .tick:hover span { display: block; }
-  .tick.active span { display: block; top: 30px; bottom: auto; }
-  main { flex: 1 1 auto; min-height: 0; display: grid; grid-template-columns: 92px minmax(0,1fr) 310px; gap: 8px; padding: 8px; }
+  /* Node control bar (inside the Mounted-model block): Kubo-sidekick toggle + Claude capture. */
+  .control-bar { display: flex; align-items: center; gap: 10px; padding: 0; }
+  .control-bar .ctl { display: flex; align-items: center; gap: 8px; }
+  .control-bar .ctl:empty { display: none; }
+  .node-toggle { display: inline-flex; align-items: center; gap: 8px; padding: 7px 14px; border-radius: 5px; border: 1px solid var(--line); background: var(--deep); color: var(--muted); font: 10px var(--mono); letter-spacing: .06em; text-transform: uppercase; cursor: pointer; white-space: nowrap; transition: .2s; }
+  .node-toggle:hover { border-color: var(--strong-line); color: var(--ink); }
+  .node-toggle .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--graphite); flex: 0 0 auto; }
+  .node-toggle.on { border-color: var(--patina); color: var(--ink); }
+  .node-toggle.on .dot { background: var(--patina); box-shadow: 0 0 8px var(--patina); }
+  .node-toggle.warn { border-color: var(--gold); color: var(--pale-gold); }
+  .node-toggle.warn .dot { background: var(--gold); box-shadow: 0 0 7px var(--gold); }
+  .control-bar .cc-cap { font: 10px var(--mono); color: var(--muted); letter-spacing: .03em; }
+  .control-bar .cc-live { width: 7px; height: 7px; border-radius: 50%; background: var(--patina); box-shadow: 0 0 8px var(--patina); flex: 0 0 auto; }
+  .control-bar .cc-attach, .control-bar .cc-detach { padding: 7px 13px; border-radius: 5px; font: 10px var(--mono); text-transform: uppercase; letter-spacing: .06em; cursor: pointer; }
+  .control-bar .cc-attach { border: 1px solid var(--gold); background: var(--gold); color: var(--black); }
+  .control-bar .cc-detach { border: 1px solid var(--line); background: transparent; color: var(--faint); }
+  main { flex: 1 1 auto; min-height: 0; display: grid; grid-template-columns: minmax(0,1fr) 310px; gap: 8px; padding: 8px; }
+  /* Command rail, minimized into the header (right of the mounted model). */
+  .header-right { display: flex; align-items: center; gap: 12px; min-width: 0; padding: 0 14px; overflow: hidden; flex: 1 1 auto; }
+  .rail-mini { display: flex; align-items: center; gap: 5px; min-width: 0; overflow-x: auto; flex: 1 1 auto; scrollbar-width: thin; }
+  .rail-mini button { flex: 0 0 auto; min-height: 0; padding: 6px 9px; border: 1px solid var(--line); border-radius: 4px; background: var(--graphite); color: var(--muted); font: 9px var(--mono); letter-spacing: .04em; text-transform: uppercase; cursor: pointer; white-space: nowrap; transition: .15s; }
+  .rail-mini button:hover, .rail-mini button.active { color: var(--black); background: var(--gold); border-color: var(--pale-gold); }
   .panel, .rail { background: rgba(22,23,19,.92); border: 1px solid var(--line); border-radius: 7px; overflow: hidden; }
   .rail { padding: 8px; overflow-y: auto; display: flex; flex-direction: column; gap: 6px; }
   .rail button { min-height: 42px; border: 1px solid transparent; border-radius: 4px; background: var(--graphite); color: var(--muted);
@@ -66,6 +81,31 @@
   .req-accept { border: 1px solid var(--patina); background: var(--patina); color: var(--black); }
   .req-decline { border: 1px solid var(--line); background: transparent; color: var(--faint); }
   .tab-badge { display: inline-block; min-width: 15px; padding: 0 4px; margin-left: 5px; border-radius: 8px; background: var(--gold); color: var(--black); font: 9px var(--mono); text-align: center; }
+  .msg-section { font: 9px var(--mono); letter-spacing: .16em; text-transform: uppercase; color: var(--muted); margin: 16px 0 6px; }
+  .contacts { display: flex; flex-direction: column; gap: 6px; margin-bottom: 8px; }
+  .contact-card { display: flex; align-items: center; gap: 10px; padding: 8px 11px; border: 1px solid var(--line); border-radius: 6px; background: var(--deep); }
+  .contact-card .c-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--patina); box-shadow: 0 0 6px var(--patina); flex: 0 0 auto; }
+  .contact-card .c-user { flex: 1; min-width: 0; font: 11px var(--mono); color: var(--ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: pointer; }
+  .contact-card .c-user:hover { color: var(--gold); }
+  .contact-card .c-remove { border: 1px solid var(--line); background: transparent; color: var(--faint); border-radius: 4px; padding: 5px 11px; font: 9px var(--mono); text-transform: uppercase; letter-spacing: .06em; cursor: pointer; flex: 0 0 auto; }
+  .contact-card .c-remove:hover { border-color: var(--vermilion); color: var(--vermilion); }
+  .contact-empty { font: 10px var(--mono); color: var(--muted); padding: 4px 2px; }
+  /* Sovereign naming: resolved name + provenance, petname control, own-card editor. */
+  .contact-card .c-main { flex: 1; min-width: 0; cursor: pointer; }
+  .contact-card .c-name { font: 12px var(--body); color: var(--ink); display: flex; align-items: center; gap: 7px; overflow: hidden; }
+  .contact-card .c-main:hover .c-name { color: var(--gold); }
+  .contact-card .c-sub { font: 9px var(--mono); color: var(--faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-top: 1px; }
+  .c-badge { font: 8px var(--mono); letter-spacing: .08em; text-transform: uppercase; padding: 1px 6px; border-radius: 3px; border: 1px solid var(--line); color: var(--muted); flex: 0 0 auto; }
+  .c-badge.ok { color: var(--patina); border-color: var(--patina); }
+  .c-badge.hint { color: var(--gold); border-color: var(--strong-line); }
+  .contact-card .c-pet { border: 1px solid var(--line); background: transparent; color: var(--muted); border-radius: 4px; padding: 5px 11px; font: 9px var(--mono); text-transform: uppercase; letter-spacing: .06em; cursor: pointer; flex: 0 0 auto; }
+  .contact-card .c-pet:hover { border-color: var(--gold); color: var(--gold); }
+  .profile-editor { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 8px; }
+  .profile-editor .input { flex: 1; min-width: 130px; }
+  .profile-row { display: flex; flex-direction: column; gap: 3px; width: 100%; }
+  .profile-row .input { width: 100%; }
+  .profile-label { font: 11px var(--mono); color: var(--muted); letter-spacing: .02em; }
+  .profile-did { width: 100%; font: 9px var(--mono); color: var(--faint); letter-spacing: .02em; }
   #sites { display: flex; flex-direction: column; gap: 8px; margin-top: 6px; }
   .site-card { display: flex; align-items: center; gap: 12px; padding: 11px 13px; border: 1px solid var(--line); border-radius: 7px; background: var(--deep); }
   .site-card .site-main { flex: 1; min-width: 0; }
@@ -75,6 +115,75 @@
   .site-card .site-meta { font: 10px var(--mono); color: var(--faint); }
   .canvas-status { font: 10px var(--mono); color: var(--muted); padding: 4px 10px; border: 1px solid var(--line); border-radius: 4px; }
   .canvas-preview { flex: 1; min-width: 0; border: 1px solid var(--line); border-radius: 6px; background: #fff; }
+  /* Expanded preview: blow the iframe up to a near-fullscreen overlay for testing. */
+  .cv-backdrop { position: fixed; inset: 0; z-index: 40; background: rgba(3,3,8,.8); backdrop-filter: blur(3px); display: none; }
+  .cv-backdrop.on { display: block; }
+  /* An <iframe> is a replaced element: inset alone won't size it, so set explicit
+     width/height (auto would collapse to its intrinsic ~300x150). */
+  .canvas-preview.big { position: fixed; top: 26px; left: 26px; width: calc(100vw - 52px); height: calc(100vh - 52px); flex: none; z-index: 45; border-radius: 10px; box-shadow: 0 30px 90px rgba(0,0,0,.7), 0 0 60px rgba(209,34,227,.22); }
+  #cv-expand.on { background: var(--gold); color: var(--black); border-color: var(--pale-gold); }
+  .cv-title { display: flex; align-items: center; gap: 9px; margin: 2px 2px 0; padding-bottom: 5px; border-bottom: 1px solid var(--line); }
+  /* Studio: HTML windows on top take all the room; the toolbars are compact at the bottom. */
+  .cv-toolbar { margin: 5px 0 0; gap: 6px; }
+  .cv-toolbar .tool-button, .cv-toolbar .canvas-status { padding: 5px 9px; font-size: 9px; }
+  .cv-toolbar .input { padding: 5px 8px; }
+  .publish-group { position: relative; display: flex; }
+  .publish-menu {
+    position: absolute;
+    bottom: 100%;
+    left: 0;
+    width: 180px;
+    background: var(--graphite);
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    display: none;
+    flex-direction: column;
+    z-index: 100;
+    box-shadow: 0 -4px 12px rgba(0,0,0,0.5);
+    margin-bottom: 5px;
+  }
+  .publish-group:hover .publish-menu { display: flex; }
+  .menu-item {
+    background: transparent;
+    border: none;
+    color: var(--ink);
+    padding: 8px 12px;
+    text-align: left;
+    cursor: pointer;
+    font: 11px var(--mono);
+    text-transform: uppercase;
+    letter-spacing: .04em;
+    transition: background 0.2s;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    width: 100%;
+  }
+  .menu-item .limit {
+    font-size: 8px;
+    color: var(--faint);
+    margin-left: 10px;
+    opacity: 0.7;
+  }
+  .menu-item:hover { background: var(--line); color: var(--gold); }
+  .menu-item:hover .limit { color: var(--pale-gold); opacity: 1; }
+  .main-publish { border-radius: 4px; }
+  /* Highlight the primary action: Publish stands out (gold-filled, glowing). */
+  #cv-publish { background: var(--gold); color: var(--black); border-color: var(--pale-gold); font-weight: 700; letter-spacing: .04em; padding: 6px 16px; box-shadow: 0 0 11px rgba(209,34,227,.45); }
+  #cv-publish:hover { background: var(--pale-gold); }
+  .cv-domain { font: 10px var(--mono); color: var(--faint); letter-spacing: .02em; margin: 5px 2px 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .cv-domain b { color: var(--patina); font-weight: 600; }
+  .cv-domain.live { color: var(--muted); }
+  .cv-domain.live b { color: var(--gold); }
+  .ckpt-list { display: flex; flex-direction: column; gap: 6px; max-height: 46vh; overflow: auto; margin: 6px 0; }
+  .ckpt-row { display: flex; align-items: center; gap: 10px; padding: 8px 11px; border: 1px solid var(--line); border-radius: 6px; background: var(--deep); }
+  .ckpt-meta { flex: 1; min-width: 0; }
+  .ckpt-when { font: 12px var(--mono); color: var(--ink); }
+  .ckpt-sub { font: 10px var(--mono); color: var(--faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-top: 2px; }
+  .ckpt-load { width: auto !important; flex: 0 0 auto; padding: 6px 12px; }
+  .cv-title .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--gold); box-shadow: 0 0 8px var(--gold); flex: 0 0 auto; }
+  .cv-title b { font: 12px var(--mono); letter-spacing: .18em; text-transform: uppercase; color: var(--pale-gold); font-weight: 600; }
+  .cv-title span { margin-left: auto; font: 9px var(--mono); letter-spacing: .1em; text-transform: uppercase; color: var(--faint); }
   .cv-split { flex: 1; display: flex; gap: 8px; min-height: 0; margin-top: 8px; }
   .cv-src { flex: 1; min-width: 0; resize: none; background: var(--deep); color: var(--ink); border: 1px solid var(--line); border-radius: 6px; padding: 12px; font: 12px/1.55 var(--mono); }
   .cv-src:focus { outline: none; border-color: var(--patina); }
@@ -101,11 +210,12 @@
   .swarm-badge { position: absolute; top: 12px; left: 14px; z-index: 4; display: none; align-items: center; gap: 10px; pointer-events: none; }
   body.node-live .swarm-badge { display: flex; }
   .swarm-badge img { width: 48px; height: 48px; filter: drop-shadow(0 0 7px var(--patina)); }
-  .yarax-badge { position: absolute; top: 12px; right: 14px; z-index: 4; display: none; align-items: center; pointer-events: none; }
+  .yarax-badge { position: absolute; top: 12px; right: 14px; z-index: 4; display: none; flex-direction: column; align-items: flex-end; gap: 3px; pointer-events: none; }
   body.node-live .yarax-badge { display: flex; }
   .yarax-badge img { height: 20px; width: auto; border-radius: 3px; filter: drop-shadow(0 0 5px var(--black)); }
-  .impeccable-badge { position: absolute; bottom: 12px; right: 14px; z-index: 4; display: flex; align-items: center; pointer-events: none; }
+  .impeccable-badge { position: absolute; bottom: 12px; right: 14px; z-index: 4; display: flex; flex-direction: column; align-items: flex-end; gap: 3px; pointer-events: none; }
   .impeccable-badge img { height: 26px; width: auto; border-radius: 3px; filter: drop-shadow(0 0 5px var(--black)); }
+  .yarax-badge span, .impeccable-badge span { color: var(--muted); font: 8px/1.2 var(--mono); letter-spacing: .14em; text-transform: uppercase; text-shadow: 0 0 6px var(--black); }
   .swarm-badge span { color: var(--ink); font: 10px/1.3 var(--mono); letter-spacing: .1em; text-transform: uppercase; text-shadow: 0 0 6px var(--black); }
   .graph-edge { stroke: var(--deep-gold); stroke-width: 1.2; opacity: .62; }
   /* A glowing pulse that travels an edge inward to the brain when memory is used. */
@@ -162,8 +272,29 @@
   @keyframes brain-alive { 0%, 100% { opacity: .14; } 50% { opacity: .6; } }
   body.node-live .brain-halo { animation: brain-alive 1.7s ease-in-out infinite; }
   .graph-plus { fill: var(--gold); font: 700 15px var(--mono); pointer-events: none; }
+  /* Network discovery map — your node + the peers it discovers, each a small
+     pulsating brain (same glyph as the graph centre, scaled down). */
+  .discovery-wrap { margin: 6px 0 16px; border: 1px solid var(--line); border-radius: 8px; background: radial-gradient(120% 120% at 50% 45%, rgba(209,34,227,.05), transparent 70%); padding: 6px 6px 10px; }
+  #discovery-svg { width: 100%; height: auto; max-height: 380px; display: block; }
+  .discovery-stat { text-align: center; margin-top: 2px; }
+  .disc-edge { stroke-width: 1.1; fill: none; }
+  .disc-edge.on { stroke: var(--synapse); opacity: .5; }
+  .disc-edge.off { stroke: var(--muted); opacity: .32; stroke-dasharray: 4 4; }
+  .disc-halo { fill: var(--synapse); opacity: .12; filter: blur(4px); pointer-events: none; animation: disc-pulse 1.9s ease-in-out infinite; }
+  .disc-node.discovered .disc-halo { fill: var(--muted); }
+  .disc-self .disc-halo { fill: var(--gold); animation-duration: 1.4s; }
+  @keyframes disc-pulse { 0%, 100% { opacity: .10; } 50% { opacity: .46; } }
+  .disc-brain { filter: drop-shadow(0 0 3px rgba(0,0,0,.55)); }
+  .disc-label { fill: var(--muted); font: 9px var(--mono); pointer-events: none; }
+  .disc-label.self { fill: var(--gold); font-weight: 700; font-size: 11px; }
   .modal-overlay { position: fixed; inset: 0; z-index: 20; display: flex; align-items: center; justify-content: center; background: rgba(5,5,4,.66); backdrop-filter: blur(2px); }
   .modal-card { width: min(560px, 92vw); gap: 12px; padding: 20px; box-shadow: 0 18px 60px rgba(0,0,0,.5); }
+  /* Record popup: a wider, scrollable card that opens when a record is selected. */
+  .record-modal { z-index: 22; }
+  .record-card { position: relative; width: min(760px, 94vw); max-height: 86vh; overflow: auto; padding: 0; background: var(--raised); border: 1px solid var(--strong-line); border-radius: 8px; box-shadow: 0 24px 70px rgba(0,0,0,.6); }
+  .record-card > #record { background: transparent; }
+  .record-close { position: sticky; top: 8px; float: right; margin: 8px 8px 0 0; z-index: 2; width: 28px; height: 28px; border-radius: 5px; border: 1px solid var(--line); background: var(--deep); color: var(--muted); font: 13px var(--mono); cursor: pointer; }
+  .record-close:hover { border-color: var(--gold); color: var(--ink); }
   .modal-title { color: var(--gold); font: 600 16px/1 var(--display); letter-spacing: .04em; }
   .modal-actions { display: flex; gap: 8px; }
   .modal-actions .pbtn { width: auto; flex: 1; }
@@ -274,18 +405,19 @@
   .stat b { color: var(--ink); font: 14px/1.1 var(--mono); }
   .stat.warn b { color: var(--vermilion); }
   .stat span { color: var(--faint); font: 7px var(--mono); letter-spacing: .06em; text-transform: uppercase; }
-  /* Node console: a live terminal of what the node is doing. */
+  /* System console: a live terminal of everything the concierge does. */
   .console-head { display: flex; align-items: center; gap: 7px; margin: 11px 0 5px; }
   .console-head .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--faint); }
   body.node-live .console-head .dot { background: var(--synapse); box-shadow: 0 0 6px var(--synapse); }
   .console-head .lbl { color: var(--muted); font: 9px var(--mono); letter-spacing: .16em; text-transform: uppercase; }
-  .node-console { flex: 1 1 auto; min-height: 150px; overflow-y: auto; background: #04050a; border: 1px solid var(--strong-line); border-radius: 5px; padding: 8px 9px; font: 10px/1.55 var(--mono); }
-  .node-console .ln { white-space: pre-wrap; word-break: break-all; }
-  .node-console .t { color: var(--faint); }
-  .node-console .ok { color: var(--patina); }
-  .node-console .ev { color: var(--synapse); }
-  .node-console .wn { color: var(--vermilion); }
-  .node-console .dim { color: var(--muted); }
+  #sys-embedder { margin-left: auto; font: 9px var(--mono); color: var(--faint); letter-spacing: .04em; max-width: 60%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .system-console { flex: 1 1 auto; min-height: 150px; overflow-y: auto; background: #04050a; border: 1px solid var(--strong-line); border-radius: 5px; padding: 8px 9px; font: 10px/1.55 var(--mono); }
+  .system-console .ln { white-space: pre-wrap; word-break: break-all; }
+  .system-console .t { color: var(--faint); }
+  .system-console .ok { color: var(--patina); }
+  .system-console .ev { color: var(--synapse); }
+  .system-console .wn { color: var(--vermilion); }
+  .system-console .dim { color: var(--muted); }
   .backend { padding: 9px 0; border-bottom: 1px solid var(--line); }
   .backend b { color: var(--patina); font: 10px var(--mono); }
   .backend span { display: block; margin-top: 3px; color: var(--faint); font: 9px var(--mono); }
@@ -335,15 +467,16 @@
   .pblockers button { display: block; width: 100%; text-align: left; background: transparent; border: 0; color: var(--gold); font: 9px var(--mono); padding: 3px 0; }
   .pblockers button:hover { color: var(--pale-gold); }
   @media (max-width: 1050px) {
-    header { grid-template-columns: 220px 220px 1fr; }
-    main { grid-template-columns: 76px minmax(0,1fr); }
+    header { grid-template-columns: 200px 200px 1fr; }
+    main { grid-template-columns: minmax(0,1fr); }
     aside.panel { display: none; }
   }
   @media (max-width: 720px) {
     body { overflow: auto; height: auto; }
-    header { height: auto; grid-template-columns: 1fr; }
+    header { height: auto; flex-wrap: wrap; }
     .brand-area, .mounted { border-right: 0; border-bottom: 1px solid var(--line); }
-    .timeline { min-height: 48px; }
+    .mounted { flex-wrap: wrap; }
+    .header-right { border-bottom: 1px solid var(--line); padding: 8px 12px; }
     main { height: auto; min-height: 800px; grid-template-columns: 1fr; }
     .rail { flex-direction: row; overflow-x: auto; }
     .rail button { min-width: 78px; }
@@ -353,39 +486,43 @@
 </style>
 </head>
 <body>
-<div id="sidekick-onboard" class="cc-banner" role="status" style="display:none;"></div>
-<div id="cc-onboard" class="cc-banner" role="status" style="display:none;"></div>
 <header>
   <div class="brand-area">
     <img src="/api/logo.png" alt="Concierge Plugin" style="height: 64px; width: auto; object-fit: contain;">
     <select id="store" class="store-select" aria-label="Mounted store" style="display: none;"></select>
   </div>
   <div class="mounted">
-    <div class="eyebrow">Mounted model - display only</div>
-    <div class="model"><span class="dot"></span><span id="model">loading</span></div>
+    <div class="mounted-info">
+      <div class="eyebrow">Mounted model</div>
+      <div class="model"><span class="dot"></span><span id="model">loading</span></div>
+    </div>
+    <div id="control-bar" class="control-bar" aria-label="Node controls">
+      <div id="sidekick-ctl" class="ctl"></div>
+      <div id="cc-ctl" class="ctl"></div>
+    </div>
   </div>
-  <div id="timeline" class="timeline" aria-label="Checkpoint timeline"></div>
+  <div class="header-right">
+    <nav class="rail-mini" aria-label="Concierge command rail">
+      <button data-command="Ingest">Ingest</button>
+      <button data-command="Put">Put</button>
+      <button data-command="Bind">Bind</button>
+      <button data-command="Resolve">Resolve</button>
+      <button data-view="names">Ls</button>
+      <button id="rail-export">Export-CAR</button>
+      <button data-command="Share">Share</button>
+      <button data-command="GC">GC</button>
+      <button data-command="Backends">Backends</button>
+      <button data-command="Init">Init</button>
+    </nav>
+  </div>
 </header>
 
 <main>
-  <nav class="rail" aria-label="Concierge command rail">
-    <button data-command="Ingest">Ingest</button><button data-command="Put">Put</button>
-    <button data-command="Bind">Bind</button><button data-command="Resolve">Resolve</button>
-    <div class="rule"></div>
-    <button data-view="names">Ls</button><button data-view="record">Cat</button>
-    <div class="rule"></div>
-    <button id="rail-export">Export-CAR</button><button data-command="Share">Share</button>
-    <div class="rule"></div>
-    <button data-command="GC">GC</button><button data-command="Backends">Backends</button>
-    <button data-command="Init">Init</button>
-  </nav>
-
   <section class="panel center">
     <div class="panel-head">
       <span class="panel-title">The Data Platter <span id="root-note"></span></span>
       <button id="reset-view" class="reset-btn" title="Center and fit the whole graph">Reset View</button>
       <button class="tab active" data-view="graph">Graph</button>
-      <button class="tab" data-view="record">View Record</button>
       <button class="tab" data-view="names">Records</button>
       <button class="tab" data-view="search">Search</button>
       <button class="tab" data-view="messenger">Messenger<span id="msg-badge" class="tab-badge" style="display:none">0</span></button>
@@ -394,11 +531,37 @@
     </div>
     <div id="graph-view" class="view active">
       <div class="swarm-badge"><img src="/api/swarm.png" alt="Swarm protocol"><span>Swarm protocol<br>protected node</span></div>
-      <div class="yarax-badge"><img src="/api/yarax.png" alt="YARA-X"></div>
-      <div class="impeccable-badge"><img src="/api/impeccable.png" alt="Impeccable"></div>
+      <div class="yarax-badge"><img src="/api/yarax.png" alt="YARA-X"><span>Built-in</span></div>
+      <div class="impeccable-badge"><span>Designed with</span><img src="/api/impeccable.png" alt="Impeccable"></div>
       <svg id="graph" viewBox="0 0 1000 650" role="img" aria-label="Memory DAG"></svg>
     </div>
-    <div id="record-view" class="view"><div id="record" class="content empty">Select a graph node or name to inspect it.</div></div>
+    <div id="record-modal" class="modal-overlay record-modal" style="display:none;" role="dialog" aria-label="Record">
+      <div class="modal-card record-card">
+        <button id="record-close" class="record-close" title="Close (Esc)" aria-label="Close">✕</button>
+        <div id="record" class="content empty">Select a graph node or name to inspect it.</div>
+      </div>
+    </div>
+    <div id="deploy-modal" class="modal-overlay record-modal" style="display:none;" role="dialog" aria-label="Deploy settings">
+      <div class="modal-card">
+        <div style="display:flex;align-items:center;justify-content:space-between;">
+          <div class="modal-title">⚙ Deploy settings</div>
+          <button id="dep-close" class="record-close" title="Close (Esc)" aria-label="Close">✕</button>
+        </div>
+        <div class="eyebrow">Tokens stay on this device only (0600 file) and are used solely to deploy to the host you choose — never shared, never sent anywhere but that platform's own API. IPFS needs no token; these Web2 hosts are optional opt-ins.</div>
+        <select id="dep-platform" class="input">
+          <option value="github">GitHub Pages</option>
+          <option value="netlify">Netlify</option>
+          <option value="vercel">Vercel</option>
+          <option value="cloudflare">Cloudflare Pages</option>
+        </select>
+        <div id="dep-status" class="eyebrow"></div>
+        <div id="dep-fields" class="profile-editor"></div>
+        <div class="modal-actions">
+          <button id="dep-save" class="tool-button" style="flex:1;">Save on this device</button>
+          <button id="dep-clear" class="tool-button">Clear</button>
+        </div>
+      </div>
+    </div>
     <div id="names-view" class="view"><div class="content"><div id="names" class="names-tree"></div></div></div>
     <div id="search-view" class="view"><div class="content">
       <form id="search-form" class="search-tools">
@@ -421,11 +584,24 @@
         <button id="view-room" class="tool-button">View thread</button>
         <button id="human-only" class="tool-button">Human-only view</button>
       </div>
+      <div class="msg-section">Your profile</div>
+      <div class="eyebrow">Your self-asserted contact card — peers you connect to see this name. No registrar, no chain.</div>
+      <div id="profile-editor" class="profile-editor"></div>
+      <div class="msg-section">Approved peers</div>
+      <div class="eyebrow">The only people who can message you. Click a peer to open your thread; Remove blocks them until you approve a new request.</div>
+      <div id="contacts" class="contacts"></div>
+      <div class="msg-section">Requests</div>
       <div class="eyebrow">A message from someone you haven't approved waits here as a request — a public username is never enough to reach you. Accept to start the thread, or decline to block.</div>
       <div id="requests" class="requests"></div>
       <div id="thread"></div>
     </div></div>
     <div id="network-view" class="view"><div class="content">
+      <div class="msg-section">Network discovery map</div>
+      <div class="eyebrow">Your node at the center; the peers it finds on the libp2p network around it — mDNS on your LAN, the public DHT, and rendezvous points. Each brain is a node: a solid link is a live connection, a dashed link is discovered-but-not-connected. Opening this tab brings your node online so discovery runs.</div>
+      <div class="discovery-wrap">
+        <svg id="discovery-svg" viewBox="0 0 600 360" preserveAspectRatio="xMidYMid meet" role="img" aria-label="Network discovery map"></svg>
+        <div id="discovery-stat" class="eyebrow discovery-stat"></div>
+      </div>
       <div class="messenger-tools">
         <input id="network-name" class="input" placeholder="New private network name">
         <button id="network-create" class="tool-button">Create network</button>
@@ -435,31 +611,47 @@
       <div id="network-map"></div>
     </div></div>
     <div id="canvas-view" class="view"><div class="content" style="display:flex;flex-direction:column;height:100%;box-sizing:border-box;">
-      <div class="eyebrow">Live website builder — <b>Write</b> HTML directly and publish, or open a <b>Folder</b> where you/your AI build a multi-file site that renders live + hot-reloads. Publish to a permanent IPFS address (stable IPNS, updates in place). Sharing a live session is for educational / example displays — nothing is published until you Publish.</div>
-      <div class="messenger-tools">
-        <button id="cv-mode-write" class="tool-button on">✎ Write</button>
-        <button id="cv-mode-folder" class="tool-button">📁 Folder</button>
-        <input id="cv-folder" class="input cv-folder-only" placeholder="site folder path" autocomplete="off" style="flex:1;min-width:140px;display:none;">
-        <button id="cv-open" class="tool-button cv-folder-only" style="display:none;">Open</button>
-        <span id="cv-status" class="canvas-status">writing</span>
-        <button id="cv-share" class="tool-button" style="margin-left:auto;">Share live</button>
-        <input id="cv-session" class="input" placeholder="watch: session + Enter" autocomplete="off" style="max-width:160px;">
-      </div>
-      <div class="messenger-tools">
-        <input id="cv-name" class="input" placeholder="site name" autocomplete="off" style="max-width:170px;">
-        <input id="cv-password" class="input" type="password" placeholder="store password" autocomplete="off" style="max-width:150px;">
-        <button id="cv-publish" class="tool-button">Publish ▸</button>
-        <select id="cv-view" class="input" style="max-width:220px;"><option value="">— view a published site —</option></select>
-        <button id="cv-edit" class="tool-button" title="Back to live preview">Preview</button>
-      </div>
+      <div class="cv-title"><span class="dot"></span><b>Concierge Studio Canvas</b><span>HTML window → live preview · press F to expand</span></div>
       <div class="cv-split">
         <textarea id="cv-src" class="cv-src" spellcheck="false" placeholder="<!doctype html>
 <html><body>
   <h1>Write your site here — it renders live →</h1>
 </body></html>"></textarea>
         <div id="cv-files" class="cv-files" style="display:none;"><div class="empty">Open a folder to build a multi-file site — its files appear here as you/your AI build.</div></div>
-        <iframe id="cv-preview" class="canvas-preview" sandbox="allow-scripts allow-same-origin allow-popups allow-forms" title="Live preview"></iframe>
+        <iframe id="cv-preview" class="canvas-preview" sandbox="allow-scripts" title="Live preview"></iframe>
       </div>
+      <div class="messenger-tools cv-toolbar">
+        <button id="cv-mode-write" class="tool-button on">✎ Write</button>
+        <button id="cv-mode-folder" class="tool-button">📁 Folder</button>
+        <input id="cv-folder" class="input cv-folder-only" placeholder="site folder path" autocomplete="off" style="flex:1;min-width:140px;display:none;">
+        <button id="cv-open" class="tool-button cv-folder-only" style="display:none;">Open</button>
+        <span id="cv-status" class="canvas-status">writing</span>
+        <button id="cv-mcp" class="tool-button" title="Let your host AI write into the Concierge over MCP (write tools: put_node / bind / write_site). Off by default — read-only.">AI writes: off</button>
+        <button id="cv-share" class="tool-button" style="margin-left:auto;">Share live</button>
+        <input id="cv-session" class="input" placeholder="watch: session + Enter" autocomplete="off" style="max-width:160px;">
+      </div>
+      <div id="cv-domain" class="cv-domain"></div>
+      <div class="messenger-tools cv-toolbar">
+        <input id="cv-name" type="text" class="input" placeholder="site name (e.g. my-portfolio)" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" data-1p-ignore data-lpignore="true" style="max-width:200px;">
+        <input id="cv-password" class="input" type="password" placeholder="password" autocomplete="new-password" style="max-width:150px;">
+        <div class="publish-group">
+          <button id="cv-publish" class="tool-button main-publish">Publish ▸</button>
+          <div class="publish-menu">
+            <button id="cv-pub-ipfs" class="menu-item">IPFS (Public Swarm) <span class="limit">Unlimited · sovereign</span></button>
+            <button id="cv-pub-github" class="menu-item">GitHub Pages <span class="limit">~1 GB site</span></button>
+            <button id="cv-pub-netlify" class="menu-item">Netlify <span class="limit">free tier</span></button>
+            <button id="cv-pub-vercel" class="menu-item">Vercel <span class="limit">free tier</span></button>
+            <button id="cv-pub-cloudflare" class="menu-item">Cloudflare Pages <span class="limit">25 MB / file</span></button>
+            <button id="cv-deploy-settings" class="menu-item" style="border-top:1px solid var(--line);color:var(--gold);">⚙ Deploy settings (tokens)</button>
+          </div>
+        </div>
+        <button id="cv-save-ckpt" class="tool-button" title="Snapshot the current draft now — a content-addressed checkpoint you can reopen later (no publish)">💾 Save checkpoint</button>
+        <button id="cv-ckpts-btn" class="tool-button" title="Past published versions — reopen any to update (same IPNS address)">⏱ Checkpoints</button>
+        <select id="cv-view" class="input" style="max-width:220px;"><option value="">— view a published site —</option></select>
+        <button id="cv-edit" class="tool-button" title="Back to live preview">Preview</button>
+        <button id="cv-expand" class="tool-button" title="Maximize the preview for testing (Esc to exit)">⛶ Expand</button>
+      </div>
+      <div id="cv-backdrop" class="cv-backdrop"></div>
     </div></div>
     <form id="chat-bar" class="chat-bar" aria-label="Direct private chat">
       <button type="button" id="chat-id" class="chat-id" title="Your username — click to copy. Share it so other Concierge users can message you.">
@@ -475,8 +667,9 @@
     <div class="panel-head"><span class="panel-title">Store / DAG</span></div>
     <div class="stats">
       <div id="stats" class="stat-grid"></div>
-      <div class="console-head"><span class="dot"></span><span class="lbl">Node Console</span></div>
-      <div id="node-console" class="node-console" role="log" aria-live="polite"></div>
+      <button id="compact" class="export" title="Reclaim superseded blocks (GC). Safe — only removes versions no name references, and records a tombstone receipt for each.">Compact store ▸</button>
+      <div class="console-head"><span class="dot"></span><span class="lbl">System Console</span><span id="sys-embedder" class="dim" title="The on-node embedding model — the only model that runs on your node (never a generative LLM)"></span></div>
+      <div id="system-console" class="system-console" role="log" aria-live="polite"></div>
       <h2>Backends + pin status</h2>
       <div id="backends"></div>
       <h2>Current root</h2>
@@ -622,20 +815,6 @@ async function loadMeta() {
   const option = node("option", "", meta.store);
   byId("store").replaceChildren(option);
 }
-async function loadCheckpoints() {
-  const checkpoints = await getJson("/api/checkpoints");
-  const timeline = byId("timeline"); clear(timeline);
-  if (!checkpoints.length) { timeline.append(node("span", "eyebrow", "No checkpoints yet")); return; }
-  checkpoints.forEach((checkpoint, index) => {
-    const tick = node("button", "tick" + (index === checkpoints.length - 1 ? " active" : ""));
-    // The custom hover label (positioned above the bars via CSS) carries the info;
-    // no native `title` — its OS tooltip pops *below* and overlaps the session text.
-    const when = fmtWhen(checkpoint.created_at);
-    tick.append(node("span", "", checkpoint.label + (when ? " · " + when : "")));
-    tick.addEventListener("click", () => selectRoot(checkpoint.cid));
-    timeline.append(tick);
-  });
-}
 async function loadNames() {
   const names = await getJson("/api/names");
   const container = byId("names"); clear(container);
@@ -728,7 +907,7 @@ function eventRow(entry) {
     node("span", "event-cid", shortCid(entry.cid)),
   );
   row.title = aliases.join("\n") + "\n" + entry.cid;
-  row.addEventListener("click", () => { selectRoot(entry.cid); loadRecord(entry.cid); showView("record"); });
+  row.addEventListener("click", () => { selectRoot(entry.cid); loadRecord(entry.cid, true); });
   return row;
 }
 
@@ -1106,7 +1285,7 @@ function drawGraph(graph) {
 
     const choose = () => safely(async () => {
       await toggleNode(item.cid);
-      if (!isSynthetic(item.cid)) await loadRecord(item.cid, false);
+      if (!isSynthetic(item.cid)) await loadRecord(item.cid, true);
     });
     group.addEventListener("click", choose);
     group.addEventListener("keydown", event => { if (event.key === "Enter" || event.key === " ") choose(); });
@@ -1148,10 +1327,15 @@ function flashSynapses() {
     run.onfinish = () => dot.remove();
   });
 }
-async function loadRecord(cid, switchView = true) {
+// The record is a popup window, not a tab: it opens only when a record is
+// explicitly selected (Records tab, graph node, search hit, or a link within it).
+// Passive refreshes (after a lock/clear) update the content but never pop it open.
+function openRecordModal() { byId("record-modal").style.display = "flex"; }
+function closeRecordModal() { byId("record-modal").style.display = "none"; }
+async function loadRecord(cid, open = false) {
   setSelected(cid);
   flashSynapses(); // accessing a record = memory used → fire the current
-  logNode("access " + shortCid(cid), "dim");
+  logSystem("access " + shortCid(cid), "dim");
   safely(refreshPrivacy);
   const record = await getJson("/api/record?cid=" + encodeURIComponent(cid));
   const container = byId("record"); clear(container); container.className = "content";
@@ -1177,12 +1361,16 @@ async function loadRecord(cid, switchView = true) {
     record.links.forEach(link => {
       const button = node("button", "link");
       button.append(node("strong", "", link.relation), node("span", "cid", link.cid));
-      button.addEventListener("click", () => loadRecord(link.cid));
+      button.addEventListener("click", () => loadRecord(link.cid, true));
       container.append(button);
     });
   }
-  if (switchView) showView("record");
+  if (open) openRecordModal();
 }
+byId("record-close").addEventListener("click", closeRecordModal);
+byId("record-modal").addEventListener("click", e => { if (e.target === byId("record-modal")) closeRecordModal(); });
+document.addEventListener("keydown", e => { if (e.key === "Escape" && byId("record-modal").style.display === "flex") closeRecordModal(); });
+document.addEventListener("keydown", e => { if (e.key === "Escape" && byId("deploy-modal").style.display === "flex") depClose(); });
 
 // Build an inline preview for file_ref / blob records: images, video, audio,
 // and PDFs render in-page; text/code is fetched and shown; everything else
@@ -1248,10 +1436,10 @@ function fileActions(url, filename) {
   row.append(open, dl);
   return row;
 }
-// The node console: a live terminal of what the node is doing. Append a timestamped
-// line; keep the last ~200; auto-scroll only if the user is already at the bottom.
-function logNode(text, cls) {
-  const c = byId("node-console"); if (!c) return;
+// The System Console: a live terminal of everything the concierge does. Append a
+// timestamped line; keep the last ~200; auto-scroll only if already at the bottom.
+function logSystem(text, cls) {
+  const c = byId("system-console"); if (!c) return;
   const atBottom = c.scrollTop + c.clientHeight >= c.scrollHeight - 6;
   const ln = node("div", "ln");
   ln.append(node("span", "t", new Date().toLocaleTimeString(undefined, { hour12: false }) + "  "));
@@ -1260,21 +1448,45 @@ function logNode(text, cls) {
   while (c.childElementCount > 200) c.firstChild.remove();
   if (atBottom) c.scrollTop = c.scrollHeight;
 }
+// The server-truth half of the System Console: pull everything the concierge has
+// done since our last poll (embedder load, indexing, retrieval, every action,
+// inbound messages) and print it, plus the active embedding model — so the user can
+// see the plugin does what it says. (loadStats() adds the store-delta lines.)
+async function pollActivity() {
+  const data = await getJson("/api/activity?since=" + (state.activitySeq || 0));
+  if (data.embedder) {
+    const e = data.embedder;
+    const dims = (e.built && e.dims) ? " · " + e.dims + "d" : "";
+    const el = byId("sys-embedder");
+    if (el) el.textContent = "embedder: " + e.id + dims + (e.built ? "" : " (loads on first search)");
+  }
+  (data.entries || []).forEach(entry => logSystem(entry.text, entry.level));
+  if (typeof data.next_seq === "number") state.activitySeq = data.next_seq;
+}
 async function loadStats() {
   const query = state.rootMode === "fixed" && state.root ? "?cid=" + encodeURIComponent(state.root) : "";
   const stats = await getJson("/api/stats" + query);
   // Emit what changed in the store since the last poll — the node ingesting/binding.
   if (state.lastStats) {
     const db = stats.blocks - state.lastStats.blocks, dn = stats.names - state.lastStats.names, dt = stats.tombstones - state.lastStats.tombstones;
-    if (db > 0) logNode("ingested " + db + " block" + (db > 1 ? "s" : "") + "  ·  " + stats.blocks + " total", "ev");
-    if (dn > 0) logNode("bound " + dn + " name" + (dn > 1 ? "s" : ""), "ev");
-    if (dt > 0) logNode("tombstoned " + dt + " block" + (dt > 1 ? "s" : ""), "wn");
+    if (db > 0) logSystem("ingested " + db + " block" + (db > 1 ? "s" : "") + "  ·  " + stats.blocks + " total", "ev");
+    if (dn > 0) logSystem("bound " + dn + " name" + (dn > 1 ? "s" : ""), "ev");
+    if (dt > 0) logSystem("tombstoned " + dt + " block" + (dt > 1 ? "s" : ""), "wn");
   }
   state.lastStats = stats;
   const container = byId("stats"); clear(container);
-  [["Reachable", stats.reachable], ["Blocks", stats.blocks], ["Orphans", stats.orphans],
-   ["Tombstones", stats.tombstones], ["Names", stats.names], ["CAR size", formatBytes(stats.car_size)]].forEach(([label, value]) => {
-    const item = node("div", "stat" + (label === "Orphans" && value ? " warn" : ""));
+  // "Reclaimable" = superseded immutable versions (old calendar/HAMT/checkpoint
+  // blocks) no live name can reach. Normal for an append-only content-addressed
+  // store — not corruption; reclaim them with Compact. Tombstones are the receipts
+  // Compact leaves behind for each reclaimed block.
+  [["Reachable", stats.reachable, "Blocks reachable from a named root — your live graph."],
+   ["Blocks", stats.blocks, "Total content-addressed blocks on disk."],
+   ["Reclaimable", stats.orphans, "Superseded versions no name references (old index/HAMT/checkpoint blocks). Normal for an append-only store — reclaim with Compact."],
+   ["Tombstones", stats.tombstones, "Deletion receipts left by Compact, one per reclaimed block."],
+   ["Names", stats.names, "Bound names — every one is a graph root."],
+   ["CAR size", formatBytes(stats.car_size), "Size of the selected root's exportable CAR."]].forEach(([label, value, tip]) => {
+    const item = node("div", "stat");
+    if (tip) item.title = tip;
     item.append(node("b", "", value), node("span", "", label)); container.append(item);
   });
   // Phase B: publishing is opt-in. Remember readiness so the publish review can
@@ -1302,7 +1514,7 @@ async function exportCar() {
 
 function passwordAction(label, action) {
   const form = node("form", "pform");
-  const input = node("input"); input.type = "password"; input.placeholder = "store password"; input.autocomplete = "current-password";
+  const input = node("input"); input.type = "password"; input.placeholder = "password"; input.autocomplete = "current-password";
   const submit = node("button", "pbtn", label); submit.type = "submit";
   form.append(input, submit);
   form.addEventListener("submit", event => {
@@ -1317,8 +1529,8 @@ function passwordAction(label, action) {
 
 function passwordSetupAction(label, action) {
   const form = node("form", "pform");
-  const password = node("input"); password.type = "password"; password.placeholder = "create store password"; password.autocomplete = "new-password";
-  const confirm = node("input"); confirm.type = "password"; confirm.placeholder = "confirm store password"; confirm.autocomplete = "new-password";
+  const password = node("input"); password.type = "password"; password.placeholder = "create password"; password.autocomplete = "new-password";
+  const confirm = node("input"); confirm.type = "password"; confirm.placeholder = "confirm password"; confirm.autocomplete = "new-password";
   const submit = node("button", "pbtn", label); submit.type = "submit";
   form.append(password, confirm, submit);
   form.addEventListener("submit", event => {
@@ -1344,7 +1556,7 @@ function openClearReview(target, info) {
   panel.querySelectorAll(".clear-review").forEach(item => item.remove());
   const form = node("form", "pform clear-review");
   form.append(node("div", "review", "Clearing reaches " + info.reachable_node_count + " node(s) and " + info.file_count + " file path(s) — these become exportable."));
-  const password = node("input"); password.type = "password"; password.placeholder = "store password"; password.autocomplete = "current-password";
+  const password = node("input"); password.type = "password"; password.placeholder = "password"; password.autocomplete = "current-password";
   form.append(password);
   const submit = node("button", "pbtn danger", "Confirm clear for export"); submit.type = "submit";
   form.append(submit);
@@ -1588,7 +1800,7 @@ function openPrivateReview(target) {
       if (plan.source.known_public_receipts) {
         form.append(node("div", "pblockers", "KNOWN PUBLIC: encryption cannot revoke " + plan.source.known_public_receipts + " prior public publication receipt(s)."));
       }
-      const password = node("input"); password.type = "password"; password.placeholder = "store password"; password.autocomplete = "current-password";
+      const password = node("input"); password.type = "password"; password.placeholder = "password"; password.autocomplete = "current-password";
       const ack = node("input"); ack.type = "checkbox";
       const ackLabel = node("label", ""); ackLabel.append(ack, node("span", "", "I reviewed the exact source manifest, destination namespace, and recipients."));
       const submit = node("button", "pbtn", "Authorize one conversion and private share"); submit.type = "button";
@@ -1643,7 +1855,7 @@ async function openPublishReview(target) {
   }
   if (plan.sensitivity_warnings.length) form.append(node("div", "pblockers", "⚠ sensitive: " + plan.sensitivity_warnings.join("; ")));
   if (plan.known_public_receipts) form.append(node("div", "pblockers", "KNOWN PUBLIC: " + plan.known_public_receipts + " prior publication receipt(s). Locking cannot make this private again."));
-  const password = node("input"); password.type = "password"; password.placeholder = "store password"; password.autocomplete = "current-password";
+  const password = node("input"); password.type = "password"; password.placeholder = "password"; password.autocomplete = "current-password";
   const ack = node("input"); ack.type = "checkbox";
   const ackLabel = node("label", ""); ackLabel.append(ack, node("span", "", "I understand this is an irreversible public publication."));
   const submit = node("button", "pbtn danger", "Authorize one public publish"); submit.type = "submit";
@@ -1769,7 +1981,7 @@ function openIngestModal() {
         // Rebuild the whole-store forest so the new import/session appears.
         state.fullGraph = null; state.rootMode = "default"; state.root = ""; state.selected = "";
         state.visibleCids.clear();
-        await Promise.all([loadGraph(), loadStats(), loadNames(), loadCheckpoints()]);
+        await Promise.all([loadGraph(), loadStats(), loadNames()]);
       } finally {
         go.disabled = false; go.textContent = "Ingest";
       }
@@ -1857,6 +2069,75 @@ byId("network-create").addEventListener("click", () => safely(async () => {
   await loadNetwork();
 }));
 
+// ── Network discovery map: this node (center) + the peers libp2p discovers around it ──
+let discPoll = null;
+// A small pulsating brain — the same glyph as the graph centre, scaled down.
+function discBrain(cx, cy, size, cls) {
+  const g = svgNode("g", { class: "disc-node " + (cls || "") });
+  const halo = svgNode("circle", { cx: cx, cy: cy, r: size * 0.7, class: "disc-halo" });
+  halo.style.animationDelay = (Math.random() * 1.8).toFixed(2) + "s"; // stagger so they don't blink in unison
+  g.append(halo);
+  g.append(svgNode("image", { href: "/api/brain.png", x: cx - size / 2, y: cy - size / 2, width: size, height: size, class: "disc-brain" }));
+  return g;
+}
+function renderDiscovery(data) {
+  const svg = byId("discovery-svg"); if (!svg) return; clear(svg);
+  const W = 600, H = 360, cx = W / 2, cy = H / 2;
+  const peers = (data && data.peers) || [];
+  const rings = peers.length > 10 ? [112, 168] : [128];
+  function pos(i, n) {
+    let ring = 0, idx = i, count = n;
+    if (rings.length > 1) {
+      const inner = Math.min(10, n);
+      if (i < inner) { ring = 0; idx = i; count = inner; }
+      else { ring = 1; idx = i - inner; count = n - inner; }
+    }
+    const r = rings[ring];
+    const a = (idx / Math.max(1, count)) * Math.PI * 2 - Math.PI / 2 + ring * 0.4;
+    return { x: cx + Math.cos(a) * r, y: cy + Math.sin(a) * r };
+  }
+  // Edges first (under the nodes): solid for live connections, dashed for discovered.
+  peers.forEach((p, i) => {
+    const q = pos(i, peers.length);
+    svg.append(svgNode("line", { x1: cx, y1: cy, x2: q.x, y2: q.y, class: "disc-edge " + (p.status === "connected" ? "on" : "off") }));
+  });
+  // Peer brains.
+  peers.forEach((p, i) => {
+    const q = pos(i, peers.length);
+    const connected = p.status === "connected";
+    const g = discBrain(q.x, q.y, connected ? 28 : 22, connected ? "connected" : "discovered");
+    const label = svgNode("text", { x: q.x, y: q.y + (connected ? 27 : 22), class: "disc-label", "text-anchor": "middle" });
+    label.textContent = (p.peer_id || "").slice(-6);
+    g.append(label);
+    const title = svgNode("title", {});
+    title.textContent = (p.peer_id || "") + " · " + p.status + " · via " + p.source + (p.relayed ? " · relayed" : "");
+    g.append(title);
+    svg.append(g);
+  });
+  // This node at the centre, on top.
+  const online = !!(data && data.self && data.self.online);
+  const me = discBrain(cx, cy, 48, "disc-self");
+  const slabel = svgNode("text", { x: cx, y: cy + 41, class: "disc-label self", "text-anchor": "middle" });
+  slabel.textContent = online ? "your node" : "your node (offline)";
+  me.append(slabel);
+  const stitle = svgNode("title", {});
+  stitle.textContent = "This node · " + ((data && data.self && data.self.peer_id) || "");
+  me.append(stitle);
+  svg.append(me);
+  // Caption.
+  const stat = byId("discovery-stat"); clear(stat);
+  const total = (data && data.total) || peers.length;
+  if (!online) stat.textContent = "Node offline — open this tab to bring it online and start discovering peers.";
+  else if (!peers.length) stat.textContent = "Searching the network… no peers yet. mDNS finds LAN peers instantly; the DHT and rendezvous take a moment.";
+  else stat.textContent = total + " node" + (total === 1 ? "" : "s") + " discovered · " + ((data && data.connected) || 0) + " connected" + (total > peers.length ? " · showing " + peers.length : "");
+}
+async function loadPeers() {
+  let data; try { data = await getJson("/api/peers"); } catch (e) { return; }
+  renderDiscovery(data);
+}
+function startDiscPoll() { stopDiscPoll(); safely(loadPeers); discPoll = setInterval(() => quietly(loadPeers), 4000); }
+function stopDiscPoll() { if (discPoll) { clearInterval(discPoll); discPoll = null; } }
+
 document.querySelectorAll("[data-view]").forEach(button => button.addEventListener("click", () => {
   // Clicking the Graph tab while focused on one root returns to the whole-store forest.
   if (button.dataset.view === "graph" && state.rootMode === "fixed") {
@@ -1865,9 +2146,11 @@ document.querySelectorAll("[data-view]").forEach(button => button.addEventListen
     safely(async () => { await Promise.all([loadGraph(), loadStats(), refreshPrivacy()]); });
   }
   showView(button.dataset.view);
+  stopDiscPoll(); // only poll the discovery map while the Network tab is open
   if (button.dataset.view === "search") byId("search-q").focus();
-  if (button.dataset.view === "network") safely(loadNetwork);
+  if (button.dataset.view === "network") { safely(loadNetwork); startDiscPoll(); }
   if (button.dataset.view === "canvas") safely(cvLoadSites);
+  if (button.dataset.view === "messenger") { safely(loadProfile); safely(loadContacts); }
 }));
 byId("search-form").addEventListener("submit", event => { event.preventDefault(); safely(runSearch); });
 document.querySelectorAll("[data-command]").forEach(button => button.addEventListener("click", () => {
@@ -1875,6 +2158,19 @@ document.querySelectorAll("[data-command]").forEach(button => button.addEventLis
   commandHelp(button.dataset.command);
 }));
 byId("export").addEventListener("click", exportCar); byId("rail-export").addEventListener("click", exportCar);
+// Compact = run GC to reclaim "Reclaimable" (superseded) blocks. Safe by
+// construction; records a tombstone receipt per reclaimed block. Confirm first
+// since it deletes blocks (only ones no name references) and can take a moment.
+byId("compact").addEventListener("click", () => safely(async () => {
+  const reclaimable = (state.lastStats && state.lastStats.orphans) || 0;
+  const msg = reclaimable
+    ? "Compact the store?\n\nThis reclaims " + reclaimable + " superseded block(s) that no name references (old index / HAMT / checkpoint versions) and records a tombstone receipt for each. Your live graph is untouched."
+    : "Compact the store?\n\nReclaims any superseded blocks and trims the auto-checkpoint chain. Your live graph is untouched.";
+  if (!window.confirm(msg)) return;
+  const res = await postJson("/api/compact", {});
+  notice("Compacted — reclaimed " + res.removed + " block(s), kept " + res.kept + ".");
+  await loadStats();
+}));
 byId("view-room").addEventListener("click", () => safely(loadThread));
 byId("human-only").addEventListener("click", () => {
   state.humanOnly = !state.humanOnly; byId("human-only").classList.toggle("on", state.humanOnly); safely(loadThread);
@@ -1894,9 +2190,10 @@ async function sendChat() {
   byId("room").value = room;          // keep the Messenger view in sync
   state.room = room;
   const how = res.direct ? "direct message" : "message";
-  logNode(how + " → " + (res.delivered ? "delivered" : "queued (peer offline)"), res.delivered ? "ok" : "warn");
+  logSystem(how + " → " + (res.delivered ? "delivered" : "queued (peer offline)"), res.delivered ? "ok" : "warn");
   await loadMe();                     // the node just came online on first send
   await loadRooms();
+  await loadContacts();               // messaging a username approves them as a peer
   await loadThread();
 }
 byId("chat-bar").addEventListener("submit", event => { event.preventDefault(); safely(sendChat); });
@@ -1946,11 +2243,12 @@ async function cvOpen() {
   const res = await postJson("/api/canvas/open", { folder });
   cv.token = res.token; cv.folder = folder; cv.mtime = res.mtime;
   if (!byId("cv-name").value.trim()) byId("cv-name").value = cvBasename(folder).toLowerCase().replace(/[^a-z0-9._-]+/g, "-");
+  cvUpdateDomain();
   cvRenderFiles(res.files, res.has_index);
   cvShowLive();
   cvStatus(res.has_index ? (res.files.length + " file(s) · live") : "no index.html yet — add one to render");
   startCvPoll();
-  logNode("studio · opened " + folder, "ok");
+  logSystem("studio · opened " + folder, "ok");
 }
 async function cvPoll() {
   if (!cv.token || cv.viewing) return;
@@ -1963,11 +2261,9 @@ async function cvPoll() {
   }
 }
 function startCvPoll() { if (cv.poll) clearInterval(cv.poll); cv.poll = setInterval(() => quietly(cvPoll), 1000); }
-async function cvPublish() {
+async function cvPublish(platform = "ipfs") {
   const name = byId("cv-name").value.trim();
-  const password = byId("cv-password").value;
   if (!name) { byId("cv-name").focus(); notice("Give your site a name."); return; }
-  if (!password) { byId("cv-password").focus(); notice("Your store password is required — publishing is a password-gated egress."); return; }
   let folder;
   if (cv.mode === "write") {
     const html = byId("cv-src").value;
@@ -1978,23 +2274,157 @@ async function cvPublish() {
     if (!cv.folder) { notice("Open a folder first."); return; }
     folder = cv.folder;
   }
-  notice("Publishing to IPFS… first publish can take ~30s to propagate.");
-  logNode("studio · publishing " + name, "ok");
-  const res = await postJson("/api/site/publish", { name, folder, kind: "site", password });
+  const review = await postJson("/api/site/deploy-plan", { name, folder, kind: "site", platform });
+  const plan = review.plan;
+  const summary = [
+    "Review exact deployment",
+    "",
+    "Platform: " + plan.platform,
+    "Destination: " + plan.destination,
+    "Files: " + plan.manifest.length,
+    "Bytes: " + plan.total_bytes,
+    "Manifest SHA-256: " + plan.manifest_digest,
+    "",
+    "Publish only if this exact destination and manifest are expected."
+  ].join("\n");
+  if (!window.confirm(summary)) return;
+  const password = byId("cv-password").value;
+  if (!password) { byId("cv-password").focus(); notice("Your store password is required after reviewing the exact egress plan."); return; }
+  notice("Publishing to " + platform.toUpperCase() + "…");
+  logSystem("studio · publishing " + name + " to " + platform, "ok");
+  const res = await postJson("/api/site/publish", { review_token: review.review_token, password });
   byId("cv-password").value = "";
-  logNode("studio · live at " + res.ipns, "ok");
-  notice("Published — live at " + res.url);
+  if (res.url) {
+    logSystem("studio · live at " + (res.ipns || res.url), "ok");
+    notice("Published — live at " + res.url);
+  } else {
+    notice("Publishing initiated for " + platform.toUpperCase() + ". Check your dashboard.");
+  }
   await cvLoadSites();
 }
+// ── AI write-access toggle ──
+async function cvLoadMcp() {
+  let s; try { s = await getJson("/api/mcp/status"); } catch (e) { return; }
+  const b = byId("cv-mcp"); b.classList.toggle("on", !!s.write_enabled);
+  b.textContent = "AI writes: " + (s.write_enabled ? "ON" : "off");
+}
+byId("cv-mcp").addEventListener("click", () => safely(async () => {
+  const on = byId("cv-mcp").classList.contains("on");
+  await postJson("/api/mcp/write", { enabled: !on });
+  await cvLoadMcp();
+  notice(!on
+    ? "Your AI can now write into the Concierge (MCP write tools enabled)."
+    : "AI write access turned off — the AI has read tools only.");
+  logSystem("mcp write tools " + (!on ? "enabled" : "disabled"), !on ? "warn" : "ok");
+}));
 async function cvLoadSites() {
+  await cvLoadMcp();
   let data; try { data = await getJson("/api/sites"); } catch (e) { return; }
+  cv.sites = data.sites || [];
   const sel = byId("cv-view"); const cur = sel.value;
   clear(sel); sel.append(node("option", "", "— view a published site —"));
-  (data.sites || []).forEach(s => {
+  cv.sites.forEach(s => {
     const o = node("option", "", s.name + "  ·  " + (s.ipns || "").slice(0, 12) + "…"); o.value = s.ipns; sel.append(o);
   });
   sel.value = cur;
+  cvUpdateDomain();
 }
+// Show the actual IPFS address the site publishes to. A site lives at a stable
+// IPNS name (k51…): /ipns/<k51> on any gateway, or <k51>.ipns.dweb.link. The human
+// "site name" is just the local label/key; the public address is the k51. If a
+// published site already matches the typed name, show its REAL address.
+const CV_EXAMPLE_IPNS = "k51qzi5uqu5dlvj2baxnqndepeb86cbk3ng7n3i46uzyxzyqj2xjonzllnv0v8";
+function cvIpnsShort(k) { return k.length > 22 ? k.slice(0, 14) + "…" + k.slice(-4) : k; }
+function cvUpdateDomain() {
+  const el = byId("cv-domain"); if (!el) return;
+  const name = byId("cv-name").value.trim().toLowerCase();
+  const match = (cv.sites || []).find(s => (s.name || "").toLowerCase() === name && s.ipns);
+  clear(el);   // build with safe DOM nodes (the site name is user input — no raw markup)
+  if (match) {
+    const short = cvIpnsShort(match.ipns);
+    el.classList.add("live");
+    el.append(document.createTextNode("✓ live at "));
+    el.append(node("b", "", "ipfs.io/ipns/" + short));
+    el.append(document.createTextNode("  ·  also "));
+    el.append(node("b", "", short + ".ipns.dweb.link"));
+  } else {
+    el.classList.remove("live");
+    el.append(document.createTextNode((name ? "“" + name + "”" : "your site") + " publishes to a permanent IPFS address — "));
+    el.append(node("b", "", "ipfs.io/ipns/" + cvIpnsShort(CV_EXAMPLE_IPNS)));
+    el.append(document.createTextNode(" (your unique k51… address is assigned on Publish)"));
+  }
+}
+byId("cv-name").addEventListener("input", cvUpdateDomain);
+cvUpdateDomain();
+
+// Studio publish checkpoints: every Publish snapshots the page (timestamped + its
+// stable /ipns/ address). Reopen any past version to edit and re-publish to the
+// SAME address.
+async function cvOpenCheckpoints() {
+  let data; try { data = await getJson("/api/site/checkpoints"); } catch (e) { notice("Couldn't load checkpoints."); return; }
+  const list = data.checkpoints || [];
+  const old = byId("cv-ckpt-overlay"); if (old) old.remove();
+  const overlay = node("div", "modal-overlay"); overlay.id = "cv-ckpt-overlay";
+  const card = node("div", "pform modal-card");
+  card.append(node("div", "modal-title", "Studio checkpoints"));
+  if (!list.length) {
+    card.append(node("div", "review", "No checkpoints yet. Click 💾 Save checkpoint anytime, or Publish a site — each saves a timestamped snapshot here you can reopen."));
+  } else {
+    card.append(node("div", "review", "Every 💾 Save checkpoint and every Publish is snapshotted (with a real CID in Records). Reopen any version to edit; re-publishing keeps the same /ipns/ address."));
+    const box = node("div", "ckpt-list");
+    list.forEach(c => {
+      const row = node("div", "ckpt-row");
+      const when = c.ts ? new Date(c.ts * 1000).toLocaleString() : "—";
+      const meta = node("div", "ckpt-meta");
+      meta.append(node("div", "ckpt-when", when));
+      meta.append(node("div", "ckpt-sub", c.site + (c.ipns ? "  ·  /ipns/" + String(c.ipns).slice(0, 14) + "…" : "")));
+      const load = node("button", "pbtn ckpt-load", "Load to edit");
+      load.addEventListener("click", () => safely(() => cvRestoreCheckpoint(c.site, c.ts, overlay)));
+      row.append(meta, load); box.append(row);
+    });
+    card.append(box);
+  }
+  const actions = node("div", "modal-actions");
+  const close = node("button", "pbtn", "Close"); close.type = "button";
+  close.addEventListener("click", () => overlay.remove());
+  actions.append(close); card.append(actions);
+  overlay.append(card);
+  overlay.addEventListener("click", e => { if (e.target === overlay) overlay.remove(); });
+  document.body.append(overlay);
+}
+async function cvRestoreCheckpoint(site, ts, overlay) {
+  const d = await getJson("/api/site/checkpoint?site=" + encodeURIComponent(site) + "&ts=" + encodeURIComponent(ts));
+  if (typeof d.html !== "string") { notice("Checkpoint has no saved HTML."); return; }
+  byId("cv-src").value = d.html;
+  byId("cv-name").value = site;
+  cvSetMode("write");
+  cvUpdateDomain();
+  if (overlay) overlay.remove();
+  notice("Loaded the " + new Date(ts * 1000).toLocaleString() + " version of “" + site + "” — edit and Publish to update the same address.");
+}
+// Save a checkpoint of the current draft at any time (no publish). Content-addresses
+// the HTML so the snapshot has a real CID in Records, and lists it under ⏱ Checkpoints
+// to reopen later.
+async function cvSaveCheckpoint() {
+  const name = byId("cv-name").value.trim();
+  if (!name) { byId("cv-name").focus(); notice("Give your site a name first."); return; }
+  let req;
+  if (cv.mode === "write") {
+    const html = byId("cv-src").value;
+    if (!html.trim()) { notice("Write some HTML first."); return; }
+    req = { name, html };
+  } else if (cv.folder) {
+    req = { name, folder: cv.folder };
+  } else {
+    notice("Open a folder or switch to Write mode first."); return;
+  }
+  const res = await postJson("/api/site/checkpoint/save", req);
+  notice("Checkpoint saved" + (res.cid ? " · " + String(res.cid).slice(0, 14) + "…" : "") + " — in ⏱ Checkpoints and Records.");
+  logSystem("studio · saved checkpoint “" + name + "”", "ok");
+  if (byId("cv-ckpt-overlay")) safely(cvOpenCheckpoints); // refresh the list if it's open
+}
+byId("cv-save-ckpt").addEventListener("click", () => safely(cvSaveCheckpoint));
+byId("cv-ckpts-btn").addEventListener("click", () => safely(cvOpenCheckpoints));
 byId("cv-view").addEventListener("change", () => {
   const ipns = byId("cv-view").value; if (!ipns) return;
   cv.viewing = true;
@@ -2008,7 +2438,109 @@ byId("cv-edit").addEventListener("click", () => {
 });
 byId("cv-open").addEventListener("click", () => safely(cvOpen));
 byId("cv-folder").addEventListener("keydown", e => { if (e.key === "Enter") safely(cvOpen); });
-byId("cv-publish").addEventListener("click", () => safely(cvPublish));
+
+byId("cv-publish").addEventListener("click", () => safely(() => cvPublish("ipfs")));
+byId("cv-pub-ipfs").addEventListener("click", () => safely(() => cvPublish("ipfs")));
+byId("cv-pub-github").addEventListener("click", () => safely(() => cvPublish("github")));
+byId("cv-pub-netlify").addEventListener("click", () => safely(() => cvPublish("netlify")));
+byId("cv-pub-vercel").addEventListener("click", () => safely(() => cvPublish("vercel")));
+byId("cv-pub-cloudflare").addEventListener("click", () => safely(() => cvPublish("cloudflare")));
+
+// ── Deploy settings: per-host credentials, stored on-device (0600), never echoed back ──
+const DEPLOY_FIELDS = {
+  github: [
+    { k: "token", label: "Personal access token (repo scope)", type: "password" },
+    { k: "owner", label: "GitHub username or org", type: "text" },
+    { k: "repo", label: "Repository name", type: "text" },
+    { k: "branch", label: "Branch", type: "text", placeholder: "gh-pages" },
+  ],
+  netlify: [
+    { k: "token", label: "Personal access token", type: "password" },
+    { k: "site_id", label: "Site ID (optional — created if blank)", type: "text" },
+  ],
+  vercel: [
+    { k: "token", label: "Access token", type: "password" },
+    { k: "project", label: "Project name (optional)", type: "text" },
+    { k: "team_id", label: "Team ID (optional)", type: "text" },
+  ],
+  cloudflare: [
+    { k: "token", label: "API token (Pages : Edit)", type: "password" },
+    { k: "account_id", label: "Account ID", type: "text" },
+    { k: "project", label: "Pages project name", type: "text" },
+  ],
+};
+let depStatus = {};
+function depRender() {
+  const platform = byId("dep-platform").value;
+  const wrap = byId("dep-fields"); clear(wrap);
+  const known = (depStatus && depStatus[platform]) || {};
+  DEPLOY_FIELDS[platform].forEach(f => {
+    const row = node("label", "profile-row");
+    row.appendChild(node("span", "profile-label", f.label));
+    const inp = document.createElement("input");
+    inp.type = f.type; inp.className = "input"; inp.id = "dep-" + f.k;
+    inp.autocomplete = f.type === "password" ? "new-password" : "off";
+    if (f.placeholder) inp.placeholder = f.placeholder;
+    // Prefill only the public (non-secret) fields from saved status — never a token.
+    if (f.type !== "password" && known && known[f.k] != null) inp.value = known[f.k];
+    row.appendChild(inp);
+    wrap.appendChild(row);
+  });
+  const st = byId("dep-status"); clear(st);
+  st.appendChild(document.createTextNode(depStatus[platform] ? "✓ configured on this device" : "not configured yet"));
+}
+async function depLoad() {
+  try { depStatus = await getJson("/api/deploy/credentials"); } catch (e) { depStatus = {}; }
+  depRender();
+}
+function depOpen() { byId("deploy-modal").style.display = "flex"; safely(depLoad); }
+function depClose() { byId("deploy-modal").style.display = "none"; }
+async function depSave(wipe) {
+  const platform = byId("dep-platform").value;
+  let fields = null;
+  if (!wipe) {
+    fields = {};
+    DEPLOY_FIELDS[platform].forEach(f => {
+      const v = byId("dep-" + f.k).value.trim();
+      if (v) fields[f.k] = v;
+    });
+    if (!Object.keys(fields).length) { notice("Fill in the credentials first."); return; }
+  }
+  await postJson("/api/deploy/credentials", { platform, fields });
+  notice(wipe ? "Cleared " + platform + " credentials." : "Saved " + platform + " credentials on this device.");
+  await depLoad();
+}
+byId("cv-deploy-settings").addEventListener("click", () => safely(depOpen));
+byId("dep-close").addEventListener("click", depClose);
+byId("dep-platform").addEventListener("change", depRender);
+byId("dep-save").addEventListener("click", () => safely(() => depSave(false)));
+byId("dep-clear").addEventListener("click", () => safely(() => depSave(true)));
+byId("deploy-modal").addEventListener("click", e => { if (e.target === byId("deploy-modal")) depClose(); });
+
+// Expand the preview to a near-fullscreen overlay for testing (e.g. play the game
+// big). Esc or a backdrop click collapses it; the iframe content keeps running.
+let cvBig = false;
+function cvSetBig(on) {
+  cvBig = on;
+  byId("cv-preview").classList.toggle("big", on);
+  byId("cv-backdrop").classList.toggle("on", on);
+  byId("cv-expand").classList.toggle("on", on);
+  byId("cv-expand").textContent = on ? "⤡ Collapse" : "⛶ Expand";
+}
+byId("cv-expand").addEventListener("click", () => cvSetBig(!cvBig));
+byId("cv-backdrop").addEventListener("click", () => cvSetBig(false));
+document.addEventListener("keydown", e => {
+  if (e.key === "Escape" && cvBig) { cvSetBig(false); return; }
+  // F toggles expand — but only in the Studio view and not while typing in a field
+  // (so typing "f" in the HTML window, or Cmd/Ctrl-F find, still works normally).
+  if (e.key === "f" || e.key === "F") {
+    const t = e.target || {}, tag = t.tagName || "";
+    const typing = tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || t.isContentEditable;
+    if (typing || e.metaKey || e.ctrlKey || e.altKey) return;
+    if (!byId("canvas-view").classList.contains("active")) return;
+    e.preventDefault(); cvSetBig(!cvBig);
+  }
+});
 
 // Educational live-share: broadcast the current page to remote viewers over WebRTC
 // (signaling via the Rust relay / DM channel). Single-page; the local builder handles
@@ -2086,7 +2618,7 @@ async function cvDraftPoll() {
     cvWritePreview();
     if (cvRtc.role === "host") cvBroadcast();
     cvStatus("the AI wrote the page · review + Publish");
-    logNode("studio · AI wrote into the Write tab", "ok");
+    logSystem("studio · AI wrote into the Write tab", "ok");
   }
 }
 setInterval(() => quietly(cvDraftPoll), 2000);
@@ -2126,7 +2658,7 @@ async function loadRequests() {
     accept.addEventListener("click", () => safely(async () => {
       await postJson("/api/requests/accept", { username: r.username });
       notice("Accepted — their messages were delivered to the thread.");
-      await loadRequests(); await loadRooms(); if (state.room) await loadThread();
+      await loadRequests(); await loadContacts(); await loadRooms(); if (state.room) await loadThread();
     }));
     decline.addEventListener("click", () => safely(async () => {
       await postJson("/api/requests/decline", { username: r.username });
@@ -2135,6 +2667,73 @@ async function loadRequests() {
     card.append(main, accept, decline);
     box.append(card);
   });
+}
+
+// Deterministic 1:1 thread id for two usernames (matches the backend dm_room_id).
+function dmRoom(a, b) { return "dm:" + [a, b].sort().join("-"); }
+
+// Approved peers — the list of who can message you. Click a peer to open the
+// thread; Remove blocks them (they need a fresh request to reach you again).
+async function loadContacts() {
+  let data; try { data = await getJson("/api/contacts"); } catch (e) { return; }
+  const list = data.contacts || [];
+  const box = byId("contacts"); if (!box) return; clear(box);
+  if (!list.length) {
+    box.append(node("div", "contact-empty", "No approved peers yet — accept a request, or message a username to add them."));
+    return;
+  }
+  list.forEach(c => {
+    const card = node("div", "contact-card");
+    const main = node("div", "c-main");
+    const nameRow = node("div", "c-name");
+    nameRow.append(node("span", "", c.name || ((c.username || "").slice(0, 16) + "…")));
+    if (c.verified) nameRow.append(node("span", "c-badge ok", "✓ petname"));
+    else if (c.name_source === "introduced") nameRow.append(node("span", "c-badge hint", "introduced"));
+    else if (c.name_source === "card") nameRow.append(node("span", "c-badge hint", "unverified"));
+    main.append(nameRow);
+    main.append(node("div", "c-sub", (c.username || "").slice(0, 18) + "…" + (c.site_ipns ? "  ·  /ipns/" + String(c.site_ipns).slice(0, 12) + "…" : "")));
+    main.title = "Open thread · " + c.username;
+    main.addEventListener("click", () => {
+      byId("chat-to").value = c.username;
+      const room = c.room || (state.myUsername ? dmRoom(state.myUsername, c.username) : "");
+      if (room) { byId("room").value = room; state.room = room; safely(loadThread); }
+      byId("chat-msg").focus();
+    });
+    const pet = node("button", "c-pet", "Petname");
+    pet.title = "Give this peer your own private name — it overrides any name they assert (anti-spoofing).";
+    pet.addEventListener("click", () => safely(async () => {
+      const name = window.prompt("Set a private petname for this peer (blank to clear):", c.verified ? c.name : "");
+      if (name === null) return;
+      await postJson("/api/petname", { agent_id: c.username, name: name.trim() });
+      await loadContacts();
+      notice(name.trim() ? "Petname set — it's yours, locally, and overrides any name they assert." : "Petname cleared.");
+    }));
+    const remove = node("button", "c-remove", "Remove");
+    remove.addEventListener("click", () => safely(async () => {
+      if (!window.confirm("Block " + (c.name || (c.username || "").slice(0, 16) + "…") + "? They'll need a new request to reach you.")) return;
+      await postJson("/api/contacts/remove", { username: c.username });
+      await loadContacts();
+    }));
+    card.append(node("div", "c-dot"), main, pet, remove);
+    box.append(card);
+  });
+}
+// Your own contact card editor (Layer 2 self-asserted profile). Peers you connect
+// to see this name; petnames they set locally always override it on their side.
+async function loadProfile() {
+  const box = byId("profile-editor"); if (!box) return;
+  let p; try { p = await getJson("/api/profile"); } catch (e) { return; }
+  clear(box);
+  const nameI = node("input", "input"); nameI.type = "text"; nameI.placeholder = "display name"; nameI.value = p.display_name || ""; nameI.maxLength = 48;
+  const siteI = node("input", "input"); siteI.type = "text"; siteI.placeholder = "your site IPNS (k51…) — optional"; siteI.value = p.site_ipns || "";
+  const bioI = node("input", "input"); bioI.type = "text"; bioI.placeholder = "short bio — optional"; bioI.value = p.bio || "";
+  const save = node("button", "tool-button", "Save card");
+  save.addEventListener("click", () => safely(async () => {
+    await postJson("/api/profile", { display_name: nameI.value.trim(), bio: bioI.value.trim(), site_ipns: siteI.value.trim() });
+    notice("Your contact card updated — peers you connect to will see this name.");
+    await loadProfile();
+  }));
+  box.append(nameI, siteI, bioI, save, node("div", "profile-did", "did:key  " + (p.did || "").slice(0, 40) + "…"));
 }
 
 function applyZoom() {
@@ -2181,124 +2780,80 @@ window.addEventListener("mouseup", () => {
 // enable together. Coupled — the Sidekick needs the node; the node only runs as
 // part of the Sidekick.
 async function loadSidekickStatus() {
-  const banner = byId("sidekick-onboard");
+  const el = byId("sidekick-ctl");
   let s;
   try { s = await getJson("/api/sidekick/status"); }
-  catch (_) { banner.style.display = "none"; document.body.classList.remove("node-live"); return; }
+  catch (_) { if (el) clear(el); document.body.classList.remove("node-live"); return; }
   // Heartbeat: pulse the central brain whenever the private node is actually up.
   document.body.classList.toggle("node-live", !!s.node_running);
   if (state.lastNodeRunning !== s.node_running) {
-    if (s.node_running) logNode("kubo private node ready · on-node embedding model online", "ok");
-    else if (state.lastNodeRunning === true) logNode("kubo node stopped", "wn");
+    if (s.node_running) logSystem("kubo private node ready · on-node embedding model online", "ok");
+    else if (state.lastNodeRunning === true) logSystem("kubo node stopped", "wn");
     state.lastNodeRunning = s.node_running;
   }
-  clear(banner);
-  banner.style.display = "flex";
+  if (!el) return;
+  clear(el);
+  const btn = node("button", "node-toggle"); btn.append(node("span", "dot", ""));
+  const label = txt => btn.append(node("span", "", txt));
   if (s.operational) {
-    banner.className = "cc-banner capturing";
-    banner.append(node("span", "cc-live", ""));
-    const msg = node("div", "cc-msg", "");
-    msg.append(node("b", "", "Sidekick active"), node("span", "", " — on-node embedding model + private Kubo node running."));
-    banner.append(msg);
-    const off = node("button", "cc-detach", "Disable");
-    off.addEventListener("click", () => safely(async () => {
-      await postJson("/api/sidekick/disable", {});
-      notice("Sidekick disabled.");
-      await loadSidekickStatus();
+    btn.classList.add("on"); label("Kubo node sidekick: ON");
+    btn.title = "On-node embedding model + private Kubo node running. Click to disable.";
+    btn.addEventListener("click", () => safely(async () => {
+      await postJson("/api/sidekick/disable", {}); notice("Sidekick disabled."); await loadSidekickStatus();
     }));
-    banner.append(off);
   } else if (s.enabled && !s.node_running) {
-    banner.className = "cc-banner";
-    const msg = node("div", "cc-msg", "");
-    msg.append(node("b", "", "Sidekick enabled — node starting…"), node("span", "", " the private Kubo node is coming up (a few seconds). If it doesn't, re-launch."));
-    banner.append(msg);
-    // Not a dead end: a daemon that failed to come up can be re-launched.
-    const retry = node("button", "cc-attach", "Re-launch node");
-    retry.addEventListener("click", () => safely(async () => {
-      await postJson("/api/sidekick/enable", {});
-      notice("Re-launching the private Kubo node…");
-      await loadSidekickStatus();
+    btn.classList.add("warn"); label("Kubo node sidekick: starting…");
+    btn.title = "The private Kubo node is coming up. Click to re-launch.";
+    btn.addEventListener("click", () => safely(async () => {
+      await postJson("/api/sidekick/enable", {}); notice("Re-launching the private Kubo node…"); await loadSidekickStatus();
     }));
-    banner.append(retry);
   } else if (!s.kubo_installed) {
-    // Kubo missing: don't offer an enable button that just errors — point the user
-    // at the one prerequisite. Re-checks each refresh, so it flips to "Enable
-    // Sidekick" once Kubo is installed.
-    banner.className = "cc-banner";
-    const msg = node("div", "cc-msg", "");
-    msg.append(
-      node("b", "", "Sidekick needs Kubo (IPFS)"),
-      node("span", "", " The Sidekick is the on-node embedding model that powers retrieval; it runs as part of your private Kubo node. Install Kubo, then this becomes “Enable Sidekick.”"),
-    );
-    banner.append(msg);
-    const link = node("a", "cc-attach", "Install Kubo →");
-    link.href = "https://docs.ipfs.tech/install/";
-    link.target = "_blank";
-    link.rel = "noopener noreferrer";
-    banner.append(link);
+    btn.classList.add("warn"); label("Kubo node sidekick: needs Kubo");
+    btn.title = "The sidekick (on-node embedding model) runs as part of a private Kubo node. Install Kubo to enable it.";
+    btn.addEventListener("click", () => window.open("https://docs.ipfs.tech/install/", "_blank", "noopener,noreferrer"));
   } else {
-    banner.className = "cc-banner";
-    const msg = node("div", "cc-msg", "");
-    msg.append(node("b", "", "Enable Sidekick"), node("span", "", " " + s.disclaimer));
-    banner.append(msg);
-    const on = node("button", "cc-attach", "Enable Sidekick");
-    on.addEventListener("click", () => safely(async () => {
-      await postJson("/api/sidekick/enable", {});
-      notice("Enabling Sidekick — launching your private Kubo node.");
-      await loadSidekickStatus();
+    label("Kubo node sidekick: OFF");
+    btn.title = s.disclaimer || "Enable the on-node embedding model + private Kubo node.";
+    btn.addEventListener("click", () => safely(async () => {
+      await postJson("/api/sidekick/enable", {}); notice("Enabling Sidekick — launching your private Kubo node."); await loadSidekickStatus();
     }));
-    banner.append(on);
   }
+  el.append(btn);
 }
 
-// Phase C onboarding: surface Claude Code auto-capture. Capture is opt-in —
-// the banner offers to attach; once attached it shows a live "capturing" badge
-// with a detach control. Nothing is captured until the user attaches.
+// Claude Code auto-capture control (opt-in). Renders into the header control bar:
+// "Detach" when capturing, "Attach" when sessions are found, nothing otherwise.
 async function loadClaudeCodeStatus() {
-  const banner = byId("cc-onboard");
+  const el = byId("cc-ctl");
   let status;
   try { status = await getJson("/api/claude-code/status"); }
-  catch (_) { banner.style.display = "none"; return; }
-  clear(banner);
-  if (!status.available || (!status.attached && !status.session_count)) {
-    banner.style.display = "none";
-    return;
-  }
-  banner.style.display = "flex";
+  catch (_) { if (el) clear(el); return; }
+  if (!el) return;
+  clear(el);
+  if (!status.available || (!status.attached && !status.session_count)) return;
   const n = status.session_count;
   if (status.attached) {
-    banner.className = "cc-banner capturing";
-    banner.append(node("span", "cc-live", ""));
-    const msg = node("div", "cc-msg", "");
-    msg.append(node("b", "", "Capturing Claude Code"), node("span", "", " — " + n + " session" + (n === 1 ? "" : "s") + " watched, new activity ingested automatically."));
-    banner.append(msg);
+    el.append(node("span", "cc-live", ""));
+    el.append(node("span", "cc-cap", "Capturing Claude Code · " + n + " session" + (n === 1 ? "" : "s")));
     const detach = node("button", "cc-detach", "Detach");
+    detach.title = "Pause Claude Code auto-capture (watched sessions stay ingested).";
     detach.addEventListener("click", () => safely(async () => {
       await postJson("/api/claude-code/detach", {});
       notice("Detached — Claude Code capture paused.");
       await loadClaudeCodeStatus();
     }));
-    banner.append(detach);
+    el.append(detach);
   } else {
-    banner.className = "cc-banner";
-    const here = status.current_project_sessions || 0;
-    const msg = node("div", "cc-msg", "");
-    const lead = here > 0
-      ? "Found " + here + " Claude Code session" + (here === 1 ? "" : "s") + " for this project"
-      : "Found " + n + " Claude Code session" + (n === 1 ? "" : "s");
-    const tail = here > 0
-      ? " (" + n + " on this machine). Attach to backfill and capture new sessions automatically — local-only, nothing leaves your device."
-      : " on this machine. Attach to backfill them and capture new sessions automatically — local-only, nothing leaves your device.";
-    msg.append(node("b", "", lead), node("span", "", tail));
-    banner.append(msg);
+    el.append(node("span", "cc-cap", n + " Claude Code session" + (n === 1 ? "" : "s") + " found"));
     const attach = node("button", "cc-attach", "Attach");
+    attach.title = "Backfill and watch Claude Code sessions — local-only, nothing leaves your device.";
     attach.addEventListener("click", () => safely(async () => {
       await postJson("/api/claude-code/attach", {});
       notice("Attached — backfilling and watching Claude Code sessions.");
       await loadClaudeCodeStatus();
       quietly(async () => { await Promise.all([loadNames(), refreshGraphData(), loadStats()]); });
     }));
-    banner.append(attach);
+    el.append(attach);
   }
 }
 
@@ -2320,7 +2875,7 @@ async function runSearch() {
   }
   clear(out);
   flashSynapses(); // a search is memory recall → fire the current on the graph
-  logNode("recall “" + q + "” → " + data.items.length + " hit(s) over " + data.indexed + " nodes", "ev");
+  logSystem("recall “" + q + "” → " + data.items.length + " hit(s) over " + data.indexed + " nodes", "ev");
   out.append(node("div", "search-summary",
     data.items.length + " hit(s) over " + data.indexed + " indexed node(s) · " + data.used_tokens + "/" + data.budget_tokens + " tokens"));
   if (!data.items.length) {
@@ -2337,24 +2892,25 @@ async function runSearch() {
       node("span", "", shortCid(hit.cid)),
     );
     card.append(head, node("div", "hit-preview", hit.preview));
-    card.addEventListener("click", () => { loadRecord(hit.cid); showView("record"); });
+    card.addEventListener("click", () => { loadRecord(hit.cid, true); });
     out.append(card);
   });
 }
 
 safely(async () => {
-  await Promise.all([loadMeta(), loadCheckpoints(), loadNames(), loadRooms(), loadMe(), loadRequests()]);
+  await Promise.all([loadMeta(), loadNames(), loadRooms(), loadMe(), loadRequests(), loadContacts(), loadProfile()]);
   await loadGraph();
   await refreshPrivacy();
 });
 // Stats (the store/DAG rail) are informational and the slowest call, so they
 // load in the background — the UI is interactive as soon as the graph is ready.
-logNode("data platter mounted — watching the node", "ok");
+logSystem("data platter mounted — watching the concierge", "ok");
 quietly(loadStats);
+quietly(pollActivity);
 quietly(loadSidekickStatus);
 quietly(loadClaudeCodeStatus);
 window.setInterval(() => quietly(async () => {
-  await Promise.all([loadNames(), loadCheckpoints(), refreshGraphData(), loadStats(), loadSidekickStatus(), loadMe(), loadRequests()]);
+  await Promise.all([loadNames(), refreshGraphData(), loadStats(), pollActivity(), loadSidekickStatus(), loadMe(), loadRequests(), loadContacts()]);
   if (!byId("privacy").querySelector("form")) await refreshPrivacy();
   if (state.room) await loadThread();
 }), 5000);

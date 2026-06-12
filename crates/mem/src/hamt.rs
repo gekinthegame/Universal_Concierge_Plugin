@@ -242,7 +242,9 @@ where
     V: Serialize + serde::de::DeserializeOwned + Clone,
 {
     fn load<B: Blockstore>(store: &B, cid: &Cid) -> Result<Self> {
-        let bytes = store.get(cid).with_context(|| format!("hamt: load node {cid}"))?;
+        let bytes = store
+            .get(cid)
+            .with_context(|| format!("hamt: load node {cid}"))?;
         serde_ipld_dagcbor::from_slice(&bytes).with_context(|| format!("hamt: decode node {cid}"))
     }
 
@@ -270,8 +272,10 @@ where
         if !self.bitfield.test_bit(idx) {
             let pos = self.bitfield.index_for(idx);
             self.bitfield.set_bit(idx);
-            self.pointers
-                .insert(pos, Pointer::Bucket(vec![KeyValuePair(key.to_vec(), value)]));
+            self.pointers.insert(
+                pos,
+                Pointer::Bucket(vec![KeyValuePair(key.to_vec(), value)]),
+            );
             return Ok(());
         }
         let pos = self.bitfield.index_for(idx);
@@ -292,7 +296,10 @@ where
                 }
                 if vals.len() < BUCKET_SIZE {
                     // Insert in key-sorted order (canonical form).
-                    let at = vals.iter().position(|kv| kv.0.as_slice() > key).unwrap_or(vals.len());
+                    let at = vals
+                        .iter()
+                        .position(|kv| kv.0.as_slice() > key)
+                        .unwrap_or(vals.len());
                     vals.insert(at, KeyValuePair(key.to_vec(), value));
                     return Ok(());
                 }

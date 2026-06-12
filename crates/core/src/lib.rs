@@ -20,19 +20,22 @@ pub mod binding;
 pub mod capability;
 pub mod car;
 pub mod compiler;
-pub mod connectors;
 pub mod config;
+pub mod connectors;
 pub mod contacts;
+pub mod deploy;
+pub mod design;
 pub mod dm_outbox;
 pub mod egress;
 pub mod error;
 pub mod event;
 pub mod identity;
 pub mod legibility;
-pub mod messaging;
 pub mod membership;
 pub mod merge;
+pub mod messaging;
 pub mod moderation;
+pub mod naming;
 pub mod node;
 pub mod outbox;
 pub mod pairing;
@@ -46,26 +49,27 @@ pub mod security;
 pub mod site;
 pub mod sites;
 pub mod social;
+pub(crate) mod state;
 pub mod sync;
 pub mod synthesis;
 
+pub use actor::{verify_actor_certificate, ActorCertificate, ActorError, ACTOR_CERT_VERSION};
 pub use binding::{
     cid_from_link, cid_link, utc_date, utc_today, Cid, CidOrName, CoreBinding, GcPolicy, GcReport,
     MemCli, Node, PublishReceipt, Record, StoreStats,
 };
-pub use actor::{verify_actor_certificate, ActorCertificate, ActorError, ACTOR_CERT_VERSION};
 pub use capability::{
     verify_capability, verify_capability_with_logs, Capability, CapabilityError, Namespace,
     NamespaceScope, Operation, CAPABILITY_VERSION,
 };
 pub use compiler::{ContextCompiler, TrustedAuthority};
-pub use connectors::{
-    federate, ConnectorRegistry, ExternalConnector, ExternalHit, ExternalSource, HttpIndexConnector,
-    CONNECTORS_VERSION,
-};
 pub use config::{
     CheckpointConfig, Config, HostConfig, IdentityConfig, InjectionConfig, LibrarianConfig,
     StoreConfig, CONFIG_PATH,
+};
+pub use connectors::{
+    federate, ConnectorRegistry, ExternalConnector, ExternalHit, ExternalSource,
+    HttpIndexConnector, CONNECTORS_VERSION,
 };
 pub use egress::{
     EgressOperation, EgressPlan, EgressReceipt, LockHit, LockRecord, LockRegistry, SecurityEvent,
@@ -74,9 +78,7 @@ pub use egress::{
 pub use error::{Error, Result};
 pub use event::{ContextSuggested, Envelope, Event, ImportedFrom, Reasoning, ReasoningSource};
 pub use identity::{verify as verify_signature, AgentId, Identity};
-pub use legibility::{
-    message_trust_tier, social_gravity_factor, structural_importance, TrustTier,
-};
+pub use legibility::{message_trust_tier, social_gravity_factor, structural_importance, TrustTier};
 pub use membership::{
     verify_membership, verify_membership_with_logs, ActorId, DeviceId, MembershipCertificate,
     MembershipError, NetworkDescriptor, NetworkId, RevocationRecord, RevocationSet, SubjectKind,
@@ -96,8 +98,8 @@ pub use node::{
 };
 pub use outbox::{OutboundEvent, OutboxEntry, OUTBOX_FILE, OUTBOX_OFFSET_FILE};
 pub use pairing::{
-    approve, confirmation_phrase, verify_pairing_response, PairingError, PairingGrant, PairingOffer,
-    PairingResponse, PAIRING_OFFER_VERSION, PAIRING_RESPONSE_VERSION,
+    approve, confirmation_phrase, verify_pairing_response, PairingError, PairingGrant,
+    PairingOffer, PairingResponse, PAIRING_OFFER_VERSION, PAIRING_RESPONSE_VERSION,
 };
 pub use private::{
     EncryptedPrivateReceipt, PrivateCapability, PrivateConversion, PrivateSharePlan,
@@ -111,13 +113,14 @@ pub use recovery::{
     verify_and_resolve, RecoveryError, ResolvedIdentity, UserIdentityLog, UserIdentityOp,
     UserOpKind, USER_IDENTITY_OP_VERSION,
 };
-pub use retrieval::{
-    default_embedder, Depth, Embedder, HttpEmbedder, Librarian, LexicalEmbedder, RetrieveResult,
-    Retrieved, SharedEmbedder,
-};
 #[cfg(feature = "semantic-embed")]
 pub use retrieval::SemanticEmbedder;
+pub use retrieval::{
+    default_embedder, Depth, Embedder, HttpEmbedder, LexicalEmbedder, Librarian, RetrieveResult,
+    Retrieved, SharedEmbedder,
+};
 pub use security::{Grant, GrantKind, GrantScope, GRANT_VERSION, PUBLISH_GRANT_TTL_SECS};
+pub use social::SocialBook;
 pub use sync::{
     reconcile, verify_head_record, HeadRecord, PullReport, Reconciliation, SyncError, SyncLimits,
     SyncReceipt, HEAD_RECORD_VERSION,
@@ -126,4 +129,3 @@ pub use synthesis::{
     assemble_thread, record_synthesis, synthesis_candidates, SynthesisCandidate,
     SYNTHESIS_THRESHOLD,
 };
-pub use social::SocialBook;

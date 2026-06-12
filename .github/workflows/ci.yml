@@ -1,0 +1,51 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.95.0
+          components: rustfmt, clippy
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Repository hygiene
+        shell: bash
+        run: |
+          test -z "$(git ls-files '3mail-main/**' 'Planet-main/**')"
+          test -z "$(git ls-files | grep -E '(^|/)\.env($|\.)' || true)"
+          test "$(du -sk crates/mcp/src/engines | cut -f1)" -le 4096
+          cargo metadata --locked --no-deps --format-version 1 >/dev/null
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --locked --workspace --all-targets -- -D warnings
+      - run: cargo test --locked --workspace
+      - name: Python adapter tests
+        run: |
+          for test in adapters/*/test_translate.py; do
+            python "$test"
+          done
+      - name: Python syntax
+        run: python -m compileall -q adapters
+      - name: Embedded GUI JavaScript syntax
+        run: |
+          node - <<'NODE'
+          const fs = require("fs");
+          const vm = require("vm");
+          const html = fs.readFileSync("crates/gui/src/index.html", "utf8");
+          const scripts = [...html.matchAll(/<script(?:\s[^>]*)?>([\s\S]*?)<\/script>/gi)];
+          for (const [index, match] of scripts.entries()) {
+            new vm.Script(match[1], { filename: `index.html#script-${index + 1}` });
+          }
+          if (scripts.length === 0) throw new Error("no embedded GUI scripts found");
+          NODE
+      - run: git diff --check

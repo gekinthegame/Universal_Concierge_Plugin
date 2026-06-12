@@ -33,7 +33,7 @@ COMMANDS:
                          Auto-attach to Claude Code: backfill ~/.claude/projects,
                          watch for new sessions, or `inject` drains the node→host
                          suggestion outbox into a context block               [Phase C/8]
-    ingest <file.jsonl>  Ingest host-neutral events into IPLD memory  [Phase 2]
+    ingest <file|->      Ingest host-neutral events into IPLD memory (- = stdin)  [Phase 2]
     checkpoint --name N  Write a checkpoint over the current root      [Phase 2]
     import <source> <path> Backfill an existing store (use --dry-run)  [Phase 2.5]
     recall <name>        Resolve a name and show its record            [Phase 1/2]
@@ -102,11 +102,6 @@ COMMANDS:
     mcp serve            Serve memory over MCP        [Phase 3 — DEFERRED]
     help                 Show this help
 ";
-
-fn todo(phase: &str, what: &str) -> ExitCode {
-    eprintln!("not yet implemented — {what} lands in {phase}.");
-    ExitCode::from(2)
-}
 
 /// The working directory `mem` keys its `.concierge` store off of.
 ///
@@ -204,7 +199,7 @@ fn cmd_retrieve(args: &[String]) -> ExitCode {
     while i < args.len() {
         match args[i].as_str() {
             "--budget" | "--depth" | "--hops" | "--kind" => i += 2, // skip flag + its value
-            "--external" => i += 1,                                  // boolean flag
+            "--external" => i += 1,                                 // boolean flag
             other => {
                 query_parts.push(other);
                 i += 1;
@@ -213,7 +208,9 @@ fn cmd_retrieve(args: &[String]) -> ExitCode {
     }
     let query = query_parts.join(" ");
     if query.trim().is_empty() {
-        eprintln!("usage: concierge-plugin retrieve <query…> [--budget N] [--depth brief|summary|full]");
+        eprintln!(
+            "usage: concierge-plugin retrieve <query…> [--budget N] [--depth brief|summary|full]"
+        );
         return ExitCode::from(2);
     }
     let budget = flag_value(args, "--budget")
@@ -280,7 +277,10 @@ fn cmd_retrieve(args: &[String]) -> ExitCode {
     if args.iter().any(|a| a == "--external") {
         match mem.federate_search(&query, 10) {
             Ok(hits) if !hits.is_empty() => {
-                println!("\n— external references ({} · untrusted, not auto-injected) —", hits.len());
+                println!(
+                    "\n— external references ({} · untrusted, not auto-injected) —",
+                    hits.len()
+                );
                 for hit in &hits {
                     println!(
                         "\n[ext {score:.3}  via {src}]  {cid}",
@@ -334,7 +334,9 @@ fn cmd_connect(args: &[String]) -> ExitCode {
             };
             match mem.connect_external(url, alias) {
                 Ok(()) => {
-                    println!("connected `{alias}` → {url} (querying it sends your query out — egress)");
+                    println!(
+                        "connected `{alias}` → {url} (querying it sends your query out — egress)"
+                    );
                     ExitCode::SUCCESS
                 }
                 Err(e) => {
@@ -380,10 +382,15 @@ fn cmd_connect(args: &[String]) -> ExitCode {
                 eprintln!("usage: concierge-plugin connect search <query…> [--limit N]");
                 return ExitCode::from(2);
             }
-            let limit = flag_value(args, "--limit").and_then(|v| v.parse::<usize>().ok()).unwrap_or(10);
+            let limit = flag_value(args, "--limit")
+                .and_then(|v| v.parse::<usize>().ok())
+                .unwrap_or(10);
             match mem.federate_search(&query, limit) {
                 Ok(hits) => {
-                    println!("{} external reference(s) — untrusted, not auto-injected", hits.len());
+                    println!(
+                        "{} external reference(s) — untrusted, not auto-injected",
+                        hits.len()
+                    );
                     for hit in &hits {
                         println!(
                             "\n[ext {score:.3}  via {src}]  {cid}",
@@ -476,7 +483,9 @@ fn cmd_outbox(args: &[String]) -> ExitCode {
             }
             let query = query_parts.join(" ");
             if query.trim().is_empty() {
-                eprintln!("usage: concierge-plugin outbox wake <query…> [--authority ID] [--event E]");
+                eprintln!(
+                    "usage: concierge-plugin outbox wake <query…> [--authority ID] [--event E]"
+                );
                 return ExitCode::from(2);
             }
             let event = flag_value(args, "--event").unwrap_or_else(|| "user_prompt".to_string());
@@ -516,7 +525,9 @@ fn cmd_user(args: &[String]) -> ExitCode {
         Some("init") | None => match mem.user_identity() {
             Ok(user) => {
                 println!("UserID: {}", user.agent_id().0);
-                println!("(root ownership key — distinct from this device's identity; never copied)");
+                println!(
+                    "(root ownership key — distinct from this device's identity; never copied)"
+                );
                 ExitCode::SUCCESS
             }
             Err(e) => {
@@ -532,7 +543,10 @@ fn cmd_user(args: &[String]) -> ExitCode {
                 println!("  BACK THIS UP OFFLINE — it is the only way to recover the identity if the active key is lost.");
                 ExitCode::SUCCESS
             }
-            Err(e) => { eprintln!("user recovery failed: {e}"); ExitCode::FAILURE }
+            Err(e) => {
+                eprintln!("user recovery failed: {e}");
+                ExitCode::FAILURE
+            }
         },
         Some("rotate") => match mem.rotate_user_key() {
             Ok(r) => {
@@ -540,7 +554,10 @@ fn cmd_user(args: &[String]) -> ExitCode {
                 println!("  new active key: {}", r.active_key);
                 ExitCode::SUCCESS
             }
-            Err(e) => { eprintln!("user rotate failed: {e}"); ExitCode::FAILURE }
+            Err(e) => {
+                eprintln!("user rotate failed: {e}");
+                ExitCode::FAILURE
+            }
         },
         Some("recover") => match mem.recover_user_key() {
             Ok(r) => {
@@ -548,7 +565,10 @@ fn cmd_user(args: &[String]) -> ExitCode {
                 println!("  new active key: {}", r.active_key);
                 ExitCode::SUCCESS
             }
-            Err(e) => { eprintln!("user recover failed: {e}"); ExitCode::FAILURE }
+            Err(e) => {
+                eprintln!("user recover failed: {e}");
+                ExitCode::FAILURE
+            }
         },
         Some("show") => match mem.user_identity_log() {
             Ok(Some(log)) => match concierge_core::verify_and_resolve(&log) {
@@ -559,10 +579,19 @@ fn cmd_user(args: &[String]) -> ExitCode {
                     println!("log entries: {}", log.ops.len());
                     ExitCode::SUCCESS
                 }
-                Err(e) => { eprintln!("user log invalid: {e}"); ExitCode::FAILURE }
+                Err(e) => {
+                    eprintln!("user log invalid: {e}");
+                    ExitCode::FAILURE
+                }
             },
-            Ok(None) => { println!("no recovery log yet — run `user recovery` to establish one"); ExitCode::SUCCESS }
-            Err(e) => { eprintln!("user show failed: {e}"); ExitCode::FAILURE }
+            Ok(None) => {
+                println!("no recovery log yet — run `user recovery` to establish one");
+                ExitCode::SUCCESS
+            }
+            Err(e) => {
+                eprintln!("user show failed: {e}");
+                ExitCode::FAILURE
+            }
         },
         Some(other) => {
             eprintln!("unknown user subcommand `{other}` — use init|recovery|rotate|recover|show");
@@ -603,7 +632,10 @@ fn cmd_network(args: &[String]) -> ExitCode {
                     println!("no networks (found one with `network create <name>`)");
                 } else {
                     for n in networks {
-                        println!("{}\t{}\tepoch {}", n.name, n.network_id.0, n.membership_epoch);
+                        println!(
+                            "{}\t{}\tepoch {}",
+                            n.name, n.network_id.0, n.membership_epoch
+                        );
                     }
                 }
                 ExitCode::SUCCESS
@@ -631,15 +663,46 @@ fn cmd_network(args: &[String]) -> ExitCode {
                 return ExitCode::FAILURE;
             };
             let descriptor_ok = descriptor.verify().is_ok();
-            println!("network `{}`  ({})", descriptor.name, descriptor.network_id.0);
-            println!("  descriptor signature: {}", if descriptor_ok { "valid" } else { "INVALID" });
-            println!("  root users: {}", descriptor.root_user_ids.iter().map(|u| u.0.clone()).collect::<Vec<_>>().join(", "));
+            println!(
+                "network `{}`  ({})",
+                descriptor.name, descriptor.network_id.0
+            );
+            println!(
+                "  descriptor signature: {}",
+                if descriptor_ok { "valid" } else { "INVALID" }
+            );
+            println!(
+                "  root users: {}",
+                descriptor
+                    .root_user_ids
+                    .iter()
+                    .map(|u| u.0.clone())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
             println!("  epoch: {}", descriptor.membership_epoch);
             match mem.device_membership(&descriptor.network_id) {
                 Ok(Some(cert)) => {
-                    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
-                    let valid = concierge_core::verify_membership(&cert, &descriptor, now, &concierge_core::RevocationSet::new()).is_ok();
-                    println!("  this device: {} ({})", cert.subject_id, if valid { "membership valid" } else { "membership INVALID" });
+                    let now = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_secs())
+                        .unwrap_or(0);
+                    let valid = concierge_core::verify_membership(
+                        &cert,
+                        &descriptor,
+                        now,
+                        &concierge_core::RevocationSet::new(),
+                    )
+                    .is_ok();
+                    println!(
+                        "  this device: {} ({})",
+                        cert.subject_id,
+                        if valid {
+                            "membership valid"
+                        } else {
+                            "membership INVALID"
+                        }
+                    );
                     println!("  capabilities: {}", cert.capabilities.join(", "));
                 }
                 Ok(None) => println!("  this device: no membership certificate"),
@@ -667,7 +730,10 @@ fn read_json_file<T: serde::de::DeserializeOwned>(path: &str) -> Result<T, Strin
 }
 
 /// Parse a namespace like `personal`, `project:atlas`, `room:x`, `agent:y`, `all`.
-fn parse_namespace(network_id: concierge_core::NetworkId, s: &str) -> Option<concierge_core::Namespace> {
+fn parse_namespace(
+    network_id: concierge_core::NetworkId,
+    s: &str,
+) -> Option<concierge_core::Namespace> {
     use concierge_core::{Namespace, NamespaceScope};
     let scope = match s {
         "all" | "*" => NamespaceScope::All,
@@ -701,7 +767,10 @@ fn parse_operations(csv: &str) -> Result<Vec<concierge_core::Operation>, String>
 fn network_pair(mem: &MemCli, args: &[String]) -> ExitCode {
     let networks = match mem.networks() {
         Ok(n) => n,
-        Err(e) => { eprintln!("network pair failed: {e}"); return ExitCode::FAILURE; }
+        Err(e) => {
+            eprintln!("network pair failed: {e}");
+            return ExitCode::FAILURE;
+        }
     };
     let target = flag_value(args, "--network");
     let descriptor = match target {
@@ -712,15 +781,27 @@ fn network_pair(mem: &MemCli, args: &[String]) -> ExitCode {
         eprintln!("no network to pair into — create one with `network create <name>`");
         return ExitCode::from(2);
     };
-    let rendezvous = flag_value(args, "--rendezvous").unwrap_or_else(|| "/ip4/127.0.0.1/tcp/4001".to_string());
+    let rendezvous =
+        flag_value(args, "--rendezvous").unwrap_or_else(|| "/ip4/127.0.0.1/tcp/4001".to_string());
     match mem.create_pairing_offer(&descriptor.network_id, &rendezvous) {
         Ok(offer) => {
-            eprintln!("# pairing offer for `{}` (expires in 10 min, one-use)", descriptor.name);
-            eprintln!("# share this with the new device, then run `network respond <offer.json>` there");
-            println!("{}", serde_json::to_string_pretty(&offer).unwrap_or_default());
+            eprintln!(
+                "# pairing offer for `{}` (expires in 10 min, one-use)",
+                descriptor.name
+            );
+            eprintln!(
+                "# share this with the new device, then run `network respond <offer.json>` there"
+            );
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&offer).unwrap_or_default()
+            );
             ExitCode::SUCCESS
         }
-        Err(e) => { eprintln!("network pair failed: {e}"); ExitCode::FAILURE }
+        Err(e) => {
+            eprintln!("network pair failed: {e}");
+            ExitCode::FAILURE
+        }
     }
 }
 
@@ -733,7 +814,10 @@ fn network_respond(args: &[String]) -> ExitCode {
     };
     let offer: concierge_core::PairingOffer = match read_json_file(path) {
         Ok(o) => o,
-        Err(e) => { eprintln!("{e}"); return ExitCode::FAILURE; }
+        Err(e) => {
+            eprintln!("{e}");
+            return ExitCode::FAILURE;
+        }
     };
     if let Err(e) = offer.verify() {
         eprintln!("offer rejected: {e}");
@@ -742,12 +826,21 @@ fn network_respond(args: &[String]) -> ExitCode {
     let mem = MemCli::new(workdir());
     let device = match mem.identity() {
         Ok(d) => d,
-        Err(e) => { eprintln!("identity error: {e}"); return ExitCode::FAILURE; }
+        Err(e) => {
+            eprintln!("identity error: {e}");
+            return ExitCode::FAILURE;
+        }
     };
     let response = concierge_core::PairingResponse::create(&offer, &device);
-    eprintln!("# confirmation phrase (must match the admin's): {}", concierge_core::confirmation_phrase(&offer, &response));
+    eprintln!(
+        "# confirmation phrase (must match the admin's): {}",
+        concierge_core::confirmation_phrase(&offer, &response)
+    );
     eprintln!("# send this response back; the admin runs `network approve <response.json> --namespace … --ops …`");
-    println!("{}", serde_json::to_string_pretty(&response).unwrap_or_default());
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&response).unwrap_or_default()
+    );
     ExitCode::SUCCESS
 }
 
@@ -755,12 +848,17 @@ fn network_respond(args: &[String]) -> ExitCode {
 /// response, show the confirmation phrase to compare, and issue the scoped grant.
 fn network_approve(mem: &MemCli, args: &[String]) -> ExitCode {
     let Some(path) = args.get(2) else {
-        eprintln!("usage: concierge-plugin network approve <response.json> --namespace <ns> --ops <a,b>");
+        eprintln!(
+            "usage: concierge-plugin network approve <response.json> --namespace <ns> --ops <a,b>"
+        );
         return ExitCode::from(2);
     };
     let response: concierge_core::PairingResponse = match read_json_file(path) {
         Ok(r) => r,
-        Err(e) => { eprintln!("{e}"); return ExitCode::FAILURE; }
+        Err(e) => {
+            eprintln!("{e}");
+            return ExitCode::FAILURE;
+        }
     };
     let Some(ns_arg) = flag_value(args, "--namespace") else {
         eprintln!("need --namespace <personal|project:ID|room:ID|agent:ID|all>");
@@ -768,7 +866,10 @@ fn network_approve(mem: &MemCli, args: &[String]) -> ExitCode {
     };
     let ops = match parse_operations(&flag_value(args, "--ops").unwrap_or_default()) {
         Ok(ops) if !ops.is_empty() => ops,
-        _ => { eprintln!("need --ops <comma-separated ops, e.g. sync_read,message_receive>"); return ExitCode::from(2); }
+        _ => {
+            eprintln!("need --ops <comma-separated ops, e.g. sync_read,message_receive>");
+            return ExitCode::from(2);
+        }
     };
     // Find the offer's network (the response references it via the stored offer).
     let networks = mem.networks().unwrap_or_default();
@@ -780,14 +881,30 @@ fn network_approve(mem: &MemCli, args: &[String]) -> ExitCode {
         eprintln!("bad --namespace `{ns_arg}`");
         return ExitCode::from(2);
     };
-    match mem.complete_pairing(&response, &[(namespace, ops)], concierge_core::DEFAULT_CERT_TTL_SECS) {
+    match mem.complete_pairing(
+        &response,
+        &[(namespace, ops)],
+        concierge_core::DEFAULT_CERT_TTL_SECS,
+    ) {
         Ok(grant) => {
-            eprintln!("# approved — send this grant to the new device: `network accept <grant.json>`");
-            eprintln!("# {} capability(ies) granted to {}", grant.capabilities.len(), grant.membership.subject_id);
-            println!("{}", serde_json::to_string_pretty(&grant).unwrap_or_default());
+            eprintln!(
+                "# approved — send this grant to the new device: `network accept <grant.json>`"
+            );
+            eprintln!(
+                "# {} capability(ies) granted to {}",
+                grant.capabilities.len(),
+                grant.membership.subject_id
+            );
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&grant).unwrap_or_default()
+            );
             ExitCode::SUCCESS
         }
-        Err(e) => { eprintln!("approve failed: {e}"); ExitCode::FAILURE }
+        Err(e) => {
+            eprintln!("approve failed: {e}");
+            ExitCode::FAILURE
+        }
     }
 }
 
@@ -800,17 +917,34 @@ fn network_accept(mem: &MemCli, args: &[String]) -> ExitCode {
     };
     let grant: concierge_core::PairingGrant = match read_json_file(path) {
         Ok(g) => g,
-        Err(e) => { eprintln!("{e}"); return ExitCode::FAILURE; }
+        Err(e) => {
+            eprintln!("{e}");
+            return ExitCode::FAILURE;
+        }
     };
     match mem.accept_pairing_grant(&grant) {
         Ok(()) => {
-            println!("joined network `{}` ({})", grant.descriptor.name, grant.descriptor.network_id.0);
+            println!(
+                "joined network `{}` ({})",
+                grant.descriptor.name, grant.descriptor.network_id.0
+            );
             for cap in &grant.capabilities {
-                println!("  {} → {}", cap.namespace.canonical(), cap.operations.iter().map(|o| format!("{o:?}")).collect::<Vec<_>>().join(", "));
+                println!(
+                    "  {} → {}",
+                    cap.namespace.canonical(),
+                    cap.operations
+                        .iter()
+                        .map(|o| format!("{o:?}"))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                );
             }
             ExitCode::SUCCESS
         }
-        Err(e) => { eprintln!("accept failed: {e}"); ExitCode::FAILURE }
+        Err(e) => {
+            eprintln!("accept failed: {e}");
+            ExitCode::FAILURE
+        }
     }
 }
 
@@ -830,16 +964,30 @@ fn cmd_actor(args: &[String]) -> ExitCode {
                     println!("no actors enrolled");
                 } else {
                     for c in certs {
-                        println!("{}  {}  ops: {}", c.actor_id, c.namespace, c.operations.iter().map(|o| format!("{o:?}")).collect::<Vec<_>>().join(", "));
+                        println!(
+                            "{}  {}  ops: {}",
+                            c.actor_id,
+                            c.namespace,
+                            c.operations
+                                .iter()
+                                .map(|o| format!("{o:?}"))
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        );
                     }
                 }
                 ExitCode::SUCCESS
             }
-            Err(e) => { eprintln!("actor list failed: {e}"); ExitCode::FAILURE }
+            Err(e) => {
+                eprintln!("actor list failed: {e}");
+                ExitCode::FAILURE
+            }
         },
         Some("enroll") => {
             let Some(actor_id) = args.get(2) else {
-                eprintln!("usage: concierge-plugin actor enroll <actor-id> --namespace <ns> [--ops a,b]");
+                eprintln!(
+                    "usage: concierge-plugin actor enroll <actor-id> --namespace <ns> [--ops a,b]"
+                );
                 return ExitCode::from(2);
             };
             let Some(ns_arg) = flag_value(args, "--namespace") else {
@@ -851,17 +999,33 @@ fn cmd_actor(args: &[String]) -> ExitCode {
                 return ExitCode::from(2);
             };
             let ops = match flag_value(args, "--ops") {
-                Some(csv) => match parse_operations(&csv) { Ok(ops) => ops, Err(e) => { eprintln!("{e}"); return ExitCode::from(2); } },
+                Some(csv) => match parse_operations(&csv) {
+                    Ok(ops) => ops,
+                    Err(e) => {
+                        eprintln!("{e}");
+                        return ExitCode::from(2);
+                    }
+                },
                 None => Vec::new(), // least-privilege default
             };
             match mem.enroll_actor(&descriptor.network_id, actor_id, &namespace, ops) {
                 Ok(cert) => {
                     println!("enrolled actor {actor_id}");
                     println!("  namespace: {}", cert.namespace);
-                    println!("  granted (∩ this device's own): {}", cert.operations.iter().map(|o| format!("{o:?}")).collect::<Vec<_>>().join(", "));
+                    println!(
+                        "  granted (∩ this device's own): {}",
+                        cert.operations
+                            .iter()
+                            .map(|o| format!("{o:?}"))
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    );
                     ExitCode::SUCCESS
                 }
-                Err(e) => { eprintln!("actor enroll failed: {e}"); ExitCode::FAILURE }
+                Err(e) => {
+                    eprintln!("actor enroll failed: {e}");
+                    ExitCode::FAILURE
+                }
             }
         }
         Some(other) => {
@@ -885,12 +1049,22 @@ fn cmd_sync(args: &[String]) -> ExitCode {
                 return ExitCode::SUCCESS;
             }
             for descriptor in networks {
-                println!("network `{}` (epoch {})", descriptor.name, descriptor.membership_epoch);
+                println!(
+                    "network `{}` (epoch {})",
+                    descriptor.name, descriptor.membership_epoch
+                );
                 // Surface the namespaces this device tracks heads for.
-                for cap in mem.device_capabilities(&descriptor.network_id).unwrap_or_default() {
+                for cap in mem
+                    .device_capabilities(&descriptor.network_id)
+                    .unwrap_or_default()
+                {
                     let ns = cap.namespace.canonical();
                     let heads = mem.local_heads(&descriptor.network_id, &ns);
-                    let head_str = if heads.is_empty() { "(no heads yet)".to_string() } else { heads.join(", ") };
+                    let head_str = if heads.is_empty() {
+                        "(no heads yet)".to_string()
+                    } else {
+                        heads.join(", ")
+                    };
                     println!("  {ns}  heads: {head_str}");
                 }
             }
@@ -915,32 +1089,76 @@ fn cmd_sync(args: &[String]) -> ExitCode {
             };
             let addr: concierge_net::Multiaddr = match peer_addr.parse() {
                 Ok(a) => a,
-                Err(e) => { eprintln!("bad --peer multiaddr: {e}"); return ExitCode::from(2); }
+                Err(e) => {
+                    eprintln!("bad --peer multiaddr: {e}");
+                    return ExitCode::from(2);
+                }
             };
             let Some(peer) = concierge_net::peer_id_in(&addr) else {
                 eprintln!("--peer must include the peer's /p2p/<id> component");
                 return ExitCode::from(2);
             };
-            let secret = match mem.identity() { Ok(id) => id.secret_bytes(), Err(e) => { eprintln!("identity: {e}"); return ExitCode::FAILURE; } };
-            let revoked = mem.revocation_set(&descriptor.network_id).unwrap_or_default();
+            let secret = match mem.identity() {
+                Ok(id) => id.secret_bytes(),
+                Err(e) => {
+                    eprintln!("identity: {e}");
+                    return ExitCode::FAILURE;
+                }
+            };
+            let revoked = mem
+                .revocation_set(&descriptor.network_id)
+                .unwrap_or_default();
 
-            let rt = match tokio::runtime::Builder::new_multi_thread().enable_all().build() {
+            let rt = match tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()
+            {
                 Ok(rt) => rt,
-                Err(e) => { eprintln!("sync: runtime: {e}"); return ExitCode::FAILURE; }
+                Err(e) => {
+                    eprintln!("sync: runtime: {e}");
+                    return ExitCode::FAILURE;
+                }
             };
             rt.block_on(async move {
                 let (node, mut events) = match concierge_net::ConciergeNode::spawn(secret) {
                     Ok(pair) => pair,
-                    Err(e) => { eprintln!("sync: {e}"); return ExitCode::FAILURE; }
+                    Err(e) => {
+                        eprintln!("sync: {e}");
+                        return ExitCode::FAILURE;
+                    }
                 };
-                if let Err(e) = node.dial(addr) { eprintln!("sync: dial: {e}"); return ExitCode::FAILURE; }
-                match concierge_net::sync_from_peer(&node, &mut events, peer, &mem, &descriptor, &namespace, &revoked, std::time::Duration::from_secs(60)).await {
+                if let Err(e) = node.dial(addr) {
+                    eprintln!("sync: dial: {e}");
+                    return ExitCode::FAILURE;
+                }
+                match concierge_net::sync_from_peer(
+                    &node,
+                    &mut events,
+                    peer,
+                    &mem,
+                    &descriptor,
+                    &namespace,
+                    &revoked,
+                    std::time::Duration::from_secs(60),
+                )
+                .await
+                {
                     Ok(receipt) => {
-                        println!("converged on {} ({} block(s), {} bytes)", namespace.canonical(), receipt.blocks_imported, receipt.bytes);
-                        for h in &receipt.heads { println!("  head: {h}"); }
+                        println!(
+                            "converged on {} ({} block(s), {} bytes)",
+                            namespace.canonical(),
+                            receipt.blocks_imported,
+                            receipt.bytes
+                        );
+                        for h in &receipt.heads {
+                            println!("  head: {h}");
+                        }
                         ExitCode::SUCCESS
                     }
-                    Err(e) => { eprintln!("sync failed: {e}"); ExitCode::FAILURE }
+                    Err(e) => {
+                        eprintln!("sync failed: {e}");
+                        ExitCode::FAILURE
+                    }
                 }
             })
         }
@@ -956,7 +1174,9 @@ fn cmd_sync(args: &[String]) -> ExitCode {
 /// a grant JSON the member installs with `network accept`.
 fn network_grant(mem: &MemCli, args: &[String]) -> ExitCode {
     let Some(subject) = args.get(2) else {
-        eprintln!("usage: concierge-plugin network grant <subject-id> --namespace <ns> --ops <a,b>");
+        eprintln!(
+            "usage: concierge-plugin network grant <subject-id> --namespace <ns> --ops <a,b>"
+        );
         return ExitCode::from(2);
     };
     let Some(descriptor) = mem.networks().ok().and_then(|n| n.into_iter().next()) else {
@@ -973,16 +1193,35 @@ fn network_grant(mem: &MemCli, args: &[String]) -> ExitCode {
     };
     let ops = match parse_operations(&flag_value(args, "--ops").unwrap_or_default()) {
         Ok(ops) if !ops.is_empty() => ops,
-        _ => { eprintln!("need --ops <comma-separated ops, e.g. sync_read,sync_write>"); return ExitCode::from(2); }
+        _ => {
+            eprintln!("need --ops <comma-separated ops, e.g. sync_read,sync_write>");
+            return ExitCode::from(2);
+        }
     };
-    match mem.grant_capability(&descriptor.network_id, subject, concierge_core::SubjectKind::Device, &namespace, ops) {
+    match mem.grant_capability(
+        &descriptor.network_id,
+        subject,
+        concierge_core::SubjectKind::Device,
+        &namespace,
+        ops,
+    ) {
         Ok((membership, capability)) => {
-            let grant = concierge_core::PairingGrant { descriptor, membership, capabilities: vec![capability] };
+            let grant = concierge_core::PairingGrant {
+                descriptor,
+                membership,
+                capabilities: vec![capability],
+            };
             eprintln!("# grant for {subject} — send to the member: `network accept <grant.json>`");
-            println!("{}", serde_json::to_string_pretty(&grant).unwrap_or_default());
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&grant).unwrap_or_default()
+            );
             ExitCode::SUCCESS
         }
-        Err(e) => { eprintln!("grant failed: {e}"); ExitCode::FAILURE }
+        Err(e) => {
+            eprintln!("grant failed: {e}");
+            ExitCode::FAILURE
+        }
     }
 }
 
@@ -1002,12 +1241,18 @@ fn network_revoke(mem: &MemCli, args: &[String]) -> ExitCode {
     match mem.revoke(&descriptor.network_id, subject) {
         Ok(advanced) => {
             println!("revoked {subject}");
-            println!("  membership epoch advanced to {}", advanced.membership_epoch);
+            println!(
+                "  membership epoch advanced to {}",
+                advanced.membership_epoch
+            );
             println!("  re-grant remaining members at the new epoch with `network grant`");
             println!("  (prospective: this does not recall data the removed device already holds)");
             ExitCode::SUCCESS
         }
-        Err(e) => { eprintln!("revoke failed: {e}"); ExitCode::FAILURE }
+        Err(e) => {
+            eprintln!("revoke failed: {e}");
+            ExitCode::FAILURE
+        }
     }
 }
 
@@ -1037,7 +1282,9 @@ fn cmd_sidekick(args: &[String]) -> ExitCode {
                         "sidekick enabled — private node launching (running={}, operational={})",
                         s.node_running, s.operational
                     );
-                    println!("(the node may take a few seconds to come up; re-run `sidekick status`)");
+                    println!(
+                        "(the node may take a few seconds to come up; re-run `sidekick status`)"
+                    );
                     ExitCode::SUCCESS
                 }
                 Err(e) => {
@@ -1070,7 +1317,8 @@ fn cmd_sidekick(args: &[String]) -> ExitCode {
 fn cmd_quarantine(args: &[String]) -> ExitCode {
     let mem = MemCli::new(workdir());
     let resolve = |target: &str| -> Cid {
-        mem.resolve(target).unwrap_or_else(|_| Cid(target.to_string()))
+        mem.resolve(target)
+            .unwrap_or_else(|_| Cid(target.to_string()))
     };
     match args.get(1).map(String::as_str) {
         Some("list") | None => match mem.quarantine_registry() {
@@ -1094,7 +1342,11 @@ fn cmd_quarantine(args: &[String]) -> ExitCode {
                 eprintln!("usage: concierge-plugin quarantine add <cid|name> [reason…]");
                 return ExitCode::from(2);
             };
-            let reason = if args.len() > 3 { args[3..].join(" ") } else { "manual".to_string() };
+            let reason = if args.len() > 3 {
+                args[3..].join(" ")
+            } else {
+                "manual".to_string()
+            };
             match mem.quarantine_cid(&resolve(target), &reason) {
                 Ok(()) => {
                     println!("quarantined {target} — withheld from relay/surfacing (reversible)");
@@ -1171,7 +1423,10 @@ fn cmd_synthesis(args: &[String]) -> ExitCode {
                 Ok((text, provenance)) => {
                     // The thread text is for the host model to summarize; the
                     // provenance CIDs are what `record` should link back to.
-                    eprintln!("# {} messages — summarize on the host, then `synthesis record`", provenance.len());
+                    eprintln!(
+                        "# {} messages — summarize on the host, then `synthesis record`",
+                        provenance.len()
+                    );
                     println!("{text}");
                     ExitCode::SUCCESS
                 }
@@ -1189,7 +1444,9 @@ fn cmd_synthesis(args: &[String]) -> ExitCode {
             let summary = args.get(3..).map(|s| s.join(" ")).unwrap_or_default();
             if summary.trim().is_empty() {
                 eprintln!("usage: concierge-plugin synthesis record <room> <host-summary…>");
-                eprintln!("(the summary must come from the host model — the node does no generation)");
+                eprintln!(
+                    "(the summary must come from the host model — the node does no generation)"
+                );
                 return ExitCode::from(2);
             }
             let provenance = match concierge_core::assemble_thread(&mem, room) {
@@ -1202,7 +1459,10 @@ fn cmd_synthesis(args: &[String]) -> ExitCode {
             match concierge_core::record_synthesis(&mem, room, &summary, &provenance) {
                 Ok(cid) => {
                     println!("{}", cid.0);
-                    println!("recorded host synthesis of `{room}` ({} messages) as a Decision node", provenance.len());
+                    println!(
+                        "recorded host synthesis of `{room}` ({} messages) as a Decision node",
+                        provenance.len()
+                    );
                     ExitCode::SUCCESS
                 }
                 Err(e) => {
@@ -1336,12 +1596,18 @@ fn run_import<I: Importer>(importer: I, path: &str, dry_run: bool) -> ExitCode {
     finish_ingest(&report)
 }
 
-/// `ingest <file.jsonl>` — read a JSONL event stream from a file into IPLD memory.
+/// `ingest <file.jsonl|->` — read a JSONL event stream into IPLD memory.
+/// `-` reads stdin (the pipe path every adapter documents: `adapter | ingest -`).
 fn cmd_ingest(path: Option<&str>) -> ExitCode {
     let Some(path) = path else {
-        eprintln!("usage: concierge-plugin ingest <file.jsonl>");
+        eprintln!("usage: concierge-plugin ingest <file.jsonl|->   (- = stdin)");
         return ExitCode::from(2);
     };
+    let mem = MemCli::new(workdir());
+    if path == "-" {
+        let report = ingest(std::io::stdin().lock(), &mem, &workdir());
+        return finish_ingest(&report);
+    }
     let file = match File::open(path) {
         Ok(file) => file,
         Err(e) => {
@@ -1349,7 +1615,6 @@ fn cmd_ingest(path: Option<&str>) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    let mem = MemCli::new(workdir());
     let report = ingest(BufReader::new(file), &mem, &workdir());
     finish_ingest(&report)
 }
@@ -1417,7 +1682,7 @@ fn cmd_claude_code(args: &[String]) -> ExitCode {
     match args.get(1).map(String::as_str) {
         Some("backfill") => claude_code_backfill(&projects_dir),
         Some("watch") => claude_code_watch(&projects_dir),
-        Some("inject") => claude_code_inject(&args),
+        Some("inject") => claude_code_inject(args),
         _ => {
             eprintln!("usage: concierge-plugin claude-code <backfill|watch|inject> [projects-dir]");
             ExitCode::from(2)
@@ -1435,7 +1700,11 @@ fn claude_code_inject(args: &[String]) -> ExitCode {
     use concierge_core::OutboundEvent;
     let mem = MemCli::new(workdir());
     let peek = args.iter().any(|a| a == "--peek");
-    let entries = match if peek { mem.outbox_peek() } else { mem.outbox_drain() } {
+    let entries = match if peek {
+        mem.outbox_peek()
+    } else {
+        mem.outbox_drain()
+    } {
         Ok(entries) => entries,
         Err(e) => {
             eprintln!("inject failed: {e}");
@@ -1499,7 +1768,10 @@ fn claude_code_backfill(projects_dir: &std::path::Path) -> ExitCode {
     let base = workdir();
     let sessions = discovery::enumerate_sessions(projects_dir);
     if sessions.is_empty() {
-        println!("no Claude Code sessions found under {}", projects_dir.display());
+        println!(
+            "no Claude Code sessions found under {}",
+            projects_dir.display()
+        );
         return ExitCode::SUCCESS;
     }
     let mut total_events = 0usize;
@@ -1572,7 +1844,10 @@ fn claude_code_watch(projects_dir: &std::path::Path) -> ExitCode {
                 Ok((report, new_offset)) => {
                     offsets.insert(path.clone(), new_offset);
                     if report.events > 0 {
-                        let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("session");
+                        let name = path
+                            .file_name()
+                            .and_then(|n| n.to_str())
+                            .unwrap_or("session");
                         println!("+{} events  {name}", report.events);
                     }
                 }

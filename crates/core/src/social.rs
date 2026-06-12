@@ -37,12 +37,7 @@ impl SocialBook {
 
     /// Persist the book (creating the parent dir if needed).
     pub fn save(&self, path: &Path) -> Result<(), String> {
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent).map_err(|e| format!("social book dir: {e}"))?;
-        }
-        let text =
-            serde_json::to_string_pretty(self).map_err(|e| format!("serialize social: {e}"))?;
-        std::fs::write(path, text).map_err(|e| format!("write social book: {e}"))
+        crate::state::save_json(path, self).map_err(|e| e.to_string())
     }
 
     pub fn follow(&mut self, agent_id: &str) {
@@ -60,6 +55,11 @@ impl SocialBook {
 
     pub fn nickname_of(&self, agent_id: &str) -> Option<&String> {
         self.nicknames.get(agent_id)
+    }
+
+    /// Remove a petname (returns whether one was set).
+    pub fn remove_nickname(&mut self, agent_id: &str) -> bool {
+        self.nicknames.remove(agent_id).is_some()
     }
 
     pub fn is_following(&self, agent_id: &str) -> bool {

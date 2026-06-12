@@ -55,7 +55,11 @@ impl Operation {
     /// (plan §Agent defaults): read-only, no write/admin/delegation/publication.
     /// Widening beyond this requires explicit user approval.
     pub fn agent_defaults() -> Vec<Operation> {
-        vec![Operation::Discover, Operation::SyncRead, Operation::MessageReceive]
+        vec![
+            Operation::Discover,
+            Operation::SyncRead,
+            Operation::MessageReceive,
+        ]
     }
 }
 
@@ -204,7 +208,11 @@ impl Capability {
         if !self.namespace.covers(&child.namespace) {
             return Err(CapabilityError::ScopeEscalation);
         }
-        if !child.operations.iter().all(|op| self.operations.contains(op)) {
+        if !child
+            .operations
+            .iter()
+            .all(|op| self.operations.contains(op))
+        {
             return Err(CapabilityError::PrivilegeEscalation);
         }
         if child.expires_at > self.expires_at {
@@ -279,13 +287,20 @@ pub fn verify_capability_with_logs(
     root_logs: &[crate::recovery::UserIdentityLog],
 ) -> Result<(), CapabilityError> {
     if cap.version != CAPABILITY_VERSION {
-        return Err(CapabilityError::Version { found: cap.version, expected: CAPABILITY_VERSION });
+        return Err(CapabilityError::Version {
+            found: cap.version,
+            expected: CAPABILITY_VERSION,
+        });
     }
     if cap.namespace.network_id != descriptor.network_id {
         return Err(CapabilityError::WrongNetwork);
     }
-    if !verify_sig(&AgentId(cap.issuer_id.clone()), &cap.signing_bytes(), &cap.signature)
-        .map_err(CapabilityError::Malformed)?
+    if !verify_sig(
+        &AgentId(cap.issuer_id.clone()),
+        &cap.signing_bytes(),
+        &cap.signature,
+    )
+    .map_err(CapabilityError::Malformed)?
     {
         return Err(CapabilityError::BadSignature);
     }
@@ -306,11 +321,16 @@ pub fn verify_capability_with_logs(
     }
     // A root user may grant anything in its network — chain terminates here. A
     // root that has rotated/recovered its key is recognized via `root_logs`.
-    if descriptor.resolved_root_keys(root_logs).contains(&cap.issuer_id) {
+    if descriptor
+        .resolved_root_keys(root_logs)
+        .contains(&cap.issuer_id)
+    {
         return Ok(());
     }
     // Otherwise the issuer must hold a delegable parent that authorizes this grant.
-    let (parent, rest) = chain.split_first().ok_or(CapabilityError::NoAuthorizingParent)?;
+    let (parent, rest) = chain
+        .split_first()
+        .ok_or(CapabilityError::NoAuthorizingParent)?;
     if parent.subject_id != cap.issuer_id {
         return Err(CapabilityError::BrokenChain);
     }
@@ -343,16 +363,28 @@ mod tests {
         let device = Identity::generate();
         let project = ns(&descriptor, NamespaceScope::Project("atlas".into()));
         let cap = Capability::issue(
-            &root, project.clone(), &device.agent_id().0,
-            vec![Operation::SyncRead], 1000, DAY, 0, false,
+            &root,
+            project.clone(),
+            &device.agent_id().0,
+            vec![Operation::SyncRead],
+            1000,
+            DAY,
+            0,
+            false,
         );
         assert!(verify_capability(&cap, &[], &descriptor, 2000, &RevocationSet::new()).is_ok());
         // Authorizes read on its own namespace…
         assert!(cap.authorizes(Operation::SyncRead, &project));
         // …but not write (read/write are separate), nor another namespace.
-        assert!(!cap.authorizes(Operation::SyncWrite, &project), "read never implies write");
+        assert!(
+            !cap.authorizes(Operation::SyncWrite, &project),
+            "read never implies write"
+        );
         let other = ns(&descriptor, NamespaceScope::Project("other".into()));
-        assert!(!cap.authorizes(Operation::SyncRead, &other), "scope is exact");
+        assert!(
+            !cap.authorizes(Operation::SyncRead, &other),
+            "scope is exact"
+        );
     }
 
     #[test]
@@ -364,19 +396,43 @@ mod tests {
 
         // Root grants the admin device a delegable read+write+grant capability.
         let admin_cap = Capability::issue(
-            &root, project.clone(), &admin.agent_id().0,
-            vec![Operation::SyncRead, Operation::SyncWrite, Operation::CapabilityGrant],
-            1000, DAY, 0, true,
+            &root,
+            project.clone(),
+            &admin.agent_id().0,
+            vec![
+                Operation::SyncRead,
+                Operation::SyncWrite,
+                Operation::CapabilityGrant,
+            ],
+            1000,
+            DAY,
+            0,
+            true,
         );
         // Admin delegates a read-only subset to an agent.
         let agent_cap = Capability::issue(
-            &admin, project.clone(), &agent.agent_id().0,
-            vec![Operation::SyncRead], 1000, HOUR, 0, false,
+            &admin,
+            project.clone(),
+            &agent.agent_id().0,
+            vec![Operation::SyncRead],
+            1000,
+            HOUR,
+            0,
+            false,
         );
         // The agent capability verifies through the admin parent up to the root.
-        assert!(verify_capability(&agent_cap, &[admin_cap.clone()], &descriptor, 2000, &RevocationSet::new()).is_ok());
+        assert!(verify_capability(
+            &agent_cap,
+            std::slice::from_ref(&admin_cap),
+            &descriptor,
+            2000,
+            &RevocationSet::new()
+        )
+        .is_ok());
         // The admin capability itself verifies directly (root-issued).
-        assert!(verify_capability(&admin_cap, &[], &descriptor, 2000, &RevocationSet::new()).is_ok());
+        assert!(
+            verify_capability(&admin_cap, &[], &descriptor, 2000, &RevocationSet::new()).is_ok()
+        );
     }
 
     #[test]
@@ -388,16 +444,34 @@ mod tests {
 
         // Admin holds read-only + grant (but NOT write), delegable.
         let admin_cap = Capability::issue(
-            &root, project.clone(), &admin.agent_id().0,
-            vec![Operation::SyncRead, Operation::CapabilityGrant], 1000, DAY, 0, true,
+            &root,
+            project.clone(),
+            &admin.agent_id().0,
+            vec![Operation::SyncRead, Operation::CapabilityGrant],
+            1000,
+            DAY,
+            0,
+            true,
         );
         // Admin tries to grant WRITE it does not hold → privilege escalation.
         let forged = Capability::issue(
-            &admin, project.clone(), &attacker_subject.agent_id().0,
-            vec![Operation::SyncWrite], 1000, HOUR, 0, false,
+            &admin,
+            project.clone(),
+            &attacker_subject.agent_id().0,
+            vec![Operation::SyncWrite],
+            1000,
+            HOUR,
+            0,
+            false,
         );
         assert_eq!(
-            verify_capability(&forged, &[admin_cap], &descriptor, 2000, &RevocationSet::new()),
+            verify_capability(
+                &forged,
+                &[admin_cap],
+                &descriptor,
+                2000,
+                &RevocationSet::new()
+            ),
             Err(CapabilityError::PrivilegeEscalation),
         );
     }
@@ -410,15 +484,33 @@ mod tests {
         let project = ns(&descriptor, NamespaceScope::Project("atlas".into()));
         // Holder has grant op but is NOT delegable.
         let holder_cap = Capability::issue(
-            &root, project.clone(), &holder.agent_id().0,
-            vec![Operation::SyncRead, Operation::CapabilityGrant], 1000, DAY, 0, false,
+            &root,
+            project.clone(),
+            &holder.agent_id().0,
+            vec![Operation::SyncRead, Operation::CapabilityGrant],
+            1000,
+            DAY,
+            0,
+            false,
         );
         let child = Capability::issue(
-            &holder, project.clone(), &agent.agent_id().0,
-            vec![Operation::SyncRead], 1000, HOUR, 0, false,
+            &holder,
+            project.clone(),
+            &agent.agent_id().0,
+            vec![Operation::SyncRead],
+            1000,
+            HOUR,
+            0,
+            false,
         );
         assert_eq!(
-            verify_capability(&child, &[holder_cap], &descriptor, 2000, &RevocationSet::new()),
+            verify_capability(
+                &child,
+                &[holder_cap],
+                &descriptor,
+                2000,
+                &RevocationSet::new()
+            ),
             Err(CapabilityError::NotDelegable),
         );
     }
@@ -431,16 +523,35 @@ mod tests {
         // Admin holds grant on ONE project only.
         let admin_ns = ns(&descriptor, NamespaceScope::Project("atlas".into()));
         let admin_cap = Capability::issue(
-            &root, admin_ns, &admin.agent_id().0,
-            vec![Operation::SyncRead, Operation::CapabilityGrant], 1000, DAY, 0, true,
+            &root,
+            admin_ns,
+            &admin.agent_id().0,
+            vec![Operation::SyncRead, Operation::CapabilityGrant],
+            1000,
+            DAY,
+            0,
+            true,
         );
         // Admin tries to grant on the WHOLE network.
         let all = ns(&descriptor, NamespaceScope::All);
         let forged = Capability::issue(
-            &admin, all, &agent.agent_id().0, vec![Operation::SyncRead], 1000, HOUR, 0, false,
+            &admin,
+            all,
+            &agent.agent_id().0,
+            vec![Operation::SyncRead],
+            1000,
+            HOUR,
+            0,
+            false,
         );
         assert_eq!(
-            verify_capability(&forged, &[admin_cap], &descriptor, 2000, &RevocationSet::new()),
+            verify_capability(
+                &forged,
+                &[admin_cap],
+                &descriptor,
+                2000,
+                &RevocationSet::new()
+            ),
             Err(CapabilityError::ScopeEscalation),
         );
     }
@@ -452,7 +563,14 @@ mod tests {
         let agent = Identity::generate();
         let project = ns(&descriptor, NamespaceScope::Project("atlas".into()));
         let cap = Capability::issue(
-            &outsider, project, &agent.agent_id().0, vec![Operation::SyncRead], 1000, HOUR, 0, false,
+            &outsider,
+            project,
+            &agent.agent_id().0,
+            vec![Operation::SyncRead],
+            1000,
+            HOUR,
+            0,
+            false,
         );
         assert_eq!(
             verify_capability(&cap, &[], &descriptor, 2000, &RevocationSet::new()),
@@ -467,11 +585,24 @@ mod tests {
         let agent = Identity::generate();
         let project = ns(&descriptor, NamespaceScope::Project("atlas".into()));
         let admin_cap = Capability::issue(
-            &root, project.clone(), &admin.agent_id().0,
-            vec![Operation::SyncRead, Operation::CapabilityGrant], 1000, DAY, 0, true,
+            &root,
+            project.clone(),
+            &admin.agent_id().0,
+            vec![Operation::SyncRead, Operation::CapabilityGrant],
+            1000,
+            DAY,
+            0,
+            true,
         );
         let agent_cap = Capability::issue(
-            &admin, project, &agent.agent_id().0, vec![Operation::SyncRead], 1000, HOUR, 0, false,
+            &admin,
+            project,
+            &agent.agent_id().0,
+            vec![Operation::SyncRead],
+            1000,
+            HOUR,
+            0,
+            false,
         );
         let mut revoked = RevocationSet::new();
         revoked.revoke(&admin.agent_id().0);
@@ -486,9 +617,18 @@ mod tests {
     fn agent_defaults_are_least_privilege_and_carry_no_publish_authority() {
         let defaults = Operation::agent_defaults();
         assert!(defaults.contains(&Operation::SyncRead));
-        assert!(!defaults.contains(&Operation::SyncWrite), "agents are read-only by default");
-        assert!(!defaults.contains(&Operation::CapabilityGrant), "no delegation by default");
-        assert!(!defaults.contains(&Operation::MemberInvite), "no member admin by default");
+        assert!(
+            !defaults.contains(&Operation::SyncWrite),
+            "agents are read-only by default"
+        );
+        assert!(
+            !defaults.contains(&Operation::CapabilityGrant),
+            "no delegation by default"
+        );
+        assert!(
+            !defaults.contains(&Operation::MemberInvite),
+            "no member admin by default"
+        );
         // The invariant: no operation grants public publication. The strongest is a
         // *request* to open the local review flow — never the publish itself.
         assert!(!defaults.contains(&Operation::RequestPublicationReview));
@@ -501,8 +641,14 @@ mod tests {
         assert!(project.canonical().ends_with(":project:atlas"));
         let all = ns(&descriptor, NamespaceScope::All);
         assert!(all.canonical().ends_with(":*"));
-        assert!(all.covers(&project), "the whole-network scope covers a project");
-        assert!(!project.covers(&all), "a project does not cover the whole network");
+        assert!(
+            all.covers(&project),
+            "the whole-network scope covers a project"
+        );
+        assert!(
+            !project.covers(&all),
+            "a project does not cover the whole network"
+        );
         // canonical ⇄ parse round-trips every scope.
         for scope in [
             NamespaceScope::All,

@@ -105,7 +105,11 @@ pub enum SubjectKind {
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum MembershipError {
     #[error("unsupported {what} version {found} (this build understands {expected})")]
-    Version { what: &'static str, found: u32, expected: u32 },
+    Version {
+        what: &'static str,
+        found: u32,
+        expected: u32,
+    },
     #[error("signature does not verify for {what}")]
     BadSignature { what: &'static str },
     #[error("certificate network does not match the descriptor")]
@@ -185,7 +189,9 @@ impl NetworkDescriptor {
         if signed_by_a_root {
             Ok(())
         } else {
-            Err(MembershipError::BadSignature { what: "network descriptor" })
+            Err(MembershipError::BadSignature {
+                what: "network descriptor",
+            })
         }
     }
 
@@ -358,12 +364,18 @@ impl RevocationRecord {
         if !descriptor.is_root(&issuer) {
             return Err(MembershipError::UntrustedIssuer);
         }
-        if verify_sig(&AgentId(self.issuer_id.clone()), &self.signing_bytes(), &self.signature)
-            .unwrap_or(false)
+        if verify_sig(
+            &AgentId(self.issuer_id.clone()),
+            &self.signing_bytes(),
+            &self.signature,
+        )
+        .unwrap_or(false)
         {
             Ok(())
         } else {
-            Err(MembershipError::BadSignature { what: "revocation record" })
+            Err(MembershipError::BadSignature {
+                what: "revocation record",
+            })
         }
     }
 }
@@ -405,13 +417,22 @@ pub fn verify_membership_with_logs(
     }
     // The issuer must be a root user (the only authority that chains to the
     // descriptor) — its genesis key, or its current active key after a rotation.
-    if !descriptor.resolved_root_keys(root_logs).contains(&cert.issuer_id) {
+    if !descriptor
+        .resolved_root_keys(root_logs)
+        .contains(&cert.issuer_id)
+    {
         return Err(MembershipError::UntrustedIssuer);
     }
-    if !verify_sig(&AgentId(cert.issuer_id.clone()), &cert.signing_bytes(), &cert.signature)
-        .map_err(MembershipError::Malformed)?
+    if !verify_sig(
+        &AgentId(cert.issuer_id.clone()),
+        &cert.signing_bytes(),
+        &cert.signature,
+    )
+    .map_err(MembershipError::Malformed)?
     {
-        return Err(MembershipError::BadSignature { what: "membership certificate" });
+        return Err(MembershipError::BadSignature {
+            what: "membership certificate",
+        });
     }
     if now < cert.issued_at {
         return Err(MembershipError::NotYetValid);
@@ -458,7 +479,10 @@ impl MemCli {
     /// `security/user-identity/`. Distinct from the install DeviceID
     /// (`identity()`) — design rule 1: never conflate or copy the root key.
     pub fn user_identity(&self) -> CoreResult<Identity> {
-        let path = self.ensure_security_dir()?.join("user-identity").join("user.key");
+        let path = self
+            .ensure_security_dir()?
+            .join("user-identity")
+            .join("user.key");
         Identity::load_or_create(&path).map_err(Error::Io)
     }
 
@@ -474,7 +498,8 @@ impl MemCli {
         let user = self.user_identity()?;
         let descriptor = NetworkDescriptor::create(&user, name, now_secs());
         let dir = self.networks_dir()?;
-        std::fs::create_dir_all(&dir).map_err(|e| Error::Io(format!("create networks dir: {e}")))?;
+        std::fs::create_dir_all(&dir)
+            .map_err(|e| Error::Io(format!("create networks dir: {e}")))?;
         let desc_path = dir.join(format!("{}.descriptor.json", descriptor.network_id.0));
         write_json(&desc_path, &descriptor)?;
 
@@ -490,7 +515,10 @@ impl MemCli {
             descriptor.membership_epoch,
             vec!["sync_read".to_string(), "sync_write".to_string()],
         );
-        write_json(&dir.join(format!("{}.device-cert.json", descriptor.network_id.0)), &cert)?;
+        write_json(
+            &dir.join(format!("{}.device-cert.json", descriptor.network_id.0)),
+            &cert,
+        )?;
         Ok(descriptor)
     }
 
@@ -519,8 +547,13 @@ impl MemCli {
     }
 
     /// This device's membership certificate for `network_id`, if it holds one.
-    pub fn device_membership(&self, network_id: &NetworkId) -> CoreResult<Option<MembershipCertificate>> {
-        let path = self.networks_dir()?.join(format!("{}.device-cert.json", network_id.0));
+    pub fn device_membership(
+        &self,
+        network_id: &NetworkId,
+    ) -> CoreResult<Option<MembershipCertificate>> {
+        let path = self
+            .networks_dir()?
+            .join(format!("{}.device-cert.json", network_id.0));
         match std::fs::read_to_string(&path) {
             Ok(text) => serde_json::from_str(&text)
                 .map(Some)
@@ -570,13 +603,31 @@ mod tests {
         let descriptor = NetworkDescriptor::create(&root, "personal", 1000);
         let device_a = Identity::generate();
         let device_b = Identity::generate();
-        assert_ne!(device_a.agent_id(), device_b.agent_id(), "distinct device keys");
+        assert_ne!(
+            device_a.agent_id(),
+            device_b.agent_id(),
+            "distinct device keys"
+        );
 
         let cert_a = MembershipCertificate::issue(
-            &root, &descriptor.network_id, &device_a.agent_id().0, SubjectKind::Device, 1000, 24 * HOUR, 0, vec![],
+            &root,
+            &descriptor.network_id,
+            &device_a.agent_id().0,
+            SubjectKind::Device,
+            1000,
+            24 * HOUR,
+            0,
+            vec![],
         );
         let cert_b = MembershipCertificate::issue(
-            &root, &descriptor.network_id, &device_b.agent_id().0, SubjectKind::Device, 1000, 24 * HOUR, 0, vec![],
+            &root,
+            &descriptor.network_id,
+            &device_b.agent_id().0,
+            SubjectKind::Device,
+            1000,
+            24 * HOUR,
+            0,
+            vec![],
         );
         let revoked = RevocationSet::new();
         // Each proves membership from material it holds — no UserID secret, no
@@ -593,7 +644,10 @@ mod tests {
         assert_eq!(d1.network_id, d2.network_id, "derived id is deterministic");
         let d3 = NetworkDescriptor::create(&root, "team", 43);
         assert_ne!(d1.network_id, d3.network_id, "time disambiguates");
-        assert!(d1.verify().is_ok(), "a founder-signed descriptor self-verifies");
+        assert!(
+            d1.verify().is_ok(),
+            "a founder-signed descriptor self-verifies"
+        );
     }
 
     #[test]
@@ -601,7 +655,12 @@ mod tests {
         let (_root, mut descriptor, _device, _cert) = founded_network();
         // Tamper: rename the network after signing.
         descriptor.name = "evil-rename".to_string();
-        assert_eq!(descriptor.verify(), Err(MembershipError::BadSignature { what: "network descriptor" }));
+        assert_eq!(
+            descriptor.verify(),
+            Err(MembershipError::BadSignature {
+                what: "network descriptor"
+            })
+        );
     }
 
     #[test]
@@ -610,7 +669,14 @@ mod tests {
         // An outsider (not a root user) issues a cert for the same device.
         let outsider = Identity::generate();
         let forged = MembershipCertificate::issue(
-            &outsider, &descriptor.network_id, &device.agent_id().0, SubjectKind::Device, 1000, 24 * HOUR, 0, vec![],
+            &outsider,
+            &descriptor.network_id,
+            &device.agent_id().0,
+            SubjectKind::Device,
+            1000,
+            24 * HOUR,
+            0,
+            vec![],
         );
         assert_eq!(
             verify_membership(&forged, &descriptor, 2000, &RevocationSet::new()),
@@ -625,7 +691,9 @@ mod tests {
         cert.capabilities.push("sync_write".to_string()); // privilege escalation attempt
         assert_eq!(
             verify_membership(&cert, &descriptor, 2000, &RevocationSet::new()),
-            Err(MembershipError::BadSignature { what: "membership certificate" }),
+            Err(MembershipError::BadSignature {
+                what: "membership certificate"
+            }),
         );
     }
 
@@ -634,9 +702,15 @@ mod tests {
         let (_root, descriptor, _device, cert) = founded_network();
         let revoked = RevocationSet::new();
         // issued_at = 1000, expires_at = 1000 + 24h.
-        assert_eq!(verify_membership(&cert, &descriptor, 999, &revoked), Err(MembershipError::NotYetValid));
+        assert_eq!(
+            verify_membership(&cert, &descriptor, 999, &revoked),
+            Err(MembershipError::NotYetValid)
+        );
         assert!(verify_membership(&cert, &descriptor, 1000 + HOUR, &revoked).is_ok());
-        assert_eq!(verify_membership(&cert, &descriptor, 1000 + 24 * HOUR, &revoked), Err(MembershipError::Expired));
+        assert_eq!(
+            verify_membership(&cert, &descriptor, 1000 + 24 * HOUR, &revoked),
+            Err(MembershipError::Expired)
+        );
     }
 
     #[test]
@@ -661,11 +735,21 @@ mod tests {
             Err(MembershipError::Revoked),
         );
         // The signed revocation record itself chains to a root user.
-        let record = RevocationRecord::issue(&root, &descriptor.network_id, &device.agent_id().0, 1, 1500);
+        let record =
+            RevocationRecord::issue(&root, &descriptor.network_id, &device.agent_id().0, 1, 1500);
         assert!(record.verify(&descriptor).is_ok());
         let outsider = Identity::generate();
-        let forged = RevocationRecord::issue(&outsider, &descriptor.network_id, &device.agent_id().0, 1, 1500);
-        assert_eq!(forged.verify(&descriptor), Err(MembershipError::UntrustedIssuer));
+        let forged = RevocationRecord::issue(
+            &outsider,
+            &descriptor.network_id,
+            &device.agent_id().0,
+            1,
+            1500,
+        );
+        assert_eq!(
+            forged.verify(&descriptor),
+            Err(MembershipError::UntrustedIssuer)
+        );
     }
 
     #[test]
@@ -677,13 +761,23 @@ mod tests {
         // The UserID (root) is distinct from this install's DeviceID — never copied.
         let user = mem.user_identity().unwrap();
         let device = mem.identity().unwrap();
-        assert_ne!(user.agent_id().0, device.agent_id().0, "root UserID ≠ DeviceID");
-        assert!(descriptor.is_root(&user.agent_id().into()), "the founder is a root user");
+        assert_ne!(
+            user.agent_id().0,
+            device.agent_id().0,
+            "root UserID ≠ DeviceID"
+        );
+        assert!(
+            descriptor.is_root(&user.agent_id().into()),
+            "the founder is a root user"
+        );
 
         // Reload from disk and verify the device's membership chains to the network.
         let networks = mem.networks().unwrap();
         assert_eq!(networks.len(), 1);
-        let cert = mem.device_membership(&descriptor.network_id).unwrap().expect("device cert");
+        let cert = mem
+            .device_membership(&descriptor.network_id)
+            .unwrap()
+            .expect("device cert");
         assert_eq!(cert.subject_id, device.agent_id().0);
         assert!(verify_membership(&cert, &descriptor, now_secs(), &RevocationSet::new()).is_ok());
     }
@@ -693,7 +787,14 @@ mod tests {
         let (root, descriptor, device, _cert) = founded_network();
         let other = NetworkDescriptor::create(&root, "other-net", 9999);
         let cert_for_other = MembershipCertificate::issue(
-            &root, &other.network_id, &device.agent_id().0, SubjectKind::Device, 1000, 24 * HOUR, 0, vec![],
+            &root,
+            &other.network_id,
+            &device.agent_id().0,
+            SubjectKind::Device,
+            1000,
+            24 * HOUR,
+            0,
+            vec![],
         );
         assert_eq!(
             verify_membership(&cert_for_other, &descriptor, 2000, &RevocationSet::new()),

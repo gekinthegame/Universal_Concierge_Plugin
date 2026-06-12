@@ -67,12 +67,7 @@ impl<B: Blockstore, C: Clock> Store<B, C> {
     /// manifests) whose timestamp should be a deterministic function of their
     /// content — so re-deriving them yields the *same* CID (idempotency) rather
     /// than a new one each second.
-    pub fn put_node_at(
-        &self,
-        node: Node,
-        source: Source,
-        created_at: u64,
-    ) -> anyhow::Result<Cid> {
+    pub fn put_node_at(&self, node: Node, source: Source, created_at: u64) -> anyhow::Result<Cid> {
         self.put_node_with_edges_at(node, source, Vec::new(), created_at)
     }
 

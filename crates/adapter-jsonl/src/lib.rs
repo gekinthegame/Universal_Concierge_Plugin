@@ -391,7 +391,10 @@ fn handle<B: CoreBinding>(
     }
     // Cross-run idempotency: an event already in its day's HAMT is a no-op, so a
     // re-ingest of a growing session file doesn't reprocess prior events.
-    if binding.day_contains(&date, &ekey).map_err(|e| e.to_string())? {
+    if binding
+        .day_contains(&date, &ekey)
+        .map_err(|e| e.to_string())?
+    {
         return Ok(());
     }
 

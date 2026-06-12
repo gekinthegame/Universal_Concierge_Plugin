@@ -96,7 +96,11 @@ impl MemCli {
     /// is now stale), persists both the advanced descriptor and the record, and logs
     /// a security event. Returns the advanced descriptor. Prospective only — see the
     /// module's honest-limits note.
-    pub fn revoke(&self, network_id: &NetworkId, subject_id: &str) -> CoreResult<NetworkDescriptor> {
+    pub fn revoke(
+        &self,
+        network_id: &NetworkId,
+        subject_id: &str,
+    ) -> CoreResult<NetworkDescriptor> {
         self.ensure_security_dir()?;
         let mut descriptor = self.network_descriptor(network_id)?;
         let root = self.user_identity()?;
@@ -122,7 +126,10 @@ impl MemCli {
         let _ = self.append_security_event_unlocked(
             "subject_revoked",
             &Cid(subject_id.to_string()),
-            &format!("network={} new_epoch={}", network_id.0, descriptor.membership_epoch),
+            &format!(
+                "network={} new_epoch={}",
+                network_id.0, descriptor.membership_epoch
+            ),
         );
         Ok(descriptor)
     }
@@ -160,7 +167,7 @@ impl MemCli {
             now,
             DEFAULT_CERT_TTL_SECS,
             descriptor.membership_epoch,
-            operations.iter().map(|op| op_name(op)).collect(),
+            operations.iter().map(op_name).collect(),
         );
         let capability = Capability::issue(
             &root,
@@ -187,7 +194,8 @@ fn write_json<T: Serialize>(path: &std::path::Path, value: &T) -> CoreResult<()>
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| Error::Io(format!("create dir: {e}")))?;
     }
-    let text = serde_json::to_string_pretty(value).map_err(|e| Error::Io(format!("serialize: {e}")))?;
+    let text =
+        serde_json::to_string_pretty(value).map_err(|e| Error::Io(format!("serialize: {e}")))?;
     std::fs::write(path, text).map_err(|e| Error::Io(format!("write {}: {e}", path.display())))
 }
 
@@ -206,50 +214,115 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let mem = MemCli::new(dir.path());
         let descriptor0 = mem.create_network("research-team").unwrap();
-        let ns = Namespace::new(descriptor0.network_id.clone(), NamespaceScope::Project("atlas".into()));
+        let ns = Namespace::new(
+            descriptor0.network_id.clone(),
+            NamespaceScope::Project("atlas".into()),
+        );
         let root = mem.user_identity().unwrap();
 
         // Two member devices, each a writer at epoch 0.
         let device_b = Identity::generate();
         let device_c = Identity::generate();
         let writer = |id: &str, epoch: u64| {
-            Capability::issue(&root, ns.clone(), id, vec![Operation::SyncRead, Operation::SyncWrite], 1000, DAY, epoch, false)
+            Capability::issue(
+                &root,
+                ns.clone(),
+                id,
+                vec![Operation::SyncRead, Operation::SyncWrite],
+                1000,
+                DAY,
+                epoch,
+                false,
+            )
         };
         let cap_b0 = writer(&device_b.agent_id().0, 0);
         let cap_c0 = writer(&device_c.agent_id().0, 0);
 
         // Both can write (sign a head record) at epoch 0.
         let none = RevocationSet::new();
-        let head_b0 = HeadRecord::create(&device_b, &descriptor0.network_id, &ns, vec!["bafyB".into()], 1, 0, 0, cap_b0.clone(), 1500);
+        let head_b0 = HeadRecord::create(
+            &device_b,
+            &descriptor0.network_id,
+            &ns,
+            vec!["bafyB".into()],
+            1,
+            0,
+            0,
+            cap_b0.clone(),
+            1500,
+        );
         assert!(verify_head_record(&head_b0, &descriptor0, 2000, &none).is_ok());
 
         // --- Revoke B ---
-        let descriptor1 = mem.revoke(&descriptor0.network_id, &device_b.agent_id().0).unwrap();
+        let descriptor1 = mem
+            .revoke(&descriptor0.network_id, &device_b.agent_id().0)
+            .unwrap();
         assert_eq!(descriptor1.membership_epoch, 1, "the epoch advanced");
         let revoked = mem.revocation_set(&descriptor0.network_id).unwrap();
         assert!(revoked.is_revoked(&device_b.agent_id().0));
 
         // B is cut off: its old write fails (stale epoch / revoked), and a fresh
         // capability issued *to B* is refused — it cannot obtain a new epoch.
-        assert!(verify_head_record(&head_b0, &descriptor1, 2000, &revoked).is_err(), "revoked device's old head rejected");
-        assert!(verify_capability(&cap_b0, &[], &descriptor1, 2000, &revoked).is_err(), "B's epoch-0 cap is now stale");
+        assert!(
+            verify_head_record(&head_b0, &descriptor1, 2000, &revoked).is_err(),
+            "revoked device's old head rejected"
+        );
+        assert!(
+            verify_capability(&cap_b0, &[], &descriptor1, 2000, &revoked).is_err(),
+            "B's epoch-0 cap is now stale"
+        );
         let cap_b1 = writer(&device_b.agent_id().0, 1); // someone tries to re-grant B at the new epoch
-        assert!(verify_capability(&cap_b1, &[], &descriptor1, 2000, &revoked).is_err(), "a revoked subject cannot hold any valid capability");
+        assert!(
+            verify_capability(&cap_b1, &[], &descriptor1, 2000, &revoked).is_err(),
+            "a revoked subject cannot hold any valid capability"
+        );
 
         // C keeps syncing: re-issued at the new epoch, its writes verify again.
         // (The grant stamps real wall-clock issue time, so verify at "now".)
-        assert!(verify_capability(&cap_c0, &[], &descriptor1, 2000, &revoked).is_err(), "C's old epoch-0 cap is also stale after rotation");
+        assert!(
+            verify_capability(&cap_c0, &[], &descriptor1, 2000, &revoked).is_err(),
+            "C's old epoch-0 cap is also stale after rotation"
+        );
         let (_cert_c1, cap_c1) = mem
-            .grant_capability(&descriptor0.network_id, &device_c.agent_id().0, SubjectKind::Device, &ns, vec![Operation::SyncRead, Operation::SyncWrite])
+            .grant_capability(
+                &descriptor0.network_id,
+                &device_c.agent_id().0,
+                SubjectKind::Device,
+                &ns,
+                vec![Operation::SyncRead, Operation::SyncWrite],
+            )
             .unwrap();
         let now = now_secs();
-        assert!(verify_capability(&cap_c1, &[], &descriptor1, now, &revoked).is_ok(), "remaining member re-issued at the new epoch");
-        let head_c1 = HeadRecord::create(&device_c, &descriptor1.network_id, &ns, vec!["bafyC".into()], 1, 1, 0, cap_c1, now);
-        assert!(verify_head_record(&head_c1, &descriptor1, now, &revoked).is_ok(), "remaining device continues syncing after rotation");
+        assert!(
+            verify_capability(&cap_c1, &[], &descriptor1, now, &revoked).is_ok(),
+            "remaining member re-issued at the new epoch"
+        );
+        let head_c1 = HeadRecord::create(
+            &device_c,
+            &descriptor1.network_id,
+            &ns,
+            vec!["bafyC".into()],
+            1,
+            1,
+            0,
+            cap_c1,
+            now,
+        );
+        assert!(
+            verify_head_record(&head_c1, &descriptor1, now, &revoked).is_ok(),
+            "remaining device continues syncing after rotation"
+        );
 
         // The grant flow itself refuses a revoked subject.
         assert!(
-            mem.grant_capability(&descriptor0.network_id, &device_b.agent_id().0, SubjectKind::Device, &ns, vec![Operation::SyncRead]).is_err(),
+            mem.grant_capability(
+                &descriptor0.network_id,
+                &device_b.agent_id().0,
+                SubjectKind::Device,
+                &ns,
+                vec![Operation::SyncRead]
+            )
+            .is_err(),
             "cannot grant to a revoked subject",
         );
     }
@@ -264,12 +337,25 @@ mod tests {
         // An outsider (not a root) forges a revocation record and we plant it in
         // the ledger; the verifier must ignore it.
         let outsider = Identity::generate();
-        let forged = RevocationRecord::issue(&outsider, &descriptor.network_id, &victim.agent_id().0, 1, 1500);
+        let forged = RevocationRecord::issue(
+            &outsider,
+            &descriptor.network_id,
+            &victim.agent_id().0,
+            1,
+            1500,
+        );
         let ledger = vec![forged];
-        write_json(&mem.revocations_path(&descriptor.network_id).unwrap(), &ledger).unwrap();
+        write_json(
+            &mem.revocations_path(&descriptor.network_id).unwrap(),
+            &ledger,
+        )
+        .unwrap();
 
         let set = mem.revocation_set(&descriptor.network_id).unwrap();
-        assert!(!set.is_revoked(&victim.agent_id().0), "a non-root-signed revocation is not honored");
+        assert!(
+            !set.is_revoked(&victim.agent_id().0),
+            "a non-root-signed revocation is not honored"
+        );
     }
 
     #[test]
@@ -278,6 +364,9 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let mem = MemCli::new(dir.path());
         let fake_network = NetworkId("deadbeef".to_string());
-        assert!(mem.revoke(&fake_network, "someone").is_err(), "no such network → cannot revoke");
+        assert!(
+            mem.revoke(&fake_network, "someone").is_err(),
+            "no such network → cannot revoke"
+        );
     }
 }

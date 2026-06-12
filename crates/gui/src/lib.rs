@@ -17,10 +17,11 @@ use std::process::Command;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use concierge_core::deploy::SiteDeployPlan;
 use concierge_core::{
-    cid_from_link, cid_link, default_embedder, verify_capability, verify_membership, Cid, CidOrName,
-    CoreBinding, Depth, EgressOperation, EgressPlan, Error, Librarian, MemCli, Node, PrivateSharePlan,
-    Record, Result as CoreResult, RevocationSet, SharedEmbedder, UserId,
+    cid_from_link, cid_link, default_embedder, verify_capability, verify_membership, Cid,
+    CidOrName, CoreBinding, Depth, EgressOperation, EgressPlan, Error, Librarian, MemCli, Node,
+    PrivateSharePlan, Record, Result as CoreResult, SharedEmbedder, UserId,
 };
 use concierge_net::{
     content_message_id, peer_id_from_ed25519_hex, store_provider, ConciergeNode, Multiaddr,
@@ -36,14 +37,20 @@ const YARAX_PNG: &[u8] = include_bytes!("yarax.png");
 const IMPECCABLE_PNG: &[u8] = include_bytes!("impeccable.png");
 const MAX_HEADER_BYTES: usize = 16 * 1024;
 const MAX_BODY_BYTES: usize = 16 * 1024;
-/// Ingest uploads a whole JSONL session, so it gets a much larger body budget
-/// than the small JSON control mutations.
-const MAX_INGEST_BODY_BYTES: usize = 64 * 1024 * 1024;
+/// Ingest and Site publishing get a much larger body budget than small control mutations.
+const MAX_LARGE_BODY_BYTES: usize = 100 * 1024 * 1024;
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(3);
 const GRAPH_NODE_LIMIT: usize = 500;
 const MUTATION_RATE_WINDOW: Duration = Duration::from_secs(10);
 const MUTATION_RATE_MAX: usize = 60;
 const REVIEW_TOKEN_TTL: Duration = Duration::from_secs(300);
+const MAX_CANVAS_SESSIONS: usize = 64;
+const MAX_CANVAS_SIGNAL_QUEUE: usize = 128;
+const MAX_CANVAS_SIGNAL_BYTES: usize = 64 * 1024;
+const MAX_CANVAS_SESSION_LEN: usize = 128;
+const MAX_PREVIEW_DIRS: usize = 64;
+const MAX_DISCOVERY_PEERS: usize = 256;
+const DISCOVERY_PEER_TTL_SECS: u64 = 600;
 
 /// A fresh, unguessable CSRF token for one server process.
 fn new_csrf_token() -> String {
@@ -67,11 +74,54 @@ struct ChatNode {
     peer_id: String,
     /// Dialable listen addresses, filled in as the swarm reports them.
     addrs: Arc<Mutex<Vec<String>>>,
+    /// Peers this node has discovered/connected to, keyed by PeerID — the live
+    /// source for the Network tab's discovery map. Filled from swarm events.
+    peers: Arc<Mutex<std::collections::BTreeMap<String, PeerInfo>>>,
+}
+
+/// One peer on the discovery map: who it is, how we found it, and whether we're
+/// connected. Rendered to JSON by `/api/peers`.
+#[derive(Debug, Clone)]
+struct PeerInfo {
+    peer_id: String,
+    /// "connected" (a live connection) or "discovered" (located, not yet/no longer connected).
+    status: &'static str,
+    /// Best-effort discovery channel: "lan/direct", "relay", "rendezvous", or "dht".
+    source: String,
+    /// Whether the live connection is via a relay circuit (vs a direct connection).
+    relayed: bool,
+    /// Dialable addresses we learned (for rendezvous/DHT-routed peers).
+    addresses: Vec<String>,
+    /// Unix seconds we last saw activity from this peer.
+    last_seen: u64,
+}
+
+fn prune_discovery_peers(map: &mut std::collections::BTreeMap<String, PeerInfo>, now: u64) {
+    map.retain(|_, peer| {
+        peer.status == "connected" || now.saturating_sub(peer.last_seen) < DISCOVERY_PEER_TTL_SECS
+    });
+    if map.len() <= MAX_DISCOVERY_PEERS {
+        return;
+    }
+    let mut removable: Vec<(String, u64)> = map
+        .iter()
+        .filter(|(_, peer)| peer.status != "connected")
+        .map(|(id, peer)| (id.clone(), peer.last_seen))
+        .collect();
+    removable.sort_by_key(|(_, last_seen)| *last_seen);
+    for (id, _) in removable {
+        if map.len() <= MAX_DISCOVERY_PEERS {
+            break;
+        }
+        map.remove(&id);
+    }
 }
 
 impl std::fmt::Debug for ChatNode {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("ChatNode").field("peer_id", &self.peer_id).finish()
+        f.debug_struct("ChatNode")
+            .field("peer_id", &self.peer_id)
+            .finish()
     }
 }
 
@@ -106,6 +156,86 @@ pub struct GuiOptions {
     /// CSS + JS + assets) renders with correct relative paths and hot-reloads as the
     /// folder changes. Read-only file serving, fenced to the folder.
     preview_dirs: Arc<Mutex<HashMap<String, std::path::PathBuf>>>,
+    /// The System Console feed: a rolling, monotonic record of what the concierge
+    /// actually does in-process — embedder load + indexing + retrieval, every
+    /// mutation (publish, sidekick, MCP writes, canvas drafts), chat node lifecycle.
+    /// The GUI polls `/api/activity?since=<seq>` and prints it so the user can see
+    /// the plugin does what it says (no hidden network or model activity).
+    activity: Arc<Mutex<ActivityLog>>,
+}
+
+/// One line in the System Console feed.
+#[derive(Debug, Clone)]
+struct ActivityEntry {
+    seq: u64,
+    ts_unix: u64,
+    /// Severity/colour bucket the GUI maps to a console class: `ok` | `ev` | `wn`.
+    level: &'static str,
+    text: String,
+}
+
+/// A bounded, monotonic activity feed. New entries get an ever-increasing `seq`
+/// so the GUI can poll incrementally (`?since=<last seq>`); the oldest are dropped
+/// past the cap so memory stays bounded for a long-running session.
+#[derive(Debug, Default)]
+struct ActivityLog {
+    next_seq: u64,
+    entries: VecDeque<ActivityEntry>,
+}
+
+/// Wall-clock seconds since the Unix epoch, for stamping console lines.
+fn now_unix() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+fn atomic_local_write(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("state");
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or(0);
+    let tmp = path.with_file_name(format!(".{name}.{}.{}.tmp", std::process::id(), nonce));
+    let result = (|| {
+        let mut file = std::fs::OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(&tmp)?;
+        file.write_all(bytes)?;
+        file.sync_all()?;
+        std::fs::rename(&tmp, path)
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(tmp);
+    }
+    result
+}
+
+impl ActivityLog {
+    /// Keep roughly the last ten minutes of a busy session on screen.
+    const CAP: usize = 500;
+
+    fn push(&mut self, level: &'static str, text: String) {
+        let seq = self.next_seq;
+        self.next_seq += 1;
+        self.entries.push_back(ActivityEntry {
+            seq,
+            ts_unix: now_unix(),
+            level,
+            text,
+        });
+        while self.entries.len() > Self::CAP {
+            self.entries.pop_front();
+        }
+    }
 }
 
 /// The Data Platter's retrieval state: the shared embedder (built once) and a
@@ -147,6 +277,7 @@ struct CachedReview {
 enum CachedReviewPlan {
     Egress(EgressPlan),
     Private(PrivateSharePlan),
+    SiteDeploy(SiteDeployPlan),
 }
 
 impl MutationRateLimiter {
@@ -185,12 +316,18 @@ impl Default for GuiOptions {
             chat: Arc::new(Mutex::new(None)),
             canvas: Arc::new(Mutex::new(HashMap::new())),
             preview_dirs: Arc::new(Mutex::new(HashMap::new())),
+            activity: Arc::new(Mutex::new(ActivityLog::default())),
         }
     }
 }
 
 impl GuiOptions {
-    pub fn new(mounted_model: String, store_label: String, open_browser: bool, watch_pid: Option<u32>) -> Self {
+    pub fn new(
+        mounted_model: String,
+        store_label: String,
+        open_browser: bool,
+        watch_pid: Option<u32>,
+    ) -> Self {
         Self {
             mounted_model,
             store_label,
@@ -205,6 +342,15 @@ impl GuiOptions {
             .lock()
             .map(|mut limiter| limiter.allow(Instant::now()))
             .unwrap_or(false)
+    }
+
+    /// Record one line in the System Console feed. `level` is the colour bucket the
+    /// GUI maps to a console class (`ok` | `ev` | `wn`). Never blocks the request on
+    /// a poisoned lock — transparency is best-effort, never load-bearing.
+    fn log(&self, level: &'static str, text: impl Into<String>) {
+        if let Ok(mut feed) = self.activity.lock() {
+            feed.push(level, text.into());
+        }
     }
 
     fn cache_review(&self, plan: EgressPlan) -> CoreResult<String> {
@@ -231,7 +377,7 @@ impl GuiOptions {
         cache.retain(|_, review| review.expires_at > now);
         cache.get(token).and_then(|review| match &review.plan {
             CachedReviewPlan::Egress(plan) => Some(plan.clone()),
-            CachedReviewPlan::Private(_) => None,
+            CachedReviewPlan::Private(_) | CachedReviewPlan::SiteDeploy(_) => None,
         })
     }
 
@@ -259,7 +405,35 @@ impl GuiOptions {
         cache.retain(|_, review| review.expires_at > now);
         cache.get(token).and_then(|review| match &review.plan {
             CachedReviewPlan::Private(plan) => Some(plan.clone()),
-            CachedReviewPlan::Egress(_) => None,
+            CachedReviewPlan::Egress(_) | CachedReviewPlan::SiteDeploy(_) => None,
+        })
+    }
+
+    fn cache_site_deploy_review(&self, plan: SiteDeployPlan) -> CoreResult<String> {
+        let token = new_csrf_token();
+        let mut cache = self
+            .review_cache
+            .lock()
+            .map_err(|_| Error::SecurityPolicy("review cache lock poisoned".to_string()))?;
+        let now = Instant::now();
+        cache.retain(|_, review| review.expires_at > now);
+        cache.insert(
+            token.clone(),
+            CachedReview {
+                plan: CachedReviewPlan::SiteDeploy(plan),
+                expires_at: now + REVIEW_TOKEN_TTL,
+            },
+        );
+        Ok(token)
+    }
+
+    fn reviewed_site_deploy(&self, token: &str) -> Option<SiteDeployPlan> {
+        let mut cache = self.review_cache.lock().ok()?;
+        let now = Instant::now();
+        cache.retain(|_, review| review.expires_at > now);
+        cache.get(token).and_then(|review| match &review.plan {
+            CachedReviewPlan::SiteDeploy(plan) => Some(plan.clone()),
+            CachedReviewPlan::Egress(_) | CachedReviewPlan::Private(_) => None,
         })
     }
 
@@ -361,12 +535,19 @@ impl Response {
         if let Some(name) = filename {
             let safe: String = name
                 .chars()
-                .map(|ch| if ch == '"' || ch == '\\' || ch.is_control() { '_' } else { ch })
+                .map(|ch| {
+                    if ch == '"' || ch == '\\' || ch.is_control() {
+                        '_'
+                    } else {
+                        ch
+                    }
+                })
                 .collect();
             let disposition = if download { "attachment" } else { "inline" };
-            response
-                .headers
-                .push(("Content-Disposition".to_string(), format!("{disposition}; filename=\"{safe}\"")));
+            response.headers.push((
+                "Content-Disposition".to_string(),
+                format!("{disposition}; filename=\"{safe}\""),
+            ));
         }
         response
     }
@@ -400,24 +581,33 @@ pub fn handle_with_options(
         "/api/meta" => to_response(meta_json(mem, options)),
         "/api/me" => me_response(mem, options),
         "/api/sites" => to_response(sites_json(mem)),
+        "/api/site/checkpoints" => to_response(site_checkpoints_json(mem)),
+        "/api/site/checkpoint" => site_checkpoint_response(mem, query),
+        "/api/mcp/status" => to_response(mcp_status_json(mem)),
         "/api/canvas/files" => canvas_files_get(options, query),
         "/api/canvas/mtime" => canvas_mtime_get(options, query),
         "/api/canvas/draft" => canvas_draft_get(mem),
         "/api/canvas/signal" => canvas_signal_get(options, query),
         "/api/requests" => to_response(requests_json(mem)),
+        "/api/contacts" => to_response(contacts_json(mem)),
+        "/api/profile" => to_response(profile_json(mem)),
+        "/api/resolve" => resolve_response(mem, query),
         "/api/names" => to_response(names_json(mem)),
         "/api/record" => record_response(mem, query),
         "/api/blob" => blob_response(mem, query),
         "/api/checkpoints" => to_response(checkpoints_json(mem)),
         "/api/graph" => graph_response(mem, query),
         "/api/stats" => stats_response(mem, options, query),
+        "/api/activity" => activity_response(mem, options, query),
         "/api/rooms" => to_response(rooms_json(mem)),
         "/api/network" => to_response(network_json(mem)),
+        "/api/peers" => peers_response(mem, options),
         "/api/thread" => thread_response(mem, query),
         "/api/privacy" => privacy_response(mem, query),
         "/api/search" => search_response(mem, options, query),
         "/api/sidekick/status" => to_response(sidekick_status_json(mem)),
         "/api/claude-code/status" => to_response(claude_code_status_json(mem)),
+        "/api/deploy/credentials" => to_response(deploy_status_json(mem)),
         "/api/egress-plan" => egress_plan_response(mem, options, query),
         "/api/export-car" => Response::bad_request(
             "browser plaintext CAR download is intentionally disabled; use the reviewed CLI export flow",
@@ -505,38 +695,112 @@ fn ensure_chat_node(mem: &MemCli, options: &GuiOptions) -> Result<(), String> {
     let agent_id = identity.agent_id().0;
     let peer_id = node.peer_id.to_string();
     let addrs: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let peers: Arc<Mutex<std::collections::BTreeMap<String, PeerInfo>>> =
+        Arc::new(Mutex::new(std::collections::BTreeMap::new()));
 
     // Drain inbound network events into the store. A received message is a signed
     // envelope (verified by `accept_message`); a `Listening` event records a
     // dialable address for `/api/me`.
     let drain_mem = mem.clone();
     let drain_addrs = addrs.clone();
+    let drain_peers = peers.clone();
     let drain_canvas = options.canvas.clone();
+    let drain_activity = options.activity.clone();
+    let drain_node = node.clone();
     runtime.spawn(async move {
+        // Upsert a peer into the discovery map, preserving the strongest known state
+        // (a live connection outranks a bare discovery; a direct link outranks relayed).
+        let touch_peer = |id: String,
+                          status: &'static str,
+                          source: &str,
+                          relayed: bool,
+                          addresses: Vec<String>| {
+            if let Ok(mut map) = drain_peers.lock() {
+                let now = now_unix();
+                let entry = map.entry(id.clone()).or_insert_with(|| PeerInfo {
+                    peer_id: id,
+                    status: "discovered",
+                    source: source.to_string(),
+                    relayed: true,
+                    addresses: Vec::new(),
+                    last_seen: now,
+                });
+                if status == "connected" || entry.status != "connected" {
+                    entry.status = status;
+                }
+                if !source.is_empty() {
+                    entry.source = source.to_string();
+                }
+                if status == "connected" {
+                    entry.relayed = relayed;
+                }
+                if !addresses.is_empty() {
+                    entry.addresses = addresses;
+                }
+                entry.last_seen = now;
+                prune_discovery_peers(&mut map, now);
+            }
+        };
         while let Some(event) = events.recv().await {
             match event {
                 // A direct (1:1) message over the concierge-only request-response
                 // protocol. Live-canvas WebRTC signaling rides the same channel — it
                 // is routed to the signaling relay, not a chat thread. Everything else
                 // is consent-gated: only an approved contact's message enters a thread.
-                NodeEvent::DirectMessage { data, .. } => {
+                NodeEvent::DirectMessage {
+                    from_peer,
+                    data,
+                    delivery_id,
+                } => {
                     let json = String::from_utf8_lossy(&data).into_owned();
+                    let mut accepted = false;
                     if let Some(signal) = parse_canvas_signal(&json) {
-                        if let Some(session) =
-                            signal.get("session").and_then(|s| s.as_str()).map(str::to_string)
-                        {
+                        let claimed = signal
+                            .get("from")
+                            .and_then(|value| value.as_str())
+                            .unwrap_or("");
+                        if approved_agent_matches_peer(&drain_mem, claimed, &from_peer) {
                             if let Ok(mut store) = drain_canvas.lock() {
-                                store.entry(session).or_default().push(signal);
+                                accepted = queue_canvas_signal(&mut store, signal);
                             }
                         }
-                    } else {
-                        let _ = drain_mem.receive_message(&json);
+                    } else if let Some(card_json) = parse_contact_card(&json) {
+                        // A peer's signed contact card (Layer 2) — verify + cache.
+                        if let Some(aid) =
+                            approved_contact_card_author(&drain_mem, &card_json, &from_peer)
+                        {
+                            if drain_mem.import_card(&card_json).is_ok() {
+                                accepted = true;
+                                if let Ok(mut feed) = drain_activity.lock() {
+                                    feed.push(
+                                        "ev",
+                                        format!(
+                                            "received a contact card · {}…",
+                                            &aid[..aid.len().min(10)]
+                                        ),
+                                    );
+                                }
+                            }
+                        }
+                    } else if drain_mem.receive_message(&json).is_ok() {
+                        accepted = true;
+                        if let Ok(mut feed) = drain_activity.lock() {
+                            feed.push(
+                                "ev",
+                                "received a private message from an approved contact".into(),
+                            );
+                        }
                     }
+                    let _ = drain_node.acknowledge_dm(delivery_id, accepted);
                 }
                 // A group-room message over gossipsub — same consent gate.
                 NodeEvent::Message { data, .. } => {
                     let json = String::from_utf8_lossy(&data).into_owned();
-                    let _ = drain_mem.receive_message(&json);
+                    if drain_mem.receive_message(&json).is_ok() {
+                        if let Ok(mut feed) = drain_activity.lock() {
+                            feed.push("ev", "received a room message".into());
+                        }
+                    }
                 }
                 // A peer acked a direct message — clear it from the retry outbox.
                 NodeEvent::DirectMessageDelivered { message_id, .. } => {
@@ -548,6 +812,23 @@ fn ensure_chat_node(mem: &MemCli, options: &GuiOptions) -> Result<(), String> {
                             list.push(addr);
                         }
                     }
+                }
+                // ── Discovery-map signals ──
+                NodeEvent::ConnectionEstablished { peer_id, relayed } => {
+                    let source = if relayed { "relay" } else { "lan/direct" };
+                    touch_peer(peer_id, "connected", source, relayed, Vec::new());
+                }
+                NodeEvent::DirectConnectionUpgrade {
+                    peer_id,
+                    succeeded: true,
+                    ..
+                } => touch_peer(peer_id, "connected", "lan/direct", false, Vec::new()),
+                NodeEvent::DirectConnectionUpgrade { .. } => {}
+                NodeEvent::RendezvousDiscovered { peer_id, addresses } => {
+                    touch_peer(peer_id, "discovered", "rendezvous", true, addresses);
+                }
+                NodeEvent::PeerRouted { peer_id, addresses } => {
+                    touch_peer(peer_id, "discovered", "dht", true, addresses);
                 }
                 _ => {}
             }
@@ -564,10 +845,15 @@ fn ensure_chat_node(mem: &MemCli, options: &GuiOptions) -> Result<(), String> {
         let mut tick = tokio::time::interval(Duration::from_secs(30));
         loop {
             tick.tick().await;
-            let pending = match retry_mem.pending_outbound() {
-                Ok(pending) if !pending.is_empty() => pending,
-                _ => continue,
-            };
+            // Store-and-forward retry for undelivered DMs.
+            let pending = retry_mem.pending_outbound().unwrap_or_default();
+            // Best-effort contact-card sync: share my signed card with each approved
+            // contact (Layer 2, no Kubo needed). Re-tried each tick so it lands once
+            // a peer is online; import on the other side is idempotent.
+            let card_env = retry_mem.my_card().ok().map(|card| {
+                serde_json::json!({ "type": "contact-card", "card": card }).to_string()
+            });
+            let contacts = retry_mem.approved_contacts().unwrap_or_default();
             if let Ok(guard) = retry_opts.chat.lock() {
                 if let Some(chat) = guard.as_ref() {
                     for (_id, recipient, envelope) in pending {
@@ -576,19 +862,90 @@ fn ensure_chat_node(mem: &MemCli, options: &GuiOptions) -> Result<(), String> {
                             let _ = chat.node.send_dm(peer, envelope.into_bytes());
                         }
                     }
+                    if let Some(env) = &card_env {
+                        for recipient in &contacts {
+                            if let Some(peer) = peer_id_from_ed25519_hex(recipient) {
+                                let _ = chat.node.find_peer(peer);
+                                let _ = chat.node.send_dm(peer, env.clone().into_bytes());
+                            }
+                        }
+                    }
                 }
             }
         }
     });
 
+    options.log(
+        "ok",
+        "peer messaging node online · listening for approved-contact messages",
+    );
     *guard = Some(ChatNode {
         _runtime: runtime,
         node,
         agent_id,
         peer_id,
         addrs,
+        peers,
     });
     Ok(())
+}
+
+/// `/api/peers`: the live network-discovery map data — this node + every peer it
+/// has discovered or connected to. Brings the chat node online (so discovery is
+/// actually running) before reading the registry. Discovered-but-stale peers
+/// (located, never connected, not seen in 10 min) are pruned from the view.
+fn peers_response(mem: &MemCli, options: &GuiOptions) -> Response {
+    let _ = ensure_chat_node(mem, options);
+    let now = now_unix();
+    let (online, self_peer, self_agent, mut peers) = match options.chat.lock() {
+        Ok(guard) => match guard.as_ref() {
+            Some(chat) => {
+                let list: Vec<PeerInfo> = chat
+                    .peers
+                    .lock()
+                    .map(|m| m.values().cloned().collect())
+                    .unwrap_or_default();
+                (true, chat.peer_id.clone(), chat.agent_id.clone(), list)
+            }
+            None => (false, String::new(), String::new(), Vec::new()),
+        },
+        Err(_) => (false, String::new(), String::new(), Vec::new()),
+    };
+    // Drop discovered-only peers we haven't actually reached in a while; keep all
+    // connected ones. Show the freshest first, capped so the map stays legible.
+    peers.retain(|p| {
+        p.status == "connected" || now.saturating_sub(p.last_seen) < DISCOVERY_PEER_TTL_SECS
+    });
+    peers.sort_by(|a, b| {
+        (b.status == "connected")
+            .cmp(&(a.status == "connected"))
+            .then(b.last_seen.cmp(&a.last_seen))
+    });
+    let total = peers.len();
+    let connected = peers.iter().filter(|p| p.status == "connected").count();
+    peers.truncate(48);
+    let peers_json: Vec<serde_json::Value> = peers
+        .iter()
+        .map(|p| {
+            serde_json::json!({
+                "peer_id": p.peer_id,
+                "status": p.status,
+                "source": p.source,
+                "relayed": p.relayed,
+                "addresses": p.addresses,
+                "last_seen": p.last_seen,
+            })
+        })
+        .collect();
+    Response::json(
+        serde_json::json!({
+            "self": { "peer_id": self_peer, "agent_id": self_agent, "online": online },
+            "peers": peers_json,
+            "total": total,
+            "connected": connected,
+        })
+        .to_string(),
+    )
 }
 
 /// `/api/me`: the local username (shareable AgentID), its derived PeerID, and
@@ -688,7 +1045,10 @@ fn name_node_summary(
         } => {
             let value: serde_json::Value =
                 serde_json::from_str(&body_json).unwrap_or(serde_json::Value::Null);
-            let created_at = value.get("created_at").and_then(|v| v.as_u64()).unwrap_or(0);
+            let created_at = value
+                .get("created_at")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
             Ok(serde_json::json!({
                 // Content is shown locally; the lock surfaces only as a badge (it
                 // guards egress, not viewing).
@@ -799,7 +1159,10 @@ fn record_json(mem: &MemCli, key: CidOrName) -> CoreResult<String> {
             // with a byte count so the record payload stays small (preview the
             // bytes via /api/blob instead).
             if kind == "blob" {
-                if let Some(object) = value.get_mut("body").and_then(serde_json::Value::as_object_mut) {
+                if let Some(object) = value
+                    .get_mut("body")
+                    .and_then(serde_json::Value::as_object_mut)
+                {
                     let length = object
                         .get("bytes")
                         .and_then(serde_json::Value::as_array)
@@ -860,7 +1223,9 @@ fn blob_response(mem: &MemCli, query: &str) -> Response {
 /// Resolve a CID to `(media_type, filename, bytes)`. Follows one `file_ref` →
 /// `content` hop. A lock guards egress, not local viewing, so blob bytes are
 /// always served to the local Data Platter.
-fn blob_bytes(mem: &MemCli, cid: &Cid) -> CoreResult<Option<(String, Option<String>, Vec<u8>)>> {
+type BlobAsset = (String, Option<String>, Vec<u8>);
+
+fn blob_bytes(mem: &MemCli, cid: &Cid) -> CoreResult<Option<BlobAsset>> {
     let Record::Live { body_json, .. } = mem.get(&CidOrName::Cid(cid.clone()))? else {
         return Ok(None);
     };
@@ -888,7 +1253,12 @@ fn blob_bytes(mem: &MemCli, cid: &Cid) -> CoreResult<Option<(String, Option<Stri
                 serde_json::from_str(&body_json).unwrap_or(serde_json::Value::Null);
             let blob_fields = blob.get("body").unwrap_or(&blob);
             let media_type = media_type
-                .or_else(|| blob_fields.get("media_type").and_then(serde_json::Value::as_str).map(str::to_string))
+                .or_else(|| {
+                    blob_fields
+                        .get("media_type")
+                        .and_then(serde_json::Value::as_str)
+                        .map(str::to_string)
+                })
                 .unwrap_or_else(|| "application/octet-stream".to_string());
             return Ok(blob_byte_array(blob_fields).map(|bytes| (media_type, filename, bytes)));
         }
@@ -1043,7 +1413,9 @@ fn node_and_links_from_record(
     let known_public = privacy.known_public.contains(&cid.0);
     let quarantined = privacy.is_quarantined(&cid.0);
     match record {
-        Record::Live { kind, body_json, .. } => {
+        Record::Live {
+            kind, body_json, ..
+        } => {
             let value = serde_json::from_str::<serde_json::Value>(body_json)
                 .unwrap_or(serde_json::Value::Null);
             let created_at = value.get("created_at").and_then(serde_json::Value::as_i64);
@@ -1192,7 +1564,13 @@ fn forest_graph_json(mem: &MemCli) -> CoreResult<String> {
             edges.push(serde_json::json!({ "from": store_cid, "to": format!("year:{year}"), "relation": "year" }));
         }
         if months.insert(month.clone()) {
-            nodes.push(tier_node(format!("month:{month}"), "month", &month, 0, started));
+            nodes.push(tier_node(
+                format!("month:{month}"),
+                "month",
+                &month,
+                0,
+                started,
+            ));
             edges.push(serde_json::json!({ "from": format!("year:{year}"), "to": format!("month:{month}"), "relation": "month" }));
         }
         let day_cid = format!("day:{date}");
@@ -1202,8 +1580,15 @@ fn forest_graph_json(mem: &MemCli) -> CoreResult<String> {
             edges.push(serde_json::json!({ "from": format!("month:{month}"), "to": day_cid.clone(), "relation": "day" }));
         }
         let session_cid = format!("session:{date}:{session}");
-        nodes.push(tier_node(session_cid.clone(), "session", &session_label(session), *count, started));
-        edges.push(serde_json::json!({ "from": day_cid, "to": session_cid, "relation": "session" }));
+        nodes.push(tier_node(
+            session_cid.clone(),
+            "session",
+            &session_label(session),
+            *count,
+            started,
+        ));
+        edges
+            .push(serde_json::json!({ "from": day_cid, "to": session_cid, "relation": "session" }));
     }
 
     // Each ingested file/folder is a real root: show it under the store, marked
@@ -1216,7 +1601,10 @@ fn forest_graph_json(mem: &MemCli) -> CoreResult<String> {
             None => node_and_links(mem, &privacy, &encrypted_plaintext_roots, cid)?,
         };
         // `import:<unix>-<basename>` → show the basename.
-        let display = label.splitn(2, '-').nth(1).unwrap_or(label);
+        let display = label
+            .split_once('-')
+            .map(|(_, display)| display)
+            .unwrap_or(label);
         node["preview"] = serde_json::Value::String(display.to_string());
         node["expandable"] = serde_json::Value::Bool(true);
         nodes.push(node);
@@ -1495,7 +1883,11 @@ fn thread_json(mem: &MemCli, room: &str) -> CoreResult<String> {
     let social = mem.social_book().unwrap_or_default();
     let policy = mem.room_book()?.policy(room);
     // Phase N · Phase I — social legibility, all strictly local.
-    let this_agent = mem.identity().ok().map(|id| id.agent_id().0).unwrap_or_default();
+    let this_agent = mem
+        .identity()
+        .ok()
+        .map(|id| id.agent_id().0)
+        .unwrap_or_default();
     let messages: Vec<_> = mem
         .room_thread(room)?
         .into_iter()
@@ -1677,11 +2069,76 @@ fn privacy_json(mem: &MemCli, target: &str) -> CoreResult<String> {
 
 /// Phase 8 §1 semantic-search endpoint. Builds (and caches, on a short TTL) the
 /// Librarian index over the local store, then returns ranked CIDs for `?q=`.
+/// Describe the embedder for the System Console — honest about whether a model is
+/// actually loaded (`built`) or merely configured. Never *builds* a model just to
+/// render status (that could download/load weights on a routine poll); it reports
+/// the real `id()`/`dims()` once retrieval has built it, else what the config will
+/// load on the first search.
+fn embedder_status(mem: &MemCli, options: &GuiOptions) -> serde_json::Value {
+    if let Ok(guard) = options.librarian.lock() {
+        if let Some(embedder) = guard.embedder.as_ref() {
+            return serde_json::json!({
+                "built": true,
+                "id": embedder.id(),
+                "dims": embedder.dims(),
+            });
+        }
+    }
+    let cfg = mem.config().map(|c| c.librarian).unwrap_or_default();
+    let url = cfg.embedding_url.trim();
+    let detail = match cfg.embedder.as_str() {
+        "lexical" => "lexical-v1 · offline, zero-dependency".to_string(),
+        "fastembed" => format!("fastembed · {} (in-process)", cfg.embedding_model),
+        "http" if !url.is_empty() => format!("http · {} @ {}", cfg.embedding_model, url),
+        "http" => "http · (no endpoint set → lexical fallback)".to_string(),
+        _ if !url.is_empty() => format!("auto · http {} @ {}", cfg.embedding_model, url),
+        _ => format!("auto · {} or lexical fallback", cfg.embedding_model),
+    };
+    serde_json::json!({ "built": false, "id": detail, "backend": cfg.embedder })
+}
+
+/// `GET /api/activity?since=<seq>` — the incremental System Console feed. Returns
+/// the embedder status (always) plus every entry with `seq >= since`, and the
+/// `next_seq` the client should send next poll.
+fn activity_response(mem: &MemCli, options: &GuiOptions, query: &str) -> Response {
+    let params = parse_query(query);
+    let since = params.get("since").and_then(|s| s.parse::<u64>().ok());
+    let (entries, next_seq): (Vec<serde_json::Value>, u64) = match options.activity.lock() {
+        Ok(feed) => (
+            feed.entries
+                .iter()
+                .filter(|e| since.is_none_or(|s| e.seq >= s))
+                .map(|e| {
+                    serde_json::json!({
+                        "seq": e.seq,
+                        "ts": e.ts_unix,
+                        "level": e.level,
+                        "text": e.text,
+                    })
+                })
+                .collect(),
+            feed.next_seq,
+        ),
+        Err(_) => (Vec::new(), 0),
+    };
+    Response::json(
+        serde_json::json!({
+            "embedder": embedder_status(mem, options),
+            "next_seq": next_seq,
+            "entries": entries,
+        })
+        .to_string(),
+    )
+}
+
 /// Default embedder is the zero-dependency lexical one; a semantic backend swaps
 /// in behind the same trait when its feature is enabled.
 fn search_response(mem: &MemCli, options: &GuiOptions, query: &str) -> Response {
     let params = parse_query(query);
-    let q = params.get("q").map(|s| s.trim().to_string()).unwrap_or_default();
+    let q = params
+        .get("q")
+        .map(|s| s.trim().to_string())
+        .unwrap_or_default();
     if q.is_empty() {
         return Response::bad_request("search requires a non-empty ?q=");
     }
@@ -1717,7 +2174,12 @@ fn search_response(mem: &MemCli, options: &GuiOptions, query: &str) -> Response 
     // not baked in — lexical / fastembed:<model> / http:<url>).
     if guard.embedder.is_none() {
         let librarian_config = mem.config().map(|c| c.librarian).unwrap_or_default();
-        guard.embedder = Some(default_embedder(&librarian_config));
+        let built = default_embedder(&librarian_config);
+        options.log(
+            "ok",
+            format!("embedder ready · {} ({}d)", built.id(), built.dims()),
+        );
+        guard.embedder = Some(built);
     }
     let embedder = guard.embedder.clone().expect("embedder built above");
     let stale = guard
@@ -1726,8 +2188,13 @@ fn search_response(mem: &MemCli, options: &GuiOptions, query: &str) -> Response 
         .map(|c| c.built_at.elapsed() >= LIBRARIAN_TTL)
         .unwrap_or(true);
     if stale {
+        options.log("ev", "indexing memory for retrieval…");
         match Librarian::index_all_persistent(mem, embedder) {
             Ok(librarian) => {
+                options.log(
+                    "ev",
+                    format!("indexed {} node(s) for retrieval", librarian.len()),
+                );
                 guard.cache = Some(LibrarianCache {
                     librarian,
                     built_at: Instant::now(),
@@ -1756,6 +2223,16 @@ fn search_response(mem: &MemCli, options: &GuiOptions, query: &str) -> Response 
             })
         })
         .collect();
+    options.log(
+        "ev",
+        format!(
+            "retrieve “{}” → {} hit(s) · {}/{} tokens",
+            q,
+            items.len(),
+            result.used_tokens,
+            result.budget_tokens
+        ),
+    );
     Response::json(
         serde_json::json!({
             "query": q,
@@ -2065,7 +2542,7 @@ fn loopback_gate(request: &ParsedRequest, csrf_token: &str) -> Option<Response> 
 /// Route a gated `POST` mutation. Bodies are JSON. Passwords are read straight
 /// into the core call and never logged or echoed.
 fn handle_mutation(mem: &MemCli, options: &GuiOptions, path: &str, body: &str) -> Response {
-    match path {
+    let response = match path {
         "/api/ingest" => mutation_ingest(mem, options, body),
         "/api/ingest-path" => mutation_ingest_path(mem, body),
         "/api/lock" => mutation_lock(mem, body),
@@ -2080,17 +2557,71 @@ fn handle_mutation(mem: &MemCli, options: &GuiOptions, path: &str, body: &str) -
         "/api/authorize-publish" => mutation_authorize_publish(mem, options, body),
         "/api/convert-private" => mutation_convert_private(mem, options, body),
         "/api/message" => mutation_post_message(mem, options, body),
-        "/api/site/publish" => mutation_publish_site(mem, body),
+        "/api/site/deploy-plan" => mutation_site_deploy_plan(mem, options, body),
+        "/api/site/publish" => mutation_publish_site(mem, options, body),
+        "/api/site/checkpoint/save" => mutation_save_checkpoint(mem, body),
+        "/api/deploy/credentials" => mutation_deploy_credentials(mem, body),
+        "/api/mcp/write" => mutation_mcp_write(mem, body),
         "/api/canvas/open" => mutation_canvas_open(options, body),
         "/api/canvas/signal" => mutation_canvas_signal(mem, options, body),
         "/api/canvas/snapshot" => mutation_canvas_snapshot(mem, body),
         "/api/requests/accept" => mutation_request_decision(mem, body, true),
         "/api/requests/decline" => mutation_request_decision(mem, body, false),
+        "/api/contacts/remove" => mutation_contact_remove(mem, body),
+        "/api/petname" => mutation_petname(mem, body),
+        "/api/profile" => mutation_profile(mem, body),
+        "/api/compact" => mutation_compact(mem, options),
         "/api/network/create" => mutation_network_create(mem, body),
         "/api/network/revoke" => mutation_network_revoke(mem, body),
         "/api/network/rotate" => mutation_network_rotate(mem, body),
         _ => Response::not_found(),
+    };
+    // Surface every action in the System Console so the user sees what the concierge
+    // does. Noisy/secret paths are handled by their own handlers (chat, search) or
+    // skipped here (live-canvas WebRTC signalling fires many times a second).
+    if let Some(label) = mutation_label(path) {
+        if response.status < 400 {
+            options.log("ok", label.to_string());
+        } else {
+            options.log("wn", format!("{label} — declined ({})", response.status));
+        }
     }
+    response
+}
+
+/// A human label for the System Console, or `None` to keep an action off the feed
+/// (high-frequency signalling, or paths whose own handler already logs richer detail).
+fn mutation_label(path: &str) -> Option<&'static str> {
+    Some(match path {
+        "/api/ingest" => "ingested host-neutral events",
+        "/api/ingest-path" => "ingested a file of events",
+        "/api/lock" => "locked a node from egress",
+        "/api/unlock" => "unlocked a node",
+        "/api/clear-for-egress" => "cleared a node for egress (password-gated)",
+        "/api/refence" => "re-fenced a node",
+        "/api/claude-code/attach" => "attached the Claude Code adapter",
+        "/api/claude-code/detach" => "detached the Claude Code adapter",
+        "/api/sidekick/enable" => "enabling Sidekick (private Kubo node + on-node embedder)",
+        "/api/sidekick/disable" => "disabled Sidekick",
+        "/api/set-password" => "set the store password",
+        "/api/authorize-publish" => "authorized a public publish (egress)",
+        "/api/convert-private" => "converted a node to private (encrypted)",
+        "/api/site/publish" => "published a website",
+        "/api/site/checkpoint/save" => "saved a Studio checkpoint",
+        "/api/deploy/credentials" => "saved deploy credentials (0600, on-device)",
+        "/api/mcp/write" => "toggled MCP write tools",
+        "/api/canvas/snapshot" => "snapshotted the canvas",
+        "/api/requests/accept" => "accepted a contact request",
+        "/api/requests/decline" => "declined a contact request",
+        "/api/contacts/remove" => "removed an approved peer",
+        "/api/petname" => "set a petname",
+        "/api/profile" => "updated your contact card",
+        "/api/network/create" => "created a network / certificate",
+        "/api/network/revoke" => "revoked network access",
+        "/api/network/rotate" => "rotated a capability key",
+        // /api/message logs its own delivered/queued line; /api/canvas/* signalling is too noisy.
+        _ => return None,
+    })
 }
 
 /// Rotate a private graph's capability key (Phase N · Phase G) after a revocation,
@@ -2205,7 +2736,11 @@ fn deliver_to_user(mem: &MemCli, options: &GuiOptions, target_username: &str, ci
     // content id the transport reports back on delivery.
     let bytes = bytes.into_bytes();
     let message_id = content_message_id(&bytes);
-    let _ = mem.queue_outbound(&message_id, target_username, &String::from_utf8_lossy(&bytes));
+    let _ = mem.queue_outbound(
+        &message_id,
+        target_username,
+        &String::from_utf8_lossy(&bytes),
+    );
     if let Ok(guard) = options.chat.lock() {
         if let Some(chat) = guard.as_ref() {
             // Locate the peer (DHT for global; mDNS already covers the LAN), then
@@ -2215,6 +2750,31 @@ fn deliver_to_user(mem: &MemCli, options: &GuiOptions, target_username: &str, ci
         }
     }
     false
+}
+
+/// `/api/mcp/status`: whether the host AI's MCP write tools are enabled (the GUI
+/// toggle). Read-only by default (Decision 0028).
+fn mcp_status_json(mem: &MemCli) -> CoreResult<String> {
+    Ok(serde_json::json!({ "write_enabled": mem.mcp_write_enabled() }).to_string())
+}
+
+/// `POST /api/mcp/write`: flip the MCP write-tools toggle. The MCP server re-reads
+/// this per request, so it takes effect on the AI's next tool call.
+fn mutation_mcp_write(mem: &MemCli, body: &str) -> Response {
+    let value = match parse_body(body) {
+        Ok(value) => value,
+        Err(response) => return response,
+    };
+    let enabled = value
+        .get("enabled")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    match mem.set_mcp_write_enabled(enabled) {
+        Ok(()) => {
+            Response::json(serde_json::json!({ "ok": true, "write_enabled": enabled }).to_string())
+        }
+        Err(error) => Response::error(error.to_string()),
+    }
 }
 
 /// `/api/sites`: the user's published websites (the Planet Pattern registry).
@@ -2252,42 +2812,315 @@ fn valid_site_name(name: &str) -> bool {
 /// `/api/site/publish`: publish (or update) a folder as a website. Password-gated
 /// egress (the password travels in the loopback body, never the URL). Publishing
 /// is the deliberate act; the AI only *staged* the folder.
-fn mutation_publish_site(mem: &MemCli, body: &str) -> Response {
+/// Non-secret deploy-credential status (which platforms are configured + their
+/// public fields). Tokens/passwords are NEVER serialized to the GUI.
+fn deploy_status_json(mem: &MemCli) -> CoreResult<String> {
+    Ok(mem.deploy_status()?.to_string())
+}
+
+/// Store (or clear) the credentials for one external host. The token/password
+/// stays on-device (0600); only `{platform, fields}` comes in. Sending `fields:
+/// null` clears that platform.
+fn mutation_deploy_credentials(mem: &MemCli, body: &str) -> Response {
     let value = match parse_body(body) {
         Ok(value) => value,
         Err(response) => return response,
     };
-    let name = match body_str(&value, "name") {
-        Ok(name) => name.trim(),
+    let platform = match body_str(&value, "platform") {
+        Ok(p) => p.trim(),
         Err(response) => return response,
     };
-    let folder = match body_str(&value, "folder") {
-        Ok(folder) => folder.trim(),
+    let fields = value
+        .get("fields")
+        .cloned()
+        .unwrap_or(serde_json::Value::Null);
+    match mem.set_deploy_credentials(platform, &fields.to_string()) {
+        Ok(()) => Response::json(serde_json::json!({ "ok": true }).to_string()),
+        Err(error) => Response::error(error.to_string()),
+    }
+}
+
+fn site_deploy_fields(value: &serde_json::Value) -> Result<(&str, &str, &str, &str), Response> {
+    let name = body_str(value, "name")?.trim();
+    let folder = body_str(value, "folder")?.trim();
+    let kind = value
+        .get("kind")
+        .and_then(|item| item.as_str())
+        .unwrap_or("site");
+    let platform = value
+        .get("platform")
+        .and_then(|item| item.as_str())
+        .unwrap_or("ipfs");
+    if !valid_site_name(name) {
+        return Err(Response::bad_request(
+            "site name must be letters, digits, - _ . (max 64)",
+        ));
+    }
+    if folder.is_empty() {
+        return Err(Response::bad_request("a folder path is required"));
+    }
+    Ok((name, folder, kind, platform))
+}
+
+fn mutation_site_deploy_plan(mem: &MemCli, options: &GuiOptions, body: &str) -> Response {
+    let value = match parse_body(body) {
+        Ok(value) => value,
+        Err(response) => return response,
+    };
+    let (name, folder, kind, platform) = match site_deploy_fields(&value) {
+        Ok(fields) => fields,
+        Err(response) => return response,
+    };
+    match mem.review_site_deploy(name, folder, kind, platform) {
+        Ok(plan) => match options.cache_site_deploy_review(plan.clone()) {
+            Ok(review_token) => Response::json(
+                serde_json::json!({ "review_token": review_token, "plan": plan }).to_string(),
+            ),
+            Err(error) => Response::error(error.to_string()),
+        },
+        Err(error) => Response::error(error.to_string()),
+    }
+}
+
+fn mutation_publish_site(mem: &MemCli, options: &GuiOptions, body: &str) -> Response {
+    let value = match parse_body(body) {
+        Ok(value) => value,
         Err(response) => return response,
     };
     let password = match body_str(&value, "password") {
         Ok(password) => password,
         Err(response) => return response,
     };
-    let kind = value.get("kind").and_then(|k| k.as_str()).unwrap_or("site");
-    if !valid_site_name(name) {
+    let review_token = match body_str(&value, "review_token") {
+        Ok(token) => token,
+        Err(response) => return response,
+    };
+    let Some(reviewed) = options.reviewed_site_deploy(review_token) else {
+        return Response::bad_request("deployment review token is missing or expired");
+    };
+    match mem.publish_site(&reviewed, password) {
+        Ok(receipt) => {
+            options.discard_review(review_token);
+            // Snapshot this published version so the user can re-open it to update.
+            let checkpoint_warning = record_site_checkpoint(
+                mem,
+                &reviewed.name,
+                &reviewed.folder,
+                receipt.ipns_name.as_deref(),
+                &receipt.root,
+                &receipt.gateway_url,
+            )
+            .err()
+            .map(|error| error.to_string());
+            Response::json(
+                serde_json::json!({
+                    "ok": true,
+                    "name": receipt.site_name,
+                    "ipns": receipt.ipns_name,
+                    "cid": receipt.root,
+                    "url": receipt.gateway_url,
+                    "checkpoint_warning": checkpoint_warning,
+                })
+                .to_string(),
+            )
+        }
+        Err(error) => Response::error(error.to_string()),
+    }
+}
+
+/// `/api/site/checkpoint/save`: snapshot the current Studio draft as a checkpoint
+/// at any time — no publish, no egress. Content-addresses the HTML (a real CID, in
+/// Records), and stores a reopen-to-edit snapshot in the Studio checkpoint list.
+/// Accepts `{name, html}` (Write mode) or `{name, folder}` (folder/preview mode).
+fn mutation_save_checkpoint(mem: &MemCli, body: &str) -> Response {
+    let value = match parse_body(body) {
+        Ok(value) => value,
+        Err(response) => return response,
+    };
+    let name = match body_str(&value, "name") {
+        Ok(name) => name.trim().to_string(),
+        Err(response) => return response,
+    };
+    if !valid_site_name(&name) {
         return Response::bad_request("site name must be letters, digits, - _ . (max 64)");
     }
-    if folder.is_empty() {
-        return Response::bad_request("a folder path is required");
+    // The draft HTML comes inline (Write tab) or is read from the open folder.
+    let html = match value
+        .get("html")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.trim().is_empty())
+    {
+        Some(html) => html.to_string(),
+        None => match value
+            .get("folder")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+        {
+            Some(folder) => {
+                match std::fs::read_to_string(std::path::Path::new(folder).join("index.html")) {
+                    Ok(html) => html,
+                    Err(error) => {
+                        return Response::error(format!("read folder index.html: {error}"))
+                    }
+                }
+            }
+            None => return Response::bad_request("write some HTML or open a folder first"),
+        },
+    };
+
+    // Store-side: a content-addressed snapshot + a real checkpoint node in Records.
+    let cid = match mem.save_site_checkpoint(&name, &html) {
+        Ok((cid, _ts)) => cid,
+        Err(error) => return Response::error(error.to_string()),
+    };
+    // Sidecar: stage the HTML so the ⏱ Checkpoints list can reopen this version.
+    let mut warning: Option<String> = None;
+    if let Ok(store) = mem.store_dir() {
+        let folder = store.join("canvas").join(safe_site(&name));
+        if std::fs::create_dir_all(&folder).is_ok()
+            && std::fs::write(folder.join("index.html"), &html).is_ok()
+        {
+            warning = record_site_checkpoint(mem, &name, &folder.to_string_lossy(), None, &cid, "")
+                .err()
+                .map(|error| error.to_string());
+        }
     }
-    match mem.publish_site(name, folder, kind, password) {
-        Ok(receipt) => Response::json(
-            serde_json::json!({
-                "ok": true,
-                "name": receipt.site_name,
-                "ipns": receipt.ipns_name,
-                "cid": receipt.root,
-                "url": receipt.gateway_url,
-            })
-            .to_string(),
-        ),
-        Err(error) => Response::error(error.to_string()),
+    Response::json(
+        serde_json::json!({ "ok": true, "cid": cid, "checkpoint_warning": warning }).to_string(),
+    )
+}
+
+// ── Studio publish checkpoints ──────────────────────────────────────────────
+// Every successful publish snapshots the published index.html + its stable IPNS
+// address + a timestamp. Because the IPNS address stays the same across updates,
+// the user can re-open any past published version in the editor and re-publish to
+// the SAME address. Stored under `<store>/canvas/.checkpoints/`.
+
+/// Sanitize a site name to a safe single path segment (matches the publish name set).
+fn safe_site(name: &str) -> String {
+    let s: String = name
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+        .take(48)
+        .collect();
+    if s.is_empty() || s == "." || s == ".." {
+        "draft".to_string()
+    } else {
+        s
+    }
+}
+
+fn site_ckpt_dir(mem: &MemCli) -> Option<std::path::PathBuf> {
+    mem.store_dir()
+        .ok()
+        .map(|d| d.join("canvas").join(".checkpoints"))
+}
+
+fn record_site_checkpoint(
+    mem: &MemCli,
+    site: &str,
+    folder: &str,
+    ipns: Option<&str>,
+    cid: &str,
+    url: &str,
+) -> CoreResult<()> {
+    let base = site_ckpt_dir(mem).ok_or_else(|| Error::Io("store unavailable".to_string()))?;
+    let html = std::fs::read_to_string(std::path::Path::new(folder).join("index.html"))
+        .map_err(|error| Error::Io(format!("read checkpoint source: {error}")))?;
+    let safe = safe_site(site);
+    let mut ts = now_unix();
+    let dir = base.join(&safe);
+    std::fs::create_dir_all(&dir)
+        .map_err(|error| Error::Io(format!("create checkpoint dir: {error}")))?;
+    loop {
+        let path = dir.join(format!("{ts}.html"));
+        match std::fs::OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(&path)
+        {
+            Ok(mut file) => {
+                file.write_all(html.as_bytes())
+                    .map_err(|error| Error::Io(format!("write checkpoint: {error}")))?;
+                file.sync_all()
+                    .map_err(|error| Error::Io(format!("sync checkpoint: {error}")))?;
+                break;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => ts += 1,
+            Err(error) => return Err(Error::Io(format!("create checkpoint: {error}"))),
+        }
+    }
+    let mpath = base.join("manifest.json");
+    let mut manifest: serde_json::Value = std::fs::read_to_string(&mpath)
+        .ok()
+        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+        .filter(|v| v.is_object())
+        .unwrap_or_else(|| serde_json::json!({}));
+    let entry = serde_json::json!({ "ts": ts, "ipns": ipns, "cid": cid, "url": url });
+    if let Some(obj) = manifest.as_object_mut() {
+        let list = obj
+            .entry(safe)
+            .or_insert_with(|| serde_json::Value::Array(Vec::new()));
+        if let Some(arr) = list.as_array_mut() {
+            arr.insert(0, entry); // newest first
+            arr.truncate(40); // bound the history
+        }
+    }
+    atomic_local_write(&mpath, manifest.to_string().as_bytes())
+        .map_err(|error| Error::Io(format!("write checkpoint manifest: {error}")))
+}
+
+/// `GET /api/site/checkpoints` — every publish checkpoint across all sites, newest first.
+fn site_checkpoints_json(mem: &MemCli) -> CoreResult<String> {
+    let mut out: Vec<serde_json::Value> = Vec::new();
+    if let Some(base) = site_ckpt_dir(mem) {
+        if let Ok(text) = std::fs::read_to_string(base.join("manifest.json")) {
+            if let Ok(map) = serde_json::from_str::<serde_json::Value>(&text) {
+                if let Some(obj) = map.as_object() {
+                    for (site, list) in obj {
+                        if let Some(arr) = list.as_array() {
+                            for e in arr {
+                                out.push(serde_json::json!({
+                                    "site": site,
+                                    "ts": e.get("ts"),
+                                    "ipns": e.get("ipns"),
+                                    "cid": e.get("cid"),
+                                    "url": e.get("url"),
+                                }));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    out.sort_by(|a, b| {
+        b.get("ts")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0)
+            .cmp(&a.get("ts").and_then(serde_json::Value::as_u64).unwrap_or(0))
+    });
+    Ok(serde_json::json!({ "checkpoints": out }).to_string())
+}
+
+/// `GET /api/site/checkpoint?site=&ts=` — the saved HTML of one checkpoint, to
+/// reload into the editor and update.
+fn site_checkpoint_response(mem: &MemCli, query: &str) -> Response {
+    let params = parse_query(query);
+    let site = params.get("site").map(|s| safe_site(s)).unwrap_or_default();
+    let ts = params.get("ts").cloned().unwrap_or_default();
+    if site.is_empty() || ts.is_empty() || !ts.chars().all(|c| c.is_ascii_digit()) {
+        return Response::bad_request("site and numeric ts are required");
+    }
+    let Some(base) = site_ckpt_dir(mem) else {
+        return Response::error("store unavailable".to_string());
+    };
+    let path = base.join(&site).join(format!("{ts}.html"));
+    match std::fs::read_to_string(&path) {
+        Ok(html) => {
+            Response::json(serde_json::json!({ "site": site, "ts": ts, "html": html }).to_string())
+        }
+        Err(e) => Response::error(format!("checkpoint not found: {e}")),
     }
 }
 
@@ -2309,6 +3142,62 @@ fn parse_canvas_signal(json: &str) -> Option<serde_json::Value> {
     } else {
         None
     }
+}
+
+/// Recognise a `{"type":"contact-card","card":{…}}` DM envelope (Layer 2), returning
+/// the inner card JSON to verify + import.
+fn parse_contact_card(json: &str) -> Option<String> {
+    let value: serde_json::Value = serde_json::from_str(json).ok()?;
+    if value.get("type").and_then(|t| t.as_str()) == Some("contact-card") {
+        value.get("card").map(|c| c.to_string())
+    } else {
+        None
+    }
+}
+
+fn approved_agent_matches_peer(mem: &MemCli, agent_id: &str, from_peer: &str) -> bool {
+    mem.is_contact(agent_id)
+        && peer_id_from_ed25519_hex(agent_id)
+            .map(|peer| peer.to_string() == from_peer)
+            .unwrap_or(false)
+}
+
+fn approved_contact_card_author(mem: &MemCli, card_json: &str, from_peer: &str) -> Option<String> {
+    let card: concierge_core::naming::ContactCard = serde_json::from_str(card_json).ok()?;
+    if !card.verify() {
+        return None;
+    }
+    let agent_id = card.agent_id().ok()?.0;
+    approved_agent_matches_peer(mem, &agent_id, from_peer).then_some(agent_id)
+}
+
+fn queue_canvas_signal(
+    store: &mut HashMap<String, Vec<serde_json::Value>>,
+    signal: serde_json::Value,
+) -> bool {
+    let Some(session) = signal
+        .get("session")
+        .and_then(|value| value.as_str())
+        .map(str::trim)
+    else {
+        return false;
+    };
+    if session.is_empty()
+        || session.len() > MAX_CANVAS_SESSION_LEN
+        || serde_json::to_vec(&signal).map_or(true, |bytes| bytes.len() > MAX_CANVAS_SIGNAL_BYTES)
+    {
+        return false;
+    }
+    if !store.contains_key(session) && store.len() >= MAX_CANVAS_SESSIONS {
+        return false;
+    }
+    let queue = store.entry(session.to_string()).or_default();
+    queue.push(signal);
+    if queue.len() > MAX_CANVAS_SIGNAL_QUEUE {
+        let excess = queue.len() - MAX_CANVAS_SIGNAL_QUEUE;
+        queue.drain(0..excess);
+    }
+    true
 }
 
 /// `GET /api/canvas/signal?session=&me=`: drain pending signaling messages
@@ -2346,18 +3235,18 @@ fn mutation_canvas_signal(mem: &MemCli, options: &GuiOptions, body: &str) -> Res
         Ok(value) => value,
         Err(response) => return response,
     };
-    let session = value.get("session").and_then(|v| v.as_str()).unwrap_or("").trim();
-    if session.is_empty() {
-        return Response::bad_request("session is required");
-    }
-    let to = value.get("to").and_then(|v| v.as_str()).unwrap_or("").to_string();
-    if let Ok(mut store) = options.canvas.lock() {
-        let queue = store.entry(session.to_string()).or_default();
-        queue.push(value.clone());
-        if queue.len() > 500 {
-            let excess = queue.len() - 500;
-            queue.drain(0..excess);
-        }
+    let to = value
+        .get("to")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let queued = options
+        .canvas
+        .lock()
+        .map(|mut store| queue_canvas_signal(&mut store, value.clone()))
+        .unwrap_or(false);
+    if !queued {
+        return Response::bad_request("invalid signal or signaling capacity reached");
     }
     if looks_like_username(&to) && ensure_chat_node(mem, options).is_ok() {
         if let Some(peer) = peer_id_from_ed25519_hex(&to) {
@@ -2381,7 +3270,10 @@ fn mutation_canvas_snapshot(mem: &MemCli, body: &str) -> Response {
         Ok(value) => value,
         Err(response) => return response,
     };
-    let session = value.get("session").and_then(|v| v.as_str()).unwrap_or("snapshot");
+    let session = value
+        .get("session")
+        .and_then(|v| v.as_str())
+        .unwrap_or("snapshot");
     let html = value.get("html").and_then(|v| v.as_str()).unwrap_or("");
     if html.is_empty() {
         return Response::bad_request("html is required");
@@ -2395,7 +3287,11 @@ fn mutation_canvas_snapshot(mem: &MemCli, body: &str) -> Response {
         .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_'))
         .take(48)
         .collect();
-    let safe = if safe.is_empty() { "snapshot".to_string() } else { safe };
+    let safe = if safe.is_empty() {
+        "snapshot".to_string()
+    } else {
+        safe
+    };
     let folder = store.join("canvas").join(&safe);
     if let Err(error) = std::fs::create_dir_all(&folder) {
         return Response::error(format!("create snapshot dir: {error}"));
@@ -2486,7 +3382,9 @@ fn _skip_dir(name: &str) -> bool {
 /// Relative paths of every file under `dir` (the AI-written site files), sorted.
 fn folder_files(dir: &std::path::Path) -> Vec<String> {
     fn walk(base: &std::path::Path, cur: &std::path::Path, out: &mut Vec<String>) {
-        let Ok(entries) = std::fs::read_dir(cur) else { return };
+        let Ok(entries) = std::fs::read_dir(cur) else {
+            return;
+        };
         for entry in entries.flatten() {
             if out.len() > 2000 {
                 return;
@@ -2497,10 +3395,18 @@ fn folder_files(dir: &std::path::Path) -> Vec<String> {
                 continue;
             }
             let path = entry.path();
-            if path.is_dir() {
+            let Ok(metadata) = std::fs::symlink_metadata(&path) else {
+                continue;
+            };
+            if metadata.file_type().is_symlink() {
+                continue;
+            }
+            if metadata.is_dir() {
                 walk(base, &path, out);
-            } else if let Ok(rel) = path.strip_prefix(base) {
-                out.push(rel.to_string_lossy().replace('\\', "/"));
+            } else if metadata.is_file() {
+                if let Ok(rel) = path.strip_prefix(base) {
+                    out.push(rel.to_string_lossy().replace('\\', "/"));
+                }
             }
         }
     }
@@ -2513,18 +3419,28 @@ fn folder_files(dir: &std::path::Path) -> Vec<String> {
 /// The newest modification time (unix secs) across the folder — the hot-reload signal.
 fn folder_mtime(dir: &std::path::Path) -> u64 {
     fn walk(cur: &std::path::Path, max: &mut u64) {
-        let Ok(entries) = std::fs::read_dir(cur) else { return };
+        let Ok(entries) = std::fs::read_dir(cur) else {
+            return;
+        };
         for entry in entries.flatten() {
             let name = entry.file_name();
             if _skip_dir(&name.to_string_lossy()) {
                 continue;
             }
             let path = entry.path();
-            if path.is_dir() {
+            let Ok(metadata) = std::fs::symlink_metadata(&path) else {
+                continue;
+            };
+            if metadata.file_type().is_symlink() {
+                continue;
+            }
+            if metadata.is_dir() {
                 walk(&path, max);
-            } else if let Ok(modified) = entry.metadata().and_then(|m| m.modified()) {
-                if let Ok(dur) = modified.duration_since(std::time::UNIX_EPOCH) {
-                    *max = (*max).max(dur.as_secs());
+            } else if metadata.is_file() {
+                if let Ok(modified) = metadata.modified() {
+                    if let Ok(dur) = modified.duration_since(std::time::UNIX_EPOCH) {
+                        *max = (*max).max(dur.as_secs());
+                    }
                 }
             }
         }
@@ -2581,6 +3497,9 @@ fn mutation_canvas_open(options: &GuiOptions, body: &str) -> Response {
     };
     let token = preview_token(&canon);
     if let Ok(mut dirs) = options.preview_dirs.lock() {
+        if !dirs.contains_key(&token) && dirs.len() >= MAX_PREVIEW_DIRS {
+            return Response::too_many_requests();
+        }
         dirs.insert(token.clone(), canon.clone());
     }
     Response::json(
@@ -2625,8 +3544,17 @@ fn canvas_mtime_get(options: &GuiOptions, query: &str) -> Response {
 fn canvas_preview_serve(options: &GuiOptions, rest: &str) -> Response {
     let (token, relpath) = rest.split_once('/').unwrap_or((rest, ""));
     let relpath = percent_decode(relpath);
-    let relpath = if relpath.trim_matches('/').is_empty() { "index.html".to_string() } else { relpath };
-    let Some(dir) = options.preview_dirs.lock().ok().and_then(|d| d.get(token).cloned()) else {
+    let relpath = if relpath.trim_matches('/').is_empty() {
+        "index.html".to_string()
+    } else {
+        relpath
+    };
+    let Some(dir) = options
+        .preview_dirs
+        .lock()
+        .ok()
+        .and_then(|d| d.get(token).cloned())
+    else {
         return Response::not_found();
     };
     let candidate = dir.join(&relpath);
@@ -2641,7 +3569,11 @@ fn canvas_preview_serve(options: &GuiOptions, rest: &str) -> Response {
         return Response::not_found();
     }
     match std::fs::read(&canon) {
-        Ok(bytes) => Response::new(200, site_media_type(&canon.to_string_lossy()), bytes),
+        Ok(bytes) => {
+            let mut response = Response::new(200, site_media_type(&canon.to_string_lossy()), bytes);
+            response.embeddable = true;
+            response
+        }
         Err(_) => Response::not_found(),
     }
 }
@@ -2657,6 +3589,157 @@ fn requests_json(mem: &MemCli) -> CoreResult<String> {
         })
         .collect();
     Ok(serde_json::json!({ "requests": items }).to_string())
+}
+
+/// The approved peers — usernames whose direct messages we accept. Surfaced in the
+/// Messenger tab so the user can see (and revoke) who can reach them. Each carries
+/// the deterministic 1:1 thread id so the UI can open the conversation directly.
+fn contacts_json(mem: &MemCli) -> CoreResult<String> {
+    let me = mem.identity().map(|id| id.agent_id().0).unwrap_or_default();
+    let items: Vec<serde_json::Value> = mem
+        .approved_contacts()?
+        .into_iter()
+        .map(|username| {
+            let room = if me.is_empty() {
+                String::new()
+            } else {
+                dm_room_id(&me, &username)
+            };
+            // Sovereign naming (Layers 1+2): resolve a display name + provenance.
+            let resolved = mem.resolve_display(&username);
+            let card = mem.card_of(&username).ok().flatten();
+            serde_json::json!({
+                "username": username,
+                "room": room,
+                "name": resolved.text,
+                "name_source": resolved.source,
+                "verified": resolved.verified,
+                "avatar": card.as_ref().and_then(|c| c.avatar.clone()),
+                "site_ipns": card.as_ref().and_then(|c| c.site_ipns.clone()),
+            })
+        })
+        .collect();
+    Ok(serde_json::json!({ "contacts": items }).to_string())
+}
+
+/// `GET /api/profile` — the user's own (signed) contact card, for the editor.
+fn profile_json(mem: &MemCli) -> CoreResult<String> {
+    let card = mem.my_card()?;
+    Ok(serde_json::json!({
+        "did": card.did,
+        "display_name": card.display_name,
+        "bio": card.bio,
+        "avatar": card.avatar,
+        "site_ipns": card.site_ipns,
+        "agent_id": mem.identity().map(|id| id.agent_id().0).unwrap_or_default(),
+    })
+    .to_string())
+}
+
+/// `GET /api/resolve?q=` — reverse name lookup (the disambiguation set for `@name`).
+fn resolve_response(mem: &MemCli, query: &str) -> Response {
+    let params = parse_query(query);
+    let q = params.get("q").map(String::as_str).unwrap_or("");
+    let matches: Vec<serde_json::Value> = mem
+        .resolve_name(q)
+        .into_iter()
+        .map(|(agent_id, name)| {
+            serde_json::json!({ "agent_id": agent_id, "name": name.text, "source": name.source, "verified": name.verified })
+        })
+        .collect();
+    Response::json(serde_json::json!({ "matches": matches }).to_string())
+}
+
+/// Compact the store: run GC to reclaim unreferenced (superseded) blocks and trim
+/// the auto-checkpoint chain to the configured keep-count. Safe by construction —
+/// only blocks no live name, kept checkpoint, or Decision can reach are removed,
+/// and each removal records a tombstone receipt. Local maintenance, never egress.
+fn mutation_compact(mem: &MemCli, options: &GuiOptions) -> Response {
+    match mem.gc(&concierge_core::GcPolicy {
+        keep_checkpoints: None,
+    }) {
+        Ok(report) => {
+            options.log(
+                "ok",
+                format!(
+                    "compacted store · reclaimed {} block(s), kept {}",
+                    report.removed, report.kept
+                ),
+            );
+            Response::json(
+                serde_json::json!({ "removed": report.removed, "kept": report.kept }).to_string(),
+            )
+        }
+        Err(error) => Response::error(error.to_string()),
+    }
+}
+
+/// Set (or, with an empty name, clear) a local petname for an AgentID — Layer 1.
+fn mutation_petname(mem: &MemCli, body: &str) -> Response {
+    let value = match parse_body(body) {
+        Ok(value) => value,
+        Err(response) => return response,
+    };
+    let agent_id = match body_str(&value, "agent_id") {
+        Ok(a) => a.trim(),
+        Err(response) => return response,
+    };
+    if agent_id.is_empty() {
+        return Response::bad_request("agent_id is required");
+    }
+    let name = value
+        .get("name")
+        .and_then(|n| n.as_str())
+        .unwrap_or("")
+        .trim();
+    let result = if name.is_empty() {
+        mem.remove_nickname(agent_id)
+    } else {
+        mem.set_nickname(agent_id, name)
+    };
+    match result {
+        Ok(()) => Response::json(serde_json::json!({ "ok": true }).to_string()),
+        Err(error) => Response::error(error.to_string()),
+    }
+}
+
+/// Edit the user's own contact card (Layer 2 self-asserted profile).
+fn mutation_profile(mem: &MemCli, body: &str) -> Response {
+    let value = match parse_body(body) {
+        Ok(value) => value,
+        Err(response) => return response,
+    };
+    let field = |k: &str| value.get(k).and_then(|v| v.as_str());
+    match mem.update_my_card(
+        field("display_name"),
+        field("bio"),
+        field("avatar"),
+        field("site_ipns"),
+    ) {
+        Ok(()) => to_response(profile_json(mem)),
+        Err(error) => Response::error(error.to_string()),
+    }
+}
+
+/// Revoke approval for a peer (they go back to needing a request to reach you).
+fn mutation_contact_remove(mem: &MemCli, body: &str) -> Response {
+    let value = match parse_body(body) {
+        Ok(value) => value,
+        Err(response) => return response,
+    };
+    let username = match body_str(&value, "username") {
+        Ok(username) => username.trim(),
+        Err(response) => return response,
+    };
+    if username.is_empty() {
+        return Response::bad_request("username is required");
+    }
+    match mem.remove_contact(username) {
+        Ok(removed) => {
+            Response::json(serde_json::json!({ "ok": true, "removed": removed }).to_string())
+        }
+        Err(error) => Response::error(error.to_string()),
+    }
 }
 
 /// Accept (approve sender + flush their held messages into the thread) or decline
@@ -2675,9 +3758,9 @@ fn mutation_request_decision(mem: &MemCli, body: &str, accept: bool) -> Response
     }
     if accept {
         match mem.accept_contact(username) {
-            Ok(delivered) => {
-                Response::json(serde_json::json!({ "ok": true, "delivered": delivered }).to_string())
-            }
+            Ok(delivered) => Response::json(
+                serde_json::json!({ "ok": true, "delivered": delivered }).to_string(),
+            ),
             Err(error) => Response::error(error.to_string()),
         }
     } else {
@@ -2719,7 +3802,11 @@ fn mutation_network_create(mem: &MemCli, body: &str) -> Response {
         Ok(value) => value,
         Err(response) => return response,
     };
-    let name = value.get("name").and_then(|n| n.as_str()).unwrap_or("").trim();
+    let name = value
+        .get("name")
+        .and_then(|n| n.as_str())
+        .unwrap_or("")
+        .trim();
     if name.is_empty() {
         return Response::bad_request("network name is required");
     }
@@ -2736,7 +3823,11 @@ fn mutation_network_revoke(mem: &MemCli, body: &str) -> Response {
         Ok(value) => value,
         Err(response) => return response,
     };
-    let subject = value.get("subject").and_then(|s| s.as_str()).unwrap_or("").trim();
+    let subject = value
+        .get("subject")
+        .and_then(|s| s.as_str())
+        .unwrap_or("")
+        .trim();
     if subject.is_empty() {
         return Response::bad_request("subject id is required");
     }
@@ -2822,7 +3913,15 @@ fn body_str<'a>(value: &'a serde_json::Value, key: &str) -> Result<&'a str, Resp
 /// Directory names skipped when ingesting a folder/repo: build output and VCS
 /// internals, which are noise rather than content.
 const INGEST_SKIP_DIRS: &[&str] = &[
-    ".git", "node_modules", "target", ".next", "dist", "build", ".venv", "__pycache__", ".cache",
+    ".git",
+    "node_modules",
+    "target",
+    ".next",
+    "dist",
+    "build",
+    ".venv",
+    "__pycache__",
+    ".cache",
 ];
 
 /// Accumulator for a file/folder ingest: the manifest entries plus tallies.
@@ -2846,8 +3945,8 @@ fn guess_media_type_path(path: &str) -> &'static str {
     match ext.as_str() {
         "txt" | "md" | "markdown" | "rs" | "toml" | "json" | "jsonl" | "ndjson" | "js" | "mjs"
         | "ts" | "tsx" | "jsx" | "py" | "go" | "c" | "h" | "cc" | "cpp" | "hpp" | "java" | "kt"
-        | "rb" | "sh" | "bash" | "zsh" | "yml" | "yaml" | "html" | "htm" | "css" | "scss" | "csv"
-        | "tsv" | "log" | "xml" | "ini" | "cfg" | "conf" | "sql" | "lock" | "gitignore" => {
+        | "rb" | "sh" | "bash" | "zsh" | "yml" | "yaml" | "html" | "htm" | "css" | "scss"
+        | "csv" | "tsv" | "log" | "xml" | "ini" | "cfg" | "conf" | "sql" | "lock" | "gitignore" => {
             "text/plain"
         }
         "png" => "image/png",
@@ -2907,7 +4006,8 @@ fn ingest_one_file(
         kind: "file_ref".to_string(),
         fields_json: fields.to_string(),
     })?;
-    acc.entries.push(serde_json::json!({ "path": rel, "file_ref": cid_link(&file_ref)? }));
+    acc.entries
+        .push(serde_json::json!({ "path": rel, "file_ref": cid_link(&file_ref)? }));
     acc.files += 1;
     acc.bytes += bytes.len() as u64;
     Ok(Some(file_ref))
@@ -2962,7 +4062,13 @@ fn import_binding_name(path: &std::path::Path) -> String {
         .unwrap_or_else(|| "import".to_string());
     let safe: String = base
         .chars()
-        .map(|ch| if ch.is_ascii_alphanumeric() || ch == '.' || ch == '-' || ch == '_' { ch } else { '-' })
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || ch == '.' || ch == '-' || ch == '_' {
+                ch
+            } else {
+                '-'
+            }
+        })
         .collect();
     let ts = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -3064,8 +4170,7 @@ fn mutation_ingest_path(mem: &MemCli, body: &str) -> Response {
             .parent()
             .map(std::path::Path::to_path_buf)
             .unwrap_or_else(|| std::path::PathBuf::from("."));
-        let report =
-            concierge_adapter_jsonl::ingest(std::io::BufReader::new(file), mem, &base_dir);
+        let report = concierge_adapter_jsonl::ingest(std::io::BufReader::new(file), mem, &base_dir);
         return Response::json(
             serde_json::json!({
                 "ok": true, "kind": "session",
@@ -3115,8 +4220,11 @@ fn mutation_ingest(mem: &MemCli, options: &GuiOptions, body: &str) -> Response {
         Err(response) => return response,
     };
     let base_dir = std::path::PathBuf::from(&options.store_label);
-    let report =
-        concierge_adapter_jsonl::ingest(std::io::BufReader::new(content.as_bytes()), mem, &base_dir);
+    let report = concierge_adapter_jsonl::ingest(
+        std::io::BufReader::new(content.as_bytes()),
+        mem,
+        &base_dir,
+    );
     Response::json(
         serde_json::json!({
             "ok": true,
@@ -3257,7 +4365,9 @@ fn mutation_unlock(mem: &MemCli, body: &str) -> Response {
             // records that simply have no direct lock to remove.
             match mem.unlock_subgraph(&cid, password) {
                 Ok(()) => unlocked_count += 1,
-                Err(error @ (Error::AuthenticationFailed | Error::AuthenticationRateLimited { .. })) => {
+                Err(
+                    error @ (Error::AuthenticationFailed | Error::AuthenticationRateLimited { .. }),
+                ) => {
                     return mutation_error(&error);
                 }
                 Err(_) => {}
@@ -3282,9 +4392,9 @@ fn mutation_unlock(mem: &MemCli, body: &str) -> Response {
         Err(error) => return mutation_error(&error),
     };
     match mem.unlock_subgraph(&root, password) {
-        Ok(()) => Response::json(
-            serde_json::json!({ "unlocked": true, "root": root.0 }).to_string(),
-        ),
+        Ok(()) => {
+            Response::json(serde_json::json!({ "unlocked": true, "root": root.0 }).to_string())
+        }
         Err(error) => mutation_error(&error),
     }
 }
@@ -3348,9 +4458,9 @@ fn mutation_refence(mem: &MemCli, body: &str) -> Response {
         Err(error) => return mutation_error(&error),
     };
     match mem.refence(&root) {
-        Ok(()) => Response::json(
-            serde_json::json!({ "refenced": true, "root": root.0 }).to_string(),
-        ),
+        Ok(()) => {
+            Response::json(serde_json::json!({ "refenced": true, "root": root.0 }).to_string())
+        }
         Err(error) => mutation_error(&error),
     }
 }
@@ -3491,16 +4601,19 @@ pub fn serve_with_options(mem: MemCli, addr: &str, options: GuiOptions) -> CoreR
     if options.open_browser {
         let _ = open_browser(&format!("http://{addr}"));
     }
-    
+
     if let Some(pid) = options.watch_pid {
-        std::thread::spawn(move || {
-            loop {
-                std::thread::sleep(std::time::Duration::from_secs(2));
-                #[cfg(unix)]
-                let alive = unsafe { libc::kill(pid as i32, 0) == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM) };
-                #[cfg(not(unix))]
-                let alive = true;
-                if !alive { std::process::exit(0); }
+        std::thread::spawn(move || loop {
+            std::thread::sleep(std::time::Duration::from_secs(2));
+            #[cfg(unix)]
+            let alive = unsafe {
+                libc::kill(pid as i32, 0) == 0
+                    || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+            };
+            #[cfg(not(unix))]
+            let alive = true;
+            if !alive {
+                std::process::exit(0);
             }
         });
     }
@@ -3532,7 +4645,9 @@ pub fn serve_with_options(mem: MemCli, addr: &str, options: GuiOptions) -> CoreR
 
 /// The consent sentinel: its presence means "attached / capturing".
 fn capture_flag_path(mem: &MemCli) -> Option<std::path::PathBuf> {
-    mem.store_dir().ok().map(|dir| dir.join("capture-claude-code"))
+    mem.store_dir()
+        .ok()
+        .map(|dir| dir.join("capture-claude-code"))
 }
 
 fn claude_code_attached(mem: &MemCli) -> bool {
@@ -3549,7 +4664,7 @@ fn set_claude_code_attached(mem: &MemCli, attached: bool) -> std::io::Result<()>
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        std::fs::write(&path, b"attached")
+        atomic_local_write(&path, b"attached")
     } else if path.exists() {
         std::fs::remove_file(&path)
     } else {
@@ -3560,7 +4675,9 @@ fn set_claude_code_attached(mem: &MemCli, attached: bool) -> std::io::Result<()>
 /// Where per-file ingest offsets are persisted across relaunches, so a restart
 /// resumes the tail instead of re-scanning every session from byte 0.
 fn capture_offsets_path(mem: &MemCli) -> Option<std::path::PathBuf> {
-    mem.store_dir().ok().map(|dir| dir.join("capture-offsets.json"))
+    mem.store_dir()
+        .ok()
+        .map(|dir| dir.join("capture-offsets.json"))
 }
 
 fn load_capture_offsets(mem: &MemCli) -> std::collections::HashMap<std::path::PathBuf, u64> {
@@ -3579,7 +4696,10 @@ fn load_capture_offsets(mem: &MemCli) -> std::collections::HashMap<std::path::Pa
         .unwrap_or_default()
 }
 
-fn save_capture_offsets(mem: &MemCli, offsets: &std::collections::HashMap<std::path::PathBuf, u64>) {
+fn save_capture_offsets(
+    mem: &MemCli,
+    offsets: &std::collections::HashMap<std::path::PathBuf, u64>,
+) {
     let Some(path) = capture_offsets_path(mem) else {
         return;
     };
@@ -3591,7 +4711,7 @@ fn save_capture_offsets(mem: &MemCli, offsets: &std::collections::HashMap<std::p
         if let Some(parent) = path.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
-        let _ = std::fs::write(&path, text);
+        let _ = atomic_local_write(&path, text.as_bytes());
     }
 }
 
@@ -3694,11 +4814,8 @@ fn write_gui_lock(mem: &MemCli, port: u16) {
     let Some(path) = gui_lock_path(mem) else {
         return;
     };
-    if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
     let body = serde_json::json!({ "pid": std::process::id(), "port": port }).to_string();
-    let _ = std::fs::write(path, body);
+    let _ = atomic_local_write(&path, body.as_bytes());
 }
 
 /// If a Data Platter is already serving this store, its port. Verified by
@@ -3857,13 +4974,14 @@ fn read_request(stream: &mut TcpStream) -> std::io::Result<RequestOutcome> {
         }
     }
 
-    // Read the body (if any). Ingest uploads get a larger budget than the small
-    // control mutations.
-    let body_limit = if target.split('?').next() == Some("/api/ingest") {
-        MAX_INGEST_BODY_BYTES
-    } else {
-        MAX_BODY_BYTES
-    };
+    // Read the body (if any). Ingest and Site operations get a larger budget.
+    let path = target.split('?').next().unwrap_or("/");
+    let body_limit =
+        if path == "/api/ingest" || path == "/api/canvas/snapshot" || path == "/api/site/publish" {
+            MAX_LARGE_BODY_BYTES
+        } else {
+            MAX_BODY_BYTES
+        };
     let content_length = headers
         .get("content-length")
         .and_then(|value| value.parse::<usize>().ok())
@@ -3946,7 +5064,7 @@ fn reason_phrase(status: u16) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use concierge_core::{cid_link, CoreBinding, GcPolicy, Node};
+    use concierge_core::{cid_link, naming::ContactCard, CoreBinding, GcPolicy, Identity, Node};
     use std::io::{Read, Write};
     use std::path::Path;
 
@@ -4046,7 +5164,12 @@ mod tests {
         let cid = put_named(&mem, "latest", "<img src=x onerror=alert(1)>");
         let names = body(&handle(&mem, "/api/names", ""));
         let record = body(&handle(&mem, "/api/record", "name=latest"));
-        let options = GuiOptions::new("hermes-model".to_string(), "/tmp/store".to_string(), false, None);
+        let options = GuiOptions::new(
+            "hermes-model".to_string(),
+            "/tmp/store".to_string(),
+            false,
+            None,
+        );
         let meta = body(&handle_with_options(&mem, &options, "/api/meta", ""));
         assert!(names.contains("latest"));
         // The Names timeline needs a date, a kind, and a human description per
@@ -4079,8 +5202,7 @@ mod tests {
             known_public: BTreeSet::new(),
             quarantined: BTreeSet::new(),
         };
-        let (node, _) =
-            node_and_links_from_record(&mem, &privacy, &BTreeSet::new(), &cid, &record);
+        let (node, _) = node_and_links_from_record(&mem, &privacy, &BTreeSet::new(), &cid, &record);
 
         // A fence is an EGRESS safeguard, not a local-view control — the user sees
         // their own data on their own device. So content + metadata are fully
@@ -4107,14 +5229,26 @@ mod tests {
         let month = &today[0..7];
 
         assert!(forest.contains("\"cid\":\"store:root\""));
-        assert!(forest.contains(&format!("year:{year}")), "year tier present");
-        assert!(forest.contains(&format!("month:{month}")), "month tier present");
+        assert!(
+            forest.contains(&format!("year:{year}")),
+            "year tier present"
+        );
+        assert!(
+            forest.contains(&format!("month:{month}")),
+            "month tier present"
+        );
         assert!(forest.contains(&format!("day:{today}")), "day tier present");
         assert!(forest.contains("\"relation\":\"year\""));
         assert!(forest.contains("\"relation\":\"day\""));
         // The leaf is the SESSION, not the individual records.
-        assert!(forest.contains("\"relation\":\"session\""), "session relation");
-        assert!(forest.contains("\"kind\":\"session\""), "session leaf present");
+        assert!(
+            forest.contains("\"relation\":\"session\""),
+            "session relation"
+        );
+        assert!(
+            forest.contains("\"kind\":\"session\""),
+            "session leaf present"
+        );
         // Individual event records are not drawn — the Records tab goes deeper.
         assert!(
             !forest.contains(&e1.0) && !forest.contains(&e2.0),
@@ -4178,10 +5312,15 @@ mod tests {
         drop(listener);
         let mut config = mem.config().expect("config");
         config.publishing.ipfs_api = format!("http://127.0.0.1:{dead_port}/api/v0");
-        config.save_to_project_root(dir.path()).expect("save config");
+        config
+            .save_to_project_root(dir.path())
+            .expect("save config");
 
         let response = handle(&mem, "/api/stats", "");
-        assert_eq!(response.status, 200, "stats must never fail when the node is down");
+        assert_eq!(
+            response.status, 200,
+            "stats must never fail when the node is down"
+        );
         let stats = body(&response);
         assert!(stats.contains("\"publishing_ready\":false"));
         assert!(stats.contains("\"reachable\":false"));
@@ -4197,22 +5336,41 @@ mod tests {
         assert!(body(&handle(&mem, "/api/network", "")).contains("\"networks\":[]"));
 
         // Found a network from the Data Platter (no CLI).
-        let created = handle_mutation(&mem, &opts, "/api/network/create", r#"{"name":"research-team"}"#);
+        let created = handle_mutation(
+            &mem,
+            &opts,
+            "/api/network/create",
+            r#"{"name":"research-team"}"#,
+        );
         assert_eq!(created.status, 200);
         let map = body(&created);
         assert!(map.contains("research-team"));
         assert!(map.contains("\"is_root\":true"), "this device founded it");
         assert!(map.contains("\"membership_epoch\":0"));
         assert!(map.contains("\"descriptor_valid\":true"));
-        assert!(map.contains("\"valid\":true"), "the founding device's membership/capabilities verify");
+        assert!(
+            map.contains("\"valid\":true"),
+            "the founding device's membership/capabilities verify"
+        );
 
         // Revoke a subject → the epoch advances and the subject is listed revoked.
         let subject = "aaaa1111bbbb2222cccc3333dddd4444eeee5555ffff6666aaaa7777bbbb8888";
-        let revoked = handle_mutation(&mem, &opts, "/api/network/revoke", &format!(r#"{{"subject":"{subject}"}}"#));
+        let revoked = handle_mutation(
+            &mem,
+            &opts,
+            "/api/network/revoke",
+            &format!(r#"{{"subject":"{subject}"}}"#),
+        );
         assert_eq!(revoked.status, 200);
         let after = body(&revoked);
-        assert!(after.contains("\"membership_epoch\":1"), "revocation advanced the epoch");
-        assert!(after.contains(subject), "the revoked subject is surfaced in the map");
+        assert!(
+            after.contains("\"membership_epoch\":1"),
+            "revocation advanced the epoch"
+        );
+        assert!(
+            after.contains(subject),
+            "the revoked subject is surfaced in the map"
+        );
     }
 
     #[test]
@@ -4221,11 +5379,98 @@ mod tests {
         // its required fields and never takes the password in the URL.
         let (_dir, mem) = store();
         let opts = GuiOptions::default();
-        assert_eq!(handle_mutation(&mem, &opts, "/api/network/rotate", r#"{"password":"pw"}"#).status, 400);
-        assert_eq!(handle_mutation(&mem, &opts, "/api/network/rotate", r#"{"ciphertext_root":"bafyX"}"#).status, 400);
+        assert_eq!(
+            handle_mutation(&mem, &opts, "/api/network/rotate", r#"{"password":"pw"}"#).status,
+            400
+        );
+        assert_eq!(
+            handle_mutation(
+                &mem,
+                &opts,
+                "/api/network/rotate",
+                r#"{"ciphertext_root":"bafyX"}"#
+            )
+            .status,
+            400
+        );
         // Well-formed but unknown root → a clean error, not a panic.
-        let resp = handle_mutation(&mem, &opts, "/api/network/rotate", r#"{"ciphertext_root":"bafyUNKNOWN","password":"pw"}"#);
+        let resp = handle_mutation(
+            &mem,
+            &opts,
+            "/api/network/rotate",
+            r#"{"ciphertext_root":"bafyUNKNOWN","password":"pw"}"#,
+        );
         assert_ne!(resp.status, 200);
+    }
+
+    #[test]
+    fn studio_publish_checkpoints_record_list_and_restore() {
+        let (dir, mem) = store();
+        // A "published" folder with its index.html.
+        let folder = dir.path().join("pub");
+        std::fs::create_dir_all(&folder).unwrap();
+        std::fs::write(folder.join("index.html"), "<h1>v1</h1>").unwrap();
+        record_site_checkpoint(
+            &mem,
+            "my-site",
+            folder.to_str().unwrap(),
+            Some("k51test"),
+            "bafytest",
+            "https://ipfs.io/ipns/k51test",
+        )
+        .unwrap();
+
+        // Listed (timestamped, with the stable IPNS), newest first.
+        let listed = body(&handle(&mem, "/api/site/checkpoints", ""));
+        let v: serde_json::Value = serde_json::from_str(&listed).unwrap();
+        let first = &v["checkpoints"][0];
+        assert_eq!(first["site"].as_str(), Some("my-site"), "{listed}");
+        assert_eq!(first["ipns"].as_str(), Some("k51test"));
+        let ts = first["ts"].as_u64().expect("timestamp present");
+
+        // Restorable: the saved HTML comes back for re-editing.
+        let restored = body(&handle(
+            &mem,
+            "/api/site/checkpoint",
+            &format!("site=my-site&ts={ts}"),
+        ));
+        assert!(
+            restored.contains("<h1>v1</h1>"),
+            "restores saved html: {restored}"
+        );
+
+        // A non-numeric ts is rejected (no path games).
+        assert_eq!(
+            handle(&mem, "/api/site/checkpoint", "site=my-site&ts=evil").status,
+            400
+        );
+    }
+
+    #[test]
+    fn compact_runs_gc_and_reports_what_it_reclaimed() {
+        let (_dir, mem) = store();
+        // A named node survives; an unnamed put is a reclaimable orphan.
+        put_named(&mem, "keep", "a kept memory under a live name");
+        mem.put_node(&Node {
+            kind: "memory".to_string(),
+            fields_json: r#"{"text":"orphan","kind":"project"}"#.to_string(),
+        })
+        .expect("put orphan");
+
+        let opts = GuiOptions::default();
+        let resp = handle_mutation(&mem, &opts, "/api/compact", "{}");
+        assert_eq!(resp.status, 200, "{}", body(&resp));
+        let parsed: serde_json::Value = serde_json::from_str(&body(&resp)).unwrap();
+        assert!(
+            parsed["removed"].is_u64(),
+            "reports a reclaimed count: {parsed}"
+        );
+        assert!(
+            parsed["kept"].as_u64().unwrap() >= 1,
+            "the named node is kept: {parsed}"
+        );
+        // The live graph is intact after compaction.
+        assert_eq!(handle(&mem, "/api/names", "").status, 200);
     }
 
     #[test]
@@ -4258,14 +5503,26 @@ mod tests {
         assert!(text.contains(&cid.0));
         assert!(text.contains("\"ai_send\":\"on\""));
         // Moderator badge data (Phase 8 §3/§4): Guardian status + synthesis flag.
-        assert!(text.contains("\"guardian\":\"active\""), "Guardian badge present");
-        assert!(text.contains("\"synthesis_candidate\":false"), "short thread is not a candidate");
+        assert!(
+            text.contains("\"guardian\":\"active\""),
+            "Guardian badge present"
+        );
+        assert!(
+            text.contains("\"synthesis_candidate\":false"),
+            "short thread is not a candidate"
+        );
         assert!(text.contains("\"message_count\":1"));
         // Phase N · Phase I — social legibility: a self-authored message is `Local`,
         // carries a structural-importance count, and the follow-lens flag.
-        assert!(text.contains("\"trust_tier\":\"local\""), "own message is the Local tier");
+        assert!(
+            text.contains("\"trust_tier\":\"local\""),
+            "own message is the Local tier"
+        );
         assert!(text.contains("\"trust_label\":\"Local\""));
-        assert!(text.contains("\"importance\":0"), "an orphan message ties nothing together yet");
+        assert!(
+            text.contains("\"importance\":0"),
+            "an orphan message ties nothing together yet"
+        );
         assert!(text.contains("\"followed\":false"));
     }
 
@@ -4308,6 +5565,93 @@ mod tests {
         assert!(response.contains("Cache-Control: no-store"));
         assert!(!response.contains("Access-Control-Allow-Origin"));
         assert!(!response.contains("Set-Cookie"));
+    }
+
+    #[test]
+    fn canvas_preview_is_opaque_origin_and_frameable() {
+        let (_dir, mem) = store();
+        let options = GuiOptions::default();
+        let site = tempfile::tempdir().expect("site tempdir");
+        std::fs::write(
+            site.path().join("index.html"),
+            "<script>document.body.textContent='ok'</script>",
+        )
+        .expect("write preview");
+        let token = preview_token(site.path());
+        options.preview_dirs.lock().expect("preview lock").insert(
+            token.clone(),
+            site.path().canonicalize().expect("canonical site"),
+        );
+
+        let preview = canvas_preview_serve(&options, &format!("{token}/index.html"));
+        assert_eq!(preview.status, 200);
+        assert!(preview.embeddable);
+
+        let page = body(&handle(&mem, "/", ""));
+        assert!(page.contains(r#"sandbox="allow-scripts""#));
+        assert!(!page.contains("allow-same-origin"));
+        assert!(!page.contains("allow-popups"));
+        assert!(!page.contains("allow-forms"));
+    }
+
+    #[test]
+    fn remote_canvas_and_cards_require_the_approved_transport_peer() {
+        let (_dir, mem) = store();
+        let identity = Identity::generate();
+        let agent_id = identity.agent_id().0;
+        let peer_id = peer_id_from_ed25519_hex(&agent_id)
+            .expect("peer id")
+            .to_string();
+        assert!(!approved_agent_matches_peer(&mem, &agent_id, &peer_id));
+        mem.add_contact(&agent_id).expect("approve contact");
+        assert!(approved_agent_matches_peer(&mem, &agent_id, &peer_id));
+        assert!(!approved_agent_matches_peer(&mem, &agent_id, "forged-peer"));
+
+        let mut card = ContactCard::new(&identity.agent_id(), "approved", 1).expect("card");
+        card.sign(&identity);
+        let card_json = serde_json::to_string(&card).expect("card json");
+        assert_eq!(
+            approved_contact_card_author(&mem, &card_json, &peer_id),
+            Some(agent_id)
+        );
+        assert!(approved_contact_card_author(&mem, &card_json, "forged-peer").is_none());
+    }
+
+    #[test]
+    fn canvas_signaling_and_discovery_registries_are_bounded() {
+        let mut canvas = HashMap::new();
+        for index in 0..(MAX_CANVAS_SESSIONS + 1) {
+            let accepted = queue_canvas_signal(
+                &mut canvas,
+                serde_json::json!({ "session": format!("session-{index}"), "from": "a", "to": "b" }),
+            );
+            assert_eq!(accepted, index < MAX_CANVAS_SESSIONS);
+        }
+        for index in 0..(MAX_CANVAS_SIGNAL_QUEUE + 10) {
+            assert!(queue_canvas_signal(
+                &mut canvas,
+                serde_json::json!({ "session": "session-0", "from": "a", "to": "b", "index": index }),
+            ));
+        }
+        assert_eq!(canvas["session-0"].len(), MAX_CANVAS_SIGNAL_QUEUE);
+
+        let now = 1_000;
+        let mut peers = std::collections::BTreeMap::new();
+        for index in 0..(MAX_DISCOVERY_PEERS + 20) {
+            peers.insert(
+                format!("peer-{index:04}"),
+                PeerInfo {
+                    peer_id: format!("peer-{index:04}"),
+                    status: "discovered",
+                    source: "test".to_string(),
+                    relayed: false,
+                    addresses: Vec::new(),
+                    last_seen: now,
+                },
+            );
+        }
+        prune_discovery_peers(&mut peers, now);
+        assert_eq!(peers.len(), MAX_DISCOVERY_PEERS);
     }
 
     #[test]
@@ -4370,9 +5714,21 @@ mod tests {
     #[test]
     fn semantic_search_returns_ranked_hits_for_a_query() {
         let (_dir, mem) = store();
-        let rustdoc = put_named(&mem, "rustdoc", "the rust borrow checker enforces ownership and lifetimes");
-        put_named(&mem, "cooking", "sourdough fermentation needs a live starter and time");
-        let body = body(&handle(&mem, "/api/search", "q=rust%20ownership&budget=2000&depth=summary"));
+        let rustdoc = put_named(
+            &mem,
+            "rustdoc",
+            "the rust borrow checker enforces ownership and lifetimes",
+        );
+        put_named(
+            &mem,
+            "cooking",
+            "sourdough fermentation needs a live starter and time",
+        );
+        let body = body(&handle(
+            &mem,
+            "/api/search",
+            "q=rust%20ownership&budget=2000&depth=summary",
+        ));
         assert!(body.contains("\"indexed\":"), "reports index size");
         assert!(body.contains("\"items\":"), "returns a ranked item list");
         assert!(
@@ -4382,10 +5738,107 @@ mod tests {
     }
 
     #[test]
+    fn system_console_activity_feed_records_what_the_concierge_does() {
+        let (_dir, mem) = store();
+        put_named(
+            &mem,
+            "rustdoc",
+            "the rust borrow checker enforces ownership and lifetimes",
+        );
+        let options = GuiOptions::default();
+
+        // Before any work the feed is empty, but the embedder is always reported
+        // (declared, not yet loaded) so the console can show the model immediately.
+        let initial = body(&handle_with_options(&mem, &options, "/api/activity", ""));
+        assert!(
+            initial.contains("\"embedder\":"),
+            "always reports the embedder: {initial}"
+        );
+        assert!(
+            initial.contains("\"built\":false"),
+            "no model loaded until the first search: {initial}"
+        );
+
+        // A search loads the embedder, indexes, and retrieves — each is surfaced.
+        let _ = handle_with_options(
+            &mem,
+            &options,
+            "/api/search",
+            "q=rust%20ownership&budget=2000",
+        );
+        let after = body(&handle_with_options(&mem, &options, "/api/activity", ""));
+        assert!(
+            after.contains("embedder ready"),
+            "embedder load shown: {after}"
+        );
+        assert!(after.contains("indexed"), "indexing shown: {after}");
+        assert!(after.contains("retrieve"), "retrieval shown: {after}");
+        assert!(
+            after.contains("\"built\":true"),
+            "embedder now reports as loaded: {after}"
+        );
+
+        // Incremental polling: ?since=<next_seq> returns only newer lines.
+        let parsed: serde_json::Value = serde_json::from_str(&after).unwrap();
+        let next_seq = parsed["next_seq"].as_u64().unwrap();
+        let tail = body(&handle_with_options(
+            &mem,
+            &options,
+            "/api/activity",
+            &format!("since={next_seq}"),
+        ));
+        let tail_parsed: serde_json::Value = serde_json::from_str(&tail).unwrap();
+        assert_eq!(
+            tail_parsed["entries"].as_array().unwrap().len(),
+            0,
+            "no new activity since the last poll: {tail}"
+        );
+    }
+
+    #[test]
     fn semantic_search_requires_a_query() {
         let (_dir, mem) = store();
         assert_eq!(handle(&mem, "/api/search", "q=").status, 400);
         assert_eq!(handle(&mem, "/api/search", "").status, 400);
+    }
+
+    #[test]
+    fn messenger_lists_and_revokes_approved_peers() {
+        let (_dir, mem) = store();
+        let peer = "ab".repeat(32); // a 64-hex username (AgentID)
+        mem.add_contact(&peer).unwrap();
+
+        let listed = body(&handle(&mem, "/api/contacts", ""));
+        assert!(
+            listed.contains(&peer),
+            "the approved peer is listed: {listed}"
+        );
+        assert!(
+            listed.contains("\"room\""),
+            "each peer carries its 1:1 thread id"
+        );
+
+        // Revoke through the same loopback mutation gate the UI uses.
+        let options = options_with_csrf("tok");
+        let remove = route_request(
+            &mem,
+            &options,
+            &post(
+                "/api/contacts/remove",
+                &format!("{{\"username\":\"{peer}\"}}"),
+                Some("127.0.0.1"),
+                Some("http://127.0.0.1"),
+                Some("tok"),
+            ),
+        );
+        assert_eq!(remove.status, 200, "{}", body(&remove));
+        assert!(body(&remove).contains("\"removed\":true"));
+
+        let after = body(&handle(&mem, "/api/contacts", ""));
+        assert!(
+            !after.contains(&peer),
+            "peer is gone after removal: {after}"
+        );
     }
 
     #[test]
@@ -4432,7 +5885,10 @@ mod tests {
         save_capture_offsets(&mem, &offsets);
         let reloaded = load_capture_offsets(&mem);
         assert_eq!(reloaded.get(std::path::Path::new("/p/a.jsonl")), Some(&128));
-        assert_eq!(reloaded.get(std::path::Path::new("/p/b.jsonl")), Some(&4096));
+        assert_eq!(
+            reloaded.get(std::path::Path::new("/p/b.jsonl")),
+            Some(&4096)
+        );
     }
 
     #[test]

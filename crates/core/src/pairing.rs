@@ -91,8 +91,12 @@ impl PairingOffer {
         if self.version != PAIRING_OFFER_VERSION {
             return Err(PairingError::Version);
         }
-        if verify_sig(&AgentId(self.admin_device_id.clone()), &self.signing_bytes(), &self.signature)
-            .map_err(PairingError::Malformed)?
+        if verify_sig(
+            &AgentId(self.admin_device_id.clone()),
+            &self.signing_bytes(),
+            &self.signature,
+        )
+        .map_err(PairingError::Malformed)?
         {
             Ok(())
         } else {
@@ -176,8 +180,12 @@ pub fn verify_pairing_response(
         return Err(PairingError::OfferMismatch);
     }
     let transcript = transcript_hash(offer, &response.device_id, &response.device_ephemeral);
-    if verify_sig(&AgentId(response.device_id.clone()), &transcript, &response.signature)
-        .map_err(PairingError::Malformed)?
+    if verify_sig(
+        &AgentId(response.device_id.clone()),
+        &transcript,
+        &response.signature,
+    )
+    .map_err(PairingError::Malformed)?
     {
         Ok(())
     } else {
@@ -215,7 +223,10 @@ pub fn approve(
         now,
         cert_ttl_secs,
         descriptor.membership_epoch,
-        scopes.iter().flat_map(|(_, ops)| ops.iter().map(op_name)).collect(),
+        scopes
+            .iter()
+            .flat_map(|(_, ops)| ops.iter().map(op_name))
+            .collect(),
     );
     let capabilities = scopes
         .iter()
@@ -232,7 +243,11 @@ pub fn approve(
             )
         })
         .collect();
-    PairingGrant { descriptor: descriptor.clone(), membership, capabilities }
+    PairingGrant {
+        descriptor: descriptor.clone(),
+        membership,
+        capabilities,
+    }
 }
 
 fn op_name(op: &Operation) -> String {
@@ -277,6 +292,7 @@ use std::path::PathBuf;
 
 use crate::binding::{Cid, MemCli};
 use crate::capability::verify_capability;
+use crate::egress::{atomic_private_write, ensure_private_dir, validate_private_file};
 use crate::error::{Error, Result as CoreResult};
 use crate::membership::{verify_membership, RevocationSet};
 
@@ -298,12 +314,23 @@ impl MemCli {
     /// **Admin side.** Mint a single-use pairing offer for `network_id` and persist
     /// it as pending, so a later [`MemCli::complete_pairing`] can match + consume
     /// it. Signed by this install's DeviceID. Carries no secrets — safe as a QR.
-    pub fn create_pairing_offer(&self, network_id: &NetworkId, rendezvous: &str) -> CoreResult<PairingOffer> {
+    pub fn create_pairing_offer(
+        &self,
+        network_id: &NetworkId,
+        rendezvous: &str,
+    ) -> CoreResult<PairingOffer> {
         self.ensure_security_dir()?;
+        ensure_private_dir(&self.pairing_dir()?)?;
         let admin_device = self.identity()?;
-        let offer = PairingOffer::create(&admin_device, network_id, rendezvous, now_secs(), DEFAULT_OFFER_TTL_SECS);
+        let offer = PairingOffer::create(
+            &admin_device,
+            network_id,
+            rendezvous,
+            now_secs(),
+            DEFAULT_OFFER_TTL_SECS,
+        );
         let dir = self.pairing_dir()?.join("offers");
-        std::fs::create_dir_all(&dir).map_err(|e| Error::Io(format!("create pairing dir: {e}")))?;
+        ensure_private_dir(&dir)?;
         write_json(&dir.join(format!("{}.json", offer.offer_id)), &offer)?;
         Ok(offer)
     }
@@ -313,8 +340,12 @@ impl MemCli {
     }
 
     fn consumed_offers(&self) -> CoreResult<std::collections::BTreeSet<String>> {
-        match std::fs::read_to_string(self.consumed_path()?) {
-            Ok(text) => serde_json::from_str(&text).map_err(|e| Error::Io(format!("parse consumed: {e}"))),
+        let path = self.consumed_path()?;
+        match std::fs::read_to_string(&path) {
+            Ok(text) => {
+                validate_private_file(&path)?;
+                serde_json::from_str(&text).map_err(|e| Error::Io(format!("parse consumed: {e}")))
+            }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Default::default()),
             Err(e) => Err(Error::Io(format!("read consumed: {e}"))),
         }
@@ -331,14 +362,28 @@ impl MemCli {
         scopes: &[(Namespace, Vec<Operation>)],
         cert_ttl_secs: u64,
     ) -> CoreResult<PairingGrant> {
+        ensure_private_dir(&self.pairing_dir()?)?;
+        let _policy_lock = self.policy_lock()?;
         // One-use: refuse a replay before doing any work.
         if self.consumed_offers()?.contains(&response.offer_id) {
-            return Err(Error::SecurityPolicy("pairing offer already used".to_string()));
+            return Err(Error::SecurityPolicy(
+                "pairing offer already used".to_string(),
+            ));
         }
-        let offer_path = self.pairing_dir()?.join("offers").join(format!("{}.json", response.offer_id));
+        let offer_path = self
+            .pairing_dir()?
+            .join("offers")
+            .join(format!("{}.json", response.offer_id));
         let offer: PairingOffer = match std::fs::read_to_string(&offer_path) {
-            Ok(text) => serde_json::from_str(&text).map_err(|e| Error::Io(format!("parse offer: {e}")))?,
-            Err(_) => return Err(Error::SecurityPolicy("unknown or expired pairing offer".to_string())),
+            Ok(text) => {
+                validate_private_file(&offer_path)?;
+                serde_json::from_str(&text).map_err(|e| Error::Io(format!("parse offer: {e}")))?
+            }
+            Err(_) => {
+                return Err(Error::SecurityPolicy(
+                    "unknown or expired pairing offer".to_string(),
+                ))
+            }
         };
         verify_pairing_response(&offer, response, now_secs())
             .map_err(|e| Error::SecurityPolicy(format!("pairing rejected: {e}")))?;
@@ -354,7 +399,14 @@ impl MemCli {
                 "this device does not hold the network root key to approve pairing".to_string(),
             ));
         }
-        let grant = approve(&root_user, &descriptor, response, scopes, now_secs(), cert_ttl_secs);
+        let grant = approve(
+            &root_user,
+            &descriptor,
+            response,
+            scopes,
+            now_secs(),
+            cert_ttl_secs,
+        );
 
         // Consume atomically: record id, then drop the pending offer.
         let mut consumed = self.consumed_offers()?;
@@ -364,7 +416,11 @@ impl MemCli {
         let _ = self.append_security_event_unlocked(
             "device_paired",
             &Cid(response.device_id.clone()),
-            &format!("network={} scopes={}", offer.network_id.0, grant.capabilities.len()),
+            &format!(
+                "network={} scopes={}",
+                offer.network_id.0,
+                grant.capabilities.len()
+            ),
         );
         Ok(grant)
     }
@@ -377,31 +433,49 @@ impl MemCli {
         self.ensure_security_dir()?;
         let now = now_secs();
         let revoked = RevocationSet::new();
-        grant.descriptor.verify().map_err(|e| Error::SecurityPolicy(format!("bad descriptor: {e}")))?;
+        grant
+            .descriptor
+            .verify()
+            .map_err(|e| Error::SecurityPolicy(format!("bad descriptor: {e}")))?;
         verify_membership(&grant.membership, &grant.descriptor, now, &revoked)
             .map_err(|e| Error::SecurityPolicy(format!("bad membership: {e}")))?;
         let this_device = self.identity()?.agent_id().0;
         if grant.membership.subject_id != this_device {
-            return Err(Error::SecurityPolicy("grant is for a different device".to_string()));
+            return Err(Error::SecurityPolicy(
+                "grant is for a different device".to_string(),
+            ));
         }
         for cap in &grant.capabilities {
             verify_capability(cap, &[], &grant.descriptor, now, &revoked)
                 .map_err(|e| Error::SecurityPolicy(format!("bad capability: {e}")))?;
         }
         let dir = self.security_dir()?.join("networks");
-        std::fs::create_dir_all(&dir).map_err(|e| Error::Io(format!("create networks dir: {e}")))?;
+        ensure_private_dir(&dir)?;
         let id = &grant.descriptor.network_id.0;
-        write_json(&dir.join(format!("{id}.descriptor.json")), &grant.descriptor)?;
-        write_json(&dir.join(format!("{id}.device-cert.json")), &grant.membership)?;
-        write_json(&dir.join(format!("{id}.capabilities.json")), &grant.capabilities)?;
+        write_json(
+            &dir.join(format!("{id}.descriptor.json")),
+            &grant.descriptor,
+        )?;
+        write_json(
+            &dir.join(format!("{id}.device-cert.json")),
+            &grant.membership,
+        )?;
+        write_json(
+            &dir.join(format!("{id}.capabilities.json")),
+            &grant.capabilities,
+        )?;
         Ok(())
     }
 
     /// This device's granted capabilities for `network_id`, if any.
     pub fn device_capabilities(&self, network_id: &NetworkId) -> CoreResult<Vec<Capability>> {
-        let path = self.security_dir()?.join("networks").join(format!("{}.capabilities.json", network_id.0));
+        let path = self
+            .security_dir()?
+            .join("networks")
+            .join(format!("{}.capabilities.json", network_id.0));
         match std::fs::read_to_string(&path) {
-            Ok(text) => serde_json::from_str(&text).map_err(|e| Error::Io(format!("parse capabilities: {e}"))),
+            Ok(text) => serde_json::from_str(&text)
+                .map_err(|e| Error::Io(format!("parse capabilities: {e}"))),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
             Err(e) => Err(Error::Io(format!("read capabilities: {e}"))),
         }
@@ -409,8 +483,9 @@ impl MemCli {
 }
 
 fn write_json<T: Serialize>(path: &std::path::Path, value: &T) -> CoreResult<()> {
-    let text = serde_json::to_string_pretty(value).map_err(|e| Error::Io(format!("serialize: {e}")))?;
-    std::fs::write(path, text).map_err(|e| Error::Io(format!("write {}: {e}", path.display())))
+    let text =
+        serde_json::to_string_pretty(value).map_err(|e| Error::Io(format!("serialize: {e}")))?;
+    atomic_private_write(path, text.as_bytes())
 }
 
 #[cfg(test)]
@@ -432,7 +507,13 @@ mod tests {
     #[test]
     fn a_clean_pairing_produces_matching_confirmation_phrases() {
         let (_root, descriptor, admin) = founder();
-        let offer = PairingOffer::create(&admin, &descriptor.network_id, "/ip4/127.0.0.1", 1000, 5 * MIN);
+        let offer = PairingOffer::create(
+            &admin,
+            &descriptor.network_id,
+            "/ip4/127.0.0.1",
+            1000,
+            5 * MIN,
+        );
         let new_device = Identity::generate();
         let response = PairingResponse::create(&offer, &new_device);
 
@@ -447,7 +528,13 @@ mod tests {
     #[test]
     fn a_man_in_the_middle_who_swaps_a_key_changes_the_confirmation_phrase() {
         let (_root, descriptor, admin) = founder();
-        let offer = PairingOffer::create(&admin, &descriptor.network_id, "/ip4/127.0.0.1", 1000, 5 * MIN);
+        let offer = PairingOffer::create(
+            &admin,
+            &descriptor.network_id,
+            "/ip4/127.0.0.1",
+            1000,
+            5 * MIN,
+        );
         let honest_device = Identity::generate();
         let honest = PairingResponse::create(&offer, &honest_device);
 
@@ -467,7 +554,13 @@ mod tests {
     #[test]
     fn proof_of_possession_rejects_a_forged_device_signature() {
         let (_root, descriptor, admin) = founder();
-        let offer = PairingOffer::create(&admin, &descriptor.network_id, "/ip4/127.0.0.1", 1000, 5 * MIN);
+        let offer = PairingOffer::create(
+            &admin,
+            &descriptor.network_id,
+            "/ip4/127.0.0.1",
+            1000,
+            5 * MIN,
+        );
         let device = Identity::generate();
         let mut response = PairingResponse::create(&offer, &device);
         // Claim a different device id than the one that signed.
@@ -481,7 +574,13 @@ mod tests {
     #[test]
     fn an_expired_offer_is_rejected() {
         let (_root, descriptor, admin) = founder();
-        let offer = PairingOffer::create(&admin, &descriptor.network_id, "/ip4/127.0.0.1", 1000, 5 * MIN);
+        let offer = PairingOffer::create(
+            &admin,
+            &descriptor.network_id,
+            "/ip4/127.0.0.1",
+            1000,
+            5 * MIN,
+        );
         let device = Identity::generate();
         let response = PairingResponse::create(&offer, &device);
         assert_eq!(
@@ -493,7 +592,13 @@ mod tests {
     #[test]
     fn a_tampered_offer_signature_is_rejected() {
         let (_root, descriptor, admin) = founder();
-        let mut offer = PairingOffer::create(&admin, &descriptor.network_id, "/ip4/127.0.0.1", 1000, 5 * MIN);
+        let mut offer = PairingOffer::create(
+            &admin,
+            &descriptor.network_id,
+            "/ip4/127.0.0.1",
+            1000,
+            5 * MIN,
+        );
         offer.rendezvous = "/ip4/evil".to_string(); // tamper after signing
         assert_eq!(offer.verify(), Err(PairingError::BadOfferSignature));
     }
@@ -508,20 +613,35 @@ mod tests {
         // Device B: a fresh install with its own distinct DeviceID.
         let dir_b = tempfile::tempdir().unwrap();
         let mem_b = MemCli::new(dir_b.path());
-        assert_ne!(mem_a.identity().unwrap().agent_id().0, mem_b.identity().unwrap().agent_id().0);
+        assert_ne!(
+            mem_a.identity().unwrap().agent_id().0,
+            mem_b.identity().unwrap().agent_id().0
+        );
 
         // A mints an offer; B responds proving possession of its key.
-        let offer = mem_a.create_pairing_offer(&descriptor.network_id, "/ip4/127.0.0.1/tcp/4001").unwrap();
+        let offer = mem_a
+            .create_pairing_offer(&descriptor.network_id, "/ip4/127.0.0.1/tcp/4001")
+            .unwrap();
         let response = PairingResponse::create(&offer, &mem_b.identity().unwrap());
 
         // A approves read-only on one project; B accepts and is now a member.
-        let project = Namespace::new(descriptor.network_id.clone(), NamespaceScope::Project("atlas".into()));
+        let project = Namespace::new(
+            descriptor.network_id.clone(),
+            NamespaceScope::Project("atlas".into()),
+        );
         let grant = mem_a
-            .complete_pairing(&response, &[(project.clone(), vec![Operation::SyncRead])], 30 * 24 * 3600)
+            .complete_pairing(
+                &response,
+                &[(project.clone(), vec![Operation::SyncRead])],
+                30 * 24 * 3600,
+            )
             .unwrap();
         mem_b.accept_pairing_grant(&grant).unwrap();
 
-        let cert = mem_b.device_membership(&descriptor.network_id).unwrap().expect("B holds membership");
+        let cert = mem_b
+            .device_membership(&descriptor.network_id)
+            .unwrap()
+            .expect("B holds membership");
         assert_eq!(cert.subject_id, mem_b.identity().unwrap().agent_id().0);
         assert!(verify_membership(&cert, &descriptor, now_secs(), &RevocationSet::new()).is_ok());
         let caps = mem_b.device_capabilities(&descriptor.network_id).unwrap();
@@ -530,9 +650,51 @@ mod tests {
 
         // One-use: replaying the same response fails closed.
         assert!(
-            mem_a.complete_pairing(&response, &[(project, vec![Operation::SyncRead])], 30 * 24 * 3600).is_err(),
+            mem_a
+                .complete_pairing(
+                    &response,
+                    &[(project, vec![Operation::SyncRead])],
+                    30 * 24 * 3600
+                )
+                .is_err(),
             "a consumed offer cannot be reused",
         );
+    }
+
+    #[test]
+    fn one_pairing_offer_has_exactly_one_winner_under_a_race() {
+        let dir_a = tempfile::tempdir().unwrap();
+        let mem_a = MemCli::new(dir_a.path());
+        let descriptor = mem_a.create_network("home").unwrap();
+        let dir_b = tempfile::tempdir().unwrap();
+        let mem_b = MemCli::new(dir_b.path());
+        let offer = mem_a
+            .create_pairing_offer(&descriptor.network_id, "/ip4/127.0.0.1/tcp/4001")
+            .unwrap();
+        let response = PairingResponse::create(&offer, &mem_b.identity().unwrap());
+        let project = Namespace::new(
+            descriptor.network_id,
+            NamespaceScope::Project("atlas".into()),
+        );
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(8));
+        let mut joins = Vec::new();
+        for _ in 0..8 {
+            let mem = mem_a.clone();
+            let response = response.clone();
+            let project = project.clone();
+            let barrier = barrier.clone();
+            joins.push(std::thread::spawn(move || {
+                barrier.wait();
+                mem.complete_pairing(&response, &[(project, vec![Operation::SyncRead])], 3600)
+                    .is_ok()
+            }));
+        }
+        let winners = joins
+            .into_iter()
+            .map(|join| join.join().unwrap())
+            .filter(|won| *won)
+            .count();
+        assert_eq!(winners, 1);
     }
 
     #[test]
@@ -540,13 +702,22 @@ mod tests {
         // The Phase B exit criterion: a new device joins only after approval and can
         // access only the exact scopes granted.
         let (root, descriptor, admin) = founder();
-        let offer = PairingOffer::create(&admin, &descriptor.network_id, "/ip4/127.0.0.1", 1000, 5 * MIN);
+        let offer = PairingOffer::create(
+            &admin,
+            &descriptor.network_id,
+            "/ip4/127.0.0.1",
+            1000,
+            5 * MIN,
+        );
         let new_device = Identity::generate();
         let response = PairingResponse::create(&offer, &new_device);
         verify_pairing_response(&offer, &response, 1000 + MIN).expect("clean handshake");
 
         // The user approves read-only access to ONE project namespace.
-        let project = Namespace::new(descriptor.network_id.clone(), NamespaceScope::Project("atlas".into()));
+        let project = Namespace::new(
+            descriptor.network_id.clone(),
+            NamespaceScope::Project("atlas".into()),
+        );
         let grant = approve(
             &root,
             &descriptor,
@@ -565,12 +736,27 @@ mod tests {
         assert_eq!(grant.capabilities.len(), 1);
         let cap = &grant.capabilities[0];
         assert!(verify_capability(cap, &[], &descriptor, now, &revoked).is_ok());
-        assert!(cap.authorizes(Operation::SyncRead, &project), "granted: read on atlas");
+        assert!(
+            cap.authorizes(Operation::SyncRead, &project),
+            "granted: read on atlas"
+        );
         // …and NOTHING more: not write, not another namespace.
-        assert!(!cap.authorizes(Operation::SyncWrite, &project), "no write was granted");
-        let other = Namespace::new(descriptor.network_id.clone(), NamespaceScope::Project("secret".into()));
-        assert!(!cap.authorizes(Operation::SyncRead, &other), "no access to other namespaces");
+        assert!(
+            !cap.authorizes(Operation::SyncWrite, &project),
+            "no write was granted"
+        );
+        let other = Namespace::new(
+            descriptor.network_id.clone(),
+            NamespaceScope::Project("secret".into()),
+        );
+        assert!(
+            !cap.authorizes(Operation::SyncRead, &other),
+            "no access to other namespaces"
+        );
         // A paired device cannot re-delegate.
-        assert!(!cap.delegable, "a paired device holds concrete scopes, not grant authority");
+        assert!(
+            !cap.delegable,
+            "a paired device holds concrete scopes, not grant authority"
+        );
     }
 }
