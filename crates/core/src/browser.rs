@@ -181,6 +181,98 @@ pub fn read_bookmarks() -> Vec<Bookmark> {
     out
 }
 
+// ── Read-only agentic browsing (D-read, Decision 0033) ───────────────────────
+// The host AI can read a *public* web page. Read-only; public-web only (SSRF guard
+// refuses localhost/private hosts, incl. across redirects). The result is an
+// untrusted source — the caller must never auto-trust or auto-inject it. (v1 fetches
+// HTML directly; JS-rendered/interactive browsing via Brave-CDP is a follow-up.)
+
+const BROWSE_MAX_CHARS: usize = 8000;
+
+/// True if `host` is a local/private/loopback target the agent must not reach.
+pub(crate) fn is_blocked_host(host: &str) -> bool {
+    let host = host.trim().trim_start_matches('[').trim_end_matches(']').to_lowercase();
+    if host.is_empty() || host == "localhost" || host.ends_with(".localhost") {
+        return true;
+    }
+    if let Ok(ip) = host.parse::<std::net::IpAddr>() {
+        return match ip {
+            std::net::IpAddr::V4(v4) => {
+                v4.is_loopback() || v4.is_private() || v4.is_link_local() || v4.is_unspecified()
+                    || v4.octets()[0] == 0
+            }
+            std::net::IpAddr::V6(v6) => v6.is_loopback() || v6.is_unspecified() || v6.is_unique_local(),
+        };
+    }
+    false
+}
+
+/// Fetch a public web page and return its readable text (title + stripped body).
+pub fn fetch_readable(url: &str) -> Result<String, String> {
+    let url = url.trim();
+    let parsed = reqwest::Url::parse(url).map_err(|e| format!("bad url: {e}"))?;
+    if !matches!(parsed.scheme(), "http" | "https") {
+        return Err("only http(s) URLs are allowed".to_string());
+    }
+    let host = parsed.host_str().unwrap_or("").to_lowercase();
+    if is_blocked_host(&host) {
+        return Err(format!("refusing to browse a local/private host: {host}"));
+    }
+    let client = reqwest::blocking::Client::builder()
+        .user_agent("Mozilla/5.0 (compatible; ConciergeAgenticBrowse/1.0)")
+        .timeout(std::time::Duration::from_secs(20))
+        // Re-check every redirect hop so a public URL can't bounce to a private one.
+        .redirect(reqwest::redirect::Policy::custom(|attempt| {
+            let host = attempt.url().host_str().unwrap_or("").to_lowercase();
+            if is_blocked_host(&host) {
+                attempt.error("redirect to a local/private host blocked")
+            } else if attempt.previous().len() > 5 {
+                attempt.stop()
+            } else {
+                attempt.follow()
+            }
+        }))
+        .build()
+        .map_err(|e| format!("client: {e}"))?;
+    let resp = client.get(url).send().map_err(|e| format!("fetch: {e}"))?;
+    if !resp.status().is_success() {
+        return Err(format!("HTTP {}", resp.status().as_u16()));
+    }
+    let html = resp.text().map_err(|e| format!("read body: {e}"))?;
+    Ok(extract_text(&html))
+}
+
+/// Strip HTML to readable text (drops script/style, tags, decodes basic entities,
+/// collapses whitespace), prefixed with the page title. Bounded to `BROWSE_MAX_CHARS`.
+pub fn extract_text(html: &str) -> String {
+    let title = regex::Regex::new(r"(?is)<title[^>]*>(.*?)</title>")
+        .ok()
+        .and_then(|re| re.captures(html).map(|c| collapse_ws(&decode_entities(&c[1]))))
+        .unwrap_or_default();
+    let no_scripts = regex::Regex::new(r"(?is)<(script|style|noscript|template)[^>]*>.*?</(script|style|noscript|template)>")
+        .map(|re| re.replace_all(html, " ").into_owned())
+        .unwrap_or_else(|_| html.to_string());
+    let no_tags = regex::Regex::new(r"(?is)<[^>]+>")
+        .map(|re| re.replace_all(&no_scripts, " ").into_owned())
+        .unwrap_or(no_scripts);
+    let body: String = collapse_ws(&decode_entities(&no_tags)).chars().take(BROWSE_MAX_CHARS).collect();
+    if title.is_empty() { body } else { format!("{title}\n\n{body}") }
+}
+
+fn decode_entities(s: &str) -> String {
+    s.replace("&amp;", "&")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&#39;", "'")
+        .replace("&apos;", "'")
+        .replace("&nbsp;", " ")
+}
+
+fn collapse_ws(s: &str) -> String {
+    s.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -237,5 +329,30 @@ mod tests {
                 assert!(p.exists());
             }
         }
+    }
+
+    #[test]
+    fn extract_text_strips_scripts_tags_and_keeps_title() {
+        let html = "<html><head><title>IPFS &amp; You</title></head><body>\
+            <script>var x=1;</script><h1>Hello</h1><p>World &lt;ok&gt;</p></body></html>";
+        let out = extract_text(html);
+        assert!(out.starts_with("IPFS & You"), "title first");
+        assert!(out.contains("Hello"));
+        assert!(out.contains("World <ok>"));
+        assert!(!out.contains("var x"), "script content dropped");
+        assert!(!out.contains("<h1>"), "tags dropped");
+    }
+
+    #[test]
+    fn ssrf_guard_blocks_local_and_private_hosts() {
+        for h in ["localhost", "127.0.0.1", "0.0.0.0", "10.0.0.5", "192.168.1.1", "172.16.0.1", "169.254.1.1", "::1"] {
+            assert!(is_blocked_host(h), "{h} must be blocked");
+        }
+        for h in ["example.com", "ipfs.tech", "8.8.8.8", "1.1.1.1"] {
+            assert!(!is_blocked_host(h), "{h} must be allowed");
+        }
+        // fetch_readable rejects a private URL before any network call.
+        assert!(fetch_readable("http://127.0.0.1:5001/secret").is_err());
+        assert!(fetch_readable("ftp://example.com").is_err());
     }
 }
