@@ -701,7 +701,11 @@
       <div class="msg-section">Concierge Wallet</div>
       <div class="eyebrow">Your wallet, inside the Concierge — connect it, bind it to your sovereign identity, and set what the AI may do. Keys never leave your browser's wallet; the Concierge holds none.</div>
       <div id="wallet-unavailable" class="wallet-card" style="display:none;">
-        <div class="eyebrow">No in-browser wallet detected. Open the Concierge in <b>Brave</b> or <b>Opera</b> (both have a built-in wallet) to use this tab.</div>
+        <div id="wallet-unavailable-msg" class="eyebrow"></div>
+        <div class="modal-actions">
+          <button id="wallet-create" class="tool-button" style="flex:1;display:none;">Create my wallet</button>
+          <button id="wallet-recheck" class="tool-button">Refresh</button>
+        </div>
       </div>
       <div id="wallet-main" style="display:none;">
         <div class="wallet-card">
@@ -710,7 +714,7 @@
           <div class="wallet-row"><span class="wallet-k">Network</span><span id="wallet-net" class="wallet-v">—</span></div>
           <div class="wallet-row"><span class="wallet-k">Balance</span><span id="wallet-bal" class="wallet-v">—</span></div>
           <div class="modal-actions">
-            <button id="wallet-connect" class="tool-button" style="flex:1;">Connect wallet</button>
+            <button id="wallet-connect" class="tool-button" style="flex:1;">Create or connect wallet</button>
             <button id="wallet-refresh" class="tool-button">Refresh</button>
           </div>
         </div>
@@ -2260,25 +2264,60 @@ const WALLET_CHAINS = { "0x1": "Ethereum", "0x2105": "Base", "0x89": "Polygon", 
 function walletShort(a) { return a ? a.slice(0, 6) + "…" + a.slice(-4) : "—"; }
 function walletChainName(cid) { return WALLET_CHAINS[cid] || ("Chain " + cid); }
 function walletEth(weiHex) { try { return (Number(BigInt(weiHex)) / 1e18).toFixed(4); } catch (e) { return "?"; } }
+// Find the wallet provider robustly: Brave/Opera inject `window.ethereum`
+// asynchronously and also announce via EIP-6963, so we listen + poll briefly.
+async function walletDetectProvider() {
+  let found = null;
+  const onAnnounce = e => { if (!found && e.detail && e.detail.provider) found = e.detail.provider; };
+  window.addEventListener("eip6963:announceProvider", onAnnounce);
+  window.dispatchEvent(new Event("eip6963:requestProvider"));
+  for (let i = 0; i < 12 && !found; i++) {
+    if (window.ethereum) { found = window.ethereum; break; }
+    await new Promise(r => setTimeout(r, 150));
+  }
+  window.removeEventListener("eip6963:announceProvider", onAnnounce);
+  return found || window.ethereum || null;
+}
+async function walletShowUnavailable() {
+  let inBrave = false;
+  try { inBrave = !!(navigator.brave && await navigator.brave.isBrave()); } catch (e) {}
+  const msg = byId("wallet-unavailable-msg"); clear(msg);
+  if (inBrave) {
+    msg.append(document.createTextNode("No active wallet yet. Click “Create my wallet” to open Brave Wallet setup — create or import a wallet, then come back and press Refresh."));
+    byId("wallet-create").style.display = "";
+  } else {
+    msg.append(document.createTextNode("No in-browser wallet detected. Open the Concierge in Brave or Opera (both have a built-in wallet) to use this tab."));
+    byId("wallet-create").style.display = "none";
+  }
+}
 async function walletInit() {
-  WALLET.provider = window.ethereum || null;
+  byId("wallet-status").textContent = "Looking for your wallet…";
+  WALLET.provider = await walletDetectProvider();
   const has = !!WALLET.provider;
   byId("wallet-unavailable").style.display = has ? "none" : "";
   byId("wallet-main").style.display = has ? "" : "none";
-  if (!has) return;
+  if (!has) { await walletShowUnavailable(); return; }
   try { const me = await getJson("/api/me"); WALLET.agentId = me.username || ""; } catch (e) {}
   await walletLoadState();
   try {
     const accts = await WALLET.provider.request({ method: "eth_accounts" });
     if (accts && accts[0]) { WALLET.account = accts[0]; await walletRefresh(); }
-  } catch (e) {}
+    else { byId("wallet-status").textContent = "No wallet connected — click “Create or connect wallet”."; }
+  } catch (e) { byId("wallet-status").textContent = "Click “Create or connect wallet”."; }
 }
 async function walletConnect() {
-  if (!WALLET.provider) return;
+  if (!WALLET.provider) { await walletInit(); if (!WALLET.provider) return; }
+  // eth_requestAccounts opens Brave/Opera's onboarding if no wallet exists yet.
   const accts = await WALLET.provider.request({ method: "eth_requestAccounts" });
   WALLET.account = accts && accts[0];
   await walletRefresh();
-  notice("Wallet connected.");
+  notice(WALLET.account ? "Wallet connected." : "Wallet setup started — finish it in your browser, then Refresh.");
+}
+async function walletCreate() {
+  // Ask the backend to open the browser's wallet onboarding (brave://wallet).
+  const res = await postJson("/api/wallet/setup", {});
+  if (res.ok) notice("Opening your browser's wallet setup… create your wallet, then click Refresh.");
+  else notice(res.error || "Open your browser's built-in wallet to create one, then Refresh.");
 }
 async function walletRefresh() {
   if (!WALLET.provider || !WALLET.account) return;
@@ -2339,7 +2378,9 @@ async function walletSaveSettings() {
   notice("Wallet settings saved.");
 }
 byId("wallet-connect").addEventListener("click", () => safely(walletConnect));
-byId("wallet-refresh").addEventListener("click", () => safely(walletRefresh));
+byId("wallet-refresh").addEventListener("click", () => safely(walletInit));
+byId("wallet-create").addEventListener("click", () => safely(walletCreate));
+byId("wallet-recheck").addEventListener("click", () => safely(walletInit));
 byId("wallet-link").addEventListener("click", () => safely(walletLink));
 byId("wallet-save").addEventListener("click", () => safely(walletSaveSettings));
 byId("wallet-chain").addEventListener("change", () => safely(() => walletSwitchChain(byId("wallet-chain").value)));

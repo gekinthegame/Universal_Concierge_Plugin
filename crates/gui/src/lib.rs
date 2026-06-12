@@ -2569,6 +2569,7 @@ fn handle_mutation(mem: &MemCli, options: &GuiOptions, path: &str, body: &str) -
         "/api/deploy/credentials" => mutation_deploy_credentials(mem, body),
         "/api/deploy/test" => mutation_deploy_test(mem, body),
         "/api/bookmarks/sync" => mutation_bookmarks_sync(mem),
+        "/api/wallet/setup" => mutation_wallet_setup(),
         "/api/wallet/link" => mutation_wallet_link(mem, body),
         "/api/wallet/unlink" => mutation_wallet_unlink(mem, body),
         "/api/wallet/settings" => mutation_wallet_settings(mem, body),
@@ -2622,6 +2623,7 @@ fn mutation_label(path: &str) -> Option<&'static str> {
         "/api/deploy/credentials" => "saved deploy credentials (0600, on-device)",
         "/api/deploy/test" => "tested a publishing connection",
         "/api/bookmarks/sync" => "synced wallet-browser bookmarks into memory",
+        "/api/wallet/setup" => "opened the browser's wallet setup",
         "/api/wallet/link" => "linked a wallet to your AgentID",
         "/api/wallet/unlink" => "unlinked a wallet",
         "/api/wallet/settings" => "updated wallet settings",
@@ -2888,6 +2890,26 @@ fn mutation_bookmarks_sync(mem: &MemCli) -> Response {
     match mem.sync_browser_bookmarks() {
         Ok(added) => Response::json(serde_json::json!({ "ok": true, "added": added }).to_string()),
         Err(error) => Response::error(error.to_string()),
+    }
+}
+
+/// Open the wallet browser's built-in wallet onboarding so the user can create a
+/// wallet — a Concierge button that drives Brave's own setup (`brave://wallet`).
+/// Web pages can't navigate to `brave://`, so the Concierge process launches it.
+fn mutation_wallet_setup() -> Response {
+    match wallet_browser() {
+        Some((WalletBrowser::Brave, exe)) => match Command::new(&exe).arg("brave://wallet").spawn() {
+            Ok(_) => Response::json(serde_json::json!({ "ok": true }).to_string()),
+            Err(error) => Response::json(
+                serde_json::json!({ "ok": false, "error": format!("could not open Brave Wallet: {error}") }).to_string(),
+            ),
+        },
+        Some((WalletBrowser::Opera, _)) => Response::json(
+            serde_json::json!({ "ok": false, "error": "In Opera, open the Crypto Wallet from the sidebar to create a wallet, then press Refresh." }).to_string(),
+        ),
+        None => Response::json(
+            serde_json::json!({ "ok": false, "error": "No wallet browser detected — open the Concierge in Brave or Opera." }).to_string(),
+        ),
     }
 }
 
