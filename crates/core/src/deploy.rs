@@ -400,6 +400,103 @@ fn b64(bytes: &[u8]) -> String {
     base64::engine::general_purpose::STANDARD.encode(bytes)
 }
 
+// ── Connection test ──────────────────────────────────────────────────────────
+
+/// Verify a platform's credentials live against its identity endpoint (no deploy,
+/// no writes). Returns a short account label on success, or a clear error the GUI
+/// can show during the "connect" walk-through. Reuses the same base origins as the
+/// deploy calls, so a verified token will deploy.
+pub fn verify(platform: &str, creds: &DeployCredentials) -> Result<String, String> {
+    let cl = client();
+    match platform {
+        "github" => {
+            let c = creds.github.as_ref().ok_or("no GitHub credentials")?;
+            let api = base("CONCIERGE_DEPLOY_GITHUB_BASE", "https://api.github.com");
+            let me = ok_json(
+                cl.get(format!("{api}/user"))
+                    .bearer_auth(&c.token)
+                    .header("Accept", "application/vnd.github+json"),
+                "github sign-in",
+            )?;
+            let login = me.get("login").and_then(|s| s.as_str()).unwrap_or("?");
+            // The repo is the usual failure — confirm it's reachable with this token.
+            let repo_ok = cl
+                .get(format!("{api}/repos/{}/{}", c.owner, c.repo))
+                .bearer_auth(&c.token)
+                .header("Accept", "application/vnd.github+json")
+                .send()
+                .map(|r| r.status().is_success())
+                .unwrap_or(false);
+            if !repo_ok {
+                return Err(format!(
+                    "signed in as {login}, but {}/{} isn't accessible — check the owner/repo and that the token has the `repo` scope",
+                    c.owner, c.repo
+                ));
+            }
+            Ok(format!("{login} · {}/{}", c.owner, c.repo))
+        }
+        "netlify" => {
+            let c = creds.netlify.as_ref().ok_or("no Netlify credentials")?;
+            let api = base("CONCIERGE_DEPLOY_NETLIFY_BASE", "https://api.netlify.com");
+            let me = ok_json(
+                cl.get(format!("{api}/api/v1/user")).bearer_auth(&c.token),
+                "netlify sign-in",
+            )?;
+            Ok(me
+                .get("full_name")
+                .or_else(|| me.get("email"))
+                .or_else(|| me.get("slug"))
+                .and_then(|s| s.as_str())
+                .unwrap_or("connected")
+                .to_string())
+        }
+        "vercel" => {
+            let c = creds.vercel.as_ref().ok_or("no Vercel credentials")?;
+            let api = base("CONCIERGE_DEPLOY_VERCEL_BASE", "https://api.vercel.com");
+            let me = ok_json(
+                cl.get(format!("{api}/v2/user")).bearer_auth(&c.token),
+                "vercel sign-in",
+            )?;
+            let u = me.get("user").unwrap_or(&me);
+            Ok(u
+                .get("username")
+                .or_else(|| u.get("name"))
+                .or_else(|| u.get("email"))
+                .and_then(|s| s.as_str())
+                .unwrap_or("connected")
+                .to_string())
+        }
+        "cloudflare" => {
+            let c = creds.cloudflare.as_ref().ok_or("no Cloudflare credentials")?;
+            let api =
+                base("CONCIERGE_DEPLOY_CLOUDFLARE_BASE", "https://api.cloudflare.com/client/v4");
+            let v = ok_json(
+                cl.get(format!("{api}/user/tokens/verify")).bearer_auth(&c.token),
+                "cloudflare token",
+            )?;
+            let status = v
+                .get("result")
+                .and_then(|r| r.get("status"))
+                .and_then(|s| s.as_str())
+                .unwrap_or("");
+            if status != "active" {
+                return Err(format!("token status is '{status}', expected 'active'"));
+            }
+            let acct_ok = cl
+                .get(format!("{api}/accounts/{}", c.account_id))
+                .bearer_auth(&c.token)
+                .send()
+                .map(|r| r.status().is_success())
+                .unwrap_or(false);
+            if !acct_ok {
+                return Err("token is active, but the Account ID isn't accessible — check the Account ID and that the token has the Cloudflare Pages: Edit permission".to_string());
+            }
+            Ok(format!("token active · account {}", c.account_id))
+        }
+        other => Err(format!("unknown platform: {other}")),
+    }
+}
+
 // ── GitHub Pages (Git Data API + enable Pages) ───────────────────────────────
 
 pub fn deploy_github(c: &GithubCreds, files: &[DeployFile]) -> Result<String, String> {
@@ -1120,5 +1217,32 @@ mod mock_tests {
             .any(|p| p.ends_with("/pages/assets/upsert-hashes")));
         assert!(paths.iter().any(|p| p.ends_with("/deployments")));
         std::env::remove_var("CONCIERGE_DEPLOY_CLOUDFLARE_BASE");
+    }
+
+    #[test]
+    fn verify_github_reports_account_and_repo() {
+        // The "Test connection" path: GET /user (account) + GET /repos/o/r (access).
+        let (base, _seen, h) = spawn_mock(2, |_m, path, _b| {
+            if path.ends_with("/user") {
+                (200, r#"{"login":"octocat"}"#.into())
+            } else {
+                (200, "{}".into()) // /repos/o/r reachable
+            }
+        });
+        std::env::set_var("CONCIERGE_DEPLOY_GITHUB_BASE", &base);
+        let creds = DeployCredentials {
+            github: Some(GithubCreds {
+                token: "t".into(),
+                owner: "o".into(),
+                repo: "r".into(),
+                branch: "gh-pages".into(),
+            }),
+            ..Default::default()
+        };
+        let label = verify("github", &creds).unwrap();
+        assert!(label.contains("octocat"), "reports the signed-in account");
+        assert!(label.contains("o/r"), "reports the target repo");
+        h.join().unwrap();
+        std::env::remove_var("CONCIERGE_DEPLOY_GITHUB_BASE");
     }
 }

@@ -1508,6 +1508,41 @@ impl MemCli {
         }))
     }
 
+    /// Verify a platform's credentials live against its API (the "Test connection"
+    /// step of the connect walk-through). `fields_json` lets the GUI test *unsaved*
+    /// input (a single platform's `{token,…}` block) before saving; when `None` the
+    /// stored credentials are tested. Returns a short account label on success.
+    pub fn verify_deploy_credentials(
+        &self,
+        platform: &str,
+        fields_json: Option<&str>,
+    ) -> Result<String> {
+        let creds = match fields_json {
+            Some(json) if !json.trim().is_empty() && json.trim() != "null" => {
+                let value: serde_json::Value = serde_json::from_str(json)
+                    .map_err(|e| Error::Io(format!("parse credential fields: {e}")))?;
+                let mut c = crate::deploy::DeployCredentials::default();
+                macro_rules! set {
+                    ($field:ident) => {
+                        c.$field = Some(serde_json::from_value(value.clone()).map_err(|e| {
+                            Error::Io(format!("invalid {platform} credentials: {e}"))
+                        })?)
+                    };
+                }
+                match platform {
+                    "github" => set!(github),
+                    "netlify" => set!(netlify),
+                    "vercel" => set!(vercel),
+                    "cloudflare" => set!(cloudflare),
+                    other => return Err(Error::Io(format!("unknown deploy platform: {other}"))),
+                }
+                c
+            }
+            _ => self.deploy_credentials()?,
+        };
+        crate::deploy::verify(platform, &creds).map_err(Error::Io)
+    }
+
     /// Deploy the staged folder to an external Web2 host using the stored
     /// credentials. Password is already verified upstream (`publish_site`); this is
     /// explicit, gated egress. Returns a real receipt with the live URL.

@@ -105,6 +105,13 @@
   .profile-row { display: flex; flex-direction: column; gap: 3px; width: 100%; }
   .profile-row .input { width: 100%; }
   .profile-label { font: 11px var(--mono); color: var(--muted); letter-spacing: .02em; }
+  /* Guided "connect an account" walk-through (in the deploy modal). */
+  .dep-guide { border: 1px solid var(--line); border-radius: 6px; background: var(--deep); padding: 9px 11px; margin: 4px 0 2px; }
+  .dep-guide ol { margin: 0 0 8px; padding-left: 18px; }
+  .dep-guide li { font: 11px/1.5 var(--mono); color: var(--muted); margin: 2px 0; }
+  .dep-open { display: inline-flex; align-items: center; gap: 6px; }
+  .dep-test-ok { color: var(--synapse); }
+  .dep-test-bad { color: var(--vermilion); }
   .profile-did { width: 100%; font: 9px var(--mono); color: var(--faint); letter-spacing: .02em; }
   #sites { display: flex; flex-direction: column; gap: 8px; margin-top: 6px; }
   .site-card { display: flex; align-items: center; gap: 12px; padding: 11px 13px; border: 1px solid var(--line); border-radius: 7px; background: var(--deep); }
@@ -544,7 +551,7 @@
     <div id="deploy-modal" class="modal-overlay record-modal" style="display:none;" role="dialog" aria-label="Deploy settings">
       <div class="modal-card">
         <div style="display:flex;align-items:center;justify-content:space-between;">
-          <div class="modal-title">⚙ Deploy settings</div>
+          <div class="modal-title">🔌 Connect a publishing account</div>
           <button id="dep-close" class="record-close" title="Close (Esc)" aria-label="Close">✕</button>
         </div>
         <div class="eyebrow">Tokens stay on this device only (0600 file) and are used solely to deploy to the host you choose — never shared, never sent anywhere but that platform's own API. IPFS needs no token; these Web2 hosts are optional opt-ins.</div>
@@ -554,9 +561,11 @@
           <option value="vercel">Vercel</option>
           <option value="cloudflare">Cloudflare Pages</option>
         </select>
-        <div id="dep-status" class="eyebrow"></div>
+        <div id="dep-guide" class="dep-guide"></div>
         <div id="dep-fields" class="profile-editor"></div>
+        <div id="dep-status" class="eyebrow"></div>
         <div class="modal-actions">
+          <button id="dep-test" class="tool-button">Test connection</button>
           <button id="dep-save" class="tool-button" style="flex:1;">Save on this device</button>
           <button id="dep-clear" class="tool-button">Clear</button>
         </div>
@@ -642,7 +651,7 @@
             <button id="cv-pub-netlify" class="menu-item">Netlify <span class="limit">free tier</span></button>
             <button id="cv-pub-vercel" class="menu-item">Vercel <span class="limit">free tier</span></button>
             <button id="cv-pub-cloudflare" class="menu-item">Cloudflare Pages <span class="limit">25 MB / file</span></button>
-            <button id="cv-deploy-settings" class="menu-item" style="border-top:1px solid var(--line);color:var(--gold);">⚙ Deploy settings (tokens)</button>
+            <button id="cv-deploy-settings" class="menu-item" style="border-top:1px solid var(--line);color:var(--gold);">🔌 Connect accounts (tokens)</button>
           </div>
         </div>
         <button id="cv-save-ckpt" class="tool-button" title="Snapshot the current draft now — a content-addressed checkpoint you can reopen later (no publish)">💾 Save checkpoint</button>
@@ -2264,6 +2273,16 @@ function startCvPoll() { if (cv.poll) clearInterval(cv.poll); cv.poll = setInter
 async function cvPublish(platform = "ipfs") {
   const name = byId("cv-name").value.trim();
   if (!name) { byId("cv-name").focus(); notice("Give your site a name."); return; }
+  // Connect gate: Web2 hosts need an account. If this one isn't connected yet,
+  // open the guided connect walk-through instead of failing the publish.
+  if (platform !== "ipfs") {
+    let status = {}; try { status = await getJson("/api/deploy/credentials"); } catch (e) {}
+    if (!status[platform]) {
+      notice("Connect your " + (DEPLOY_META[platform] ? DEPLOY_META[platform].name : platform) + " account to publish there.");
+      depOpen(platform);
+      return;
+    }
+  }
   let folder;
   if (cv.mode === "write") {
     const html = byId("cv-src").value;
@@ -2469,9 +2488,64 @@ const DEPLOY_FIELDS = {
     { k: "project", label: "Pages project name", type: "text" },
   ],
 };
+// Guided "connect" walk-through per platform: a deep link to the token page + steps.
+const DEPLOY_META = {
+  github: {
+    name: "GitHub",
+    url: "https://github.com/settings/tokens/new?scopes=repo&description=Universal%20Concierge%20Plugin",
+    steps: [
+      "Click “Open GitHub token page” — it pre-selects the repo scope.",
+      "Generate the token and copy it.",
+      "Paste it below, then enter the repository’s owner and name.",
+      "Test connection, then Save.",
+    ],
+  },
+  netlify: {
+    name: "Netlify",
+    url: "https://app.netlify.com/user/applications#personal-access-tokens",
+    steps: [
+      "Click “Open Netlify token page”.",
+      "Create a new personal access token and copy it.",
+      "Paste it below. Leave Site ID blank to auto-create a site.",
+      "Test connection, then Save.",
+    ],
+  },
+  vercel: {
+    name: "Vercel",
+    url: "https://vercel.com/account/tokens",
+    steps: [
+      "Click “Open Vercel token page”.",
+      "Create a token (full account scope) and copy it.",
+      "Paste it below. Team ID is only for team accounts.",
+      "Test connection, then Save.",
+    ],
+  },
+  cloudflare: {
+    name: "Cloudflare",
+    url: "https://dash.cloudflare.com/profile/api-tokens",
+    steps: [
+      "Click “Open Cloudflare token page”.",
+      "Create a token with the Cloudflare Pages: Edit permission; copy it.",
+      "Paste it below, plus your Account ID and a Pages project name.",
+      "Test connection, then Save.",
+    ],
+  },
+};
 let depStatus = {};
 function depRender() {
   const platform = byId("dep-platform").value;
+  const meta = DEPLOY_META[platform] || { name: platform, url: "", steps: [] };
+  // Guide: numbered steps + a deep link to the platform's token page.
+  const guide = byId("dep-guide"); clear(guide);
+  const ol = node("ol", "");
+  meta.steps.forEach(s => ol.appendChild(node("li", "", s)));
+  guide.appendChild(ol);
+  if (meta.url) {
+    const open = node("button", "tool-button dep-open", "Open " + meta.name + " token page ↗");
+    open.addEventListener("click", () => window.open(meta.url, "_blank", "noopener"));
+    guide.appendChild(open);
+  }
+  // Fields.
   const wrap = byId("dep-fields"); clear(wrap);
   const known = (depStatus && depStatus[platform]) || {};
   DEPLOY_FIELDS[platform].forEach(f => {
@@ -2487,14 +2561,43 @@ function depRender() {
     wrap.appendChild(row);
   });
   const st = byId("dep-status"); clear(st);
-  st.appendChild(document.createTextNode(depStatus[platform] ? "✓ configured on this device" : "not configured yet"));
+  st.appendChild(document.createTextNode(depStatus[platform] ? "✓ connected on this device" : "not connected yet"));
 }
 async function depLoad() {
   try { depStatus = await getJson("/api/deploy/credentials"); } catch (e) { depStatus = {}; }
   depRender();
 }
-function depOpen() { byId("deploy-modal").style.display = "flex"; safely(depLoad); }
+function depOpen(platform) {
+  byId("deploy-modal").style.display = "flex";
+  if (platform && DEPLOY_FIELDS[platform]) byId("dep-platform").value = platform;
+  safely(depLoad);
+}
 function depClose() { byId("deploy-modal").style.display = "none"; }
+// Collect the currently-entered fields for the selected platform.
+function depFields() {
+  const platform = byId("dep-platform").value;
+  const fields = {};
+  DEPLOY_FIELDS[platform].forEach(f => {
+    const v = byId("dep-" + f.k).value.trim();
+    if (v) fields[f.k] = v;
+  });
+  return { platform, fields };
+}
+// "Test connection": verify the entered token live against the platform's API.
+async function depTest() {
+  const { platform, fields } = depFields();
+  if (!fields.token) { notice("Paste your token first."); return; }
+  const st = byId("dep-status"); clear(st);
+  st.appendChild(document.createTextNode("Testing…"));
+  const res = await postJson("/api/deploy/test", { platform, fields });
+  clear(st);
+  if (res.ok) {
+    const ok = node("span", "dep-test-ok", "✓ Connected — " + res.account);
+    st.appendChild(ok);
+  } else {
+    st.appendChild(node("span", "dep-test-bad", "✗ " + (res.error || "could not connect")));
+  }
+}
 async function depSave(wipe) {
   const platform = byId("dep-platform").value;
   let fields = null;
@@ -2510,9 +2613,10 @@ async function depSave(wipe) {
   notice(wipe ? "Cleared " + platform + " credentials." : "Saved " + platform + " credentials on this device.");
   await depLoad();
 }
-byId("cv-deploy-settings").addEventListener("click", () => safely(depOpen));
+byId("cv-deploy-settings").addEventListener("click", () => safely(() => depOpen()));
 byId("dep-close").addEventListener("click", depClose);
 byId("dep-platform").addEventListener("change", depRender);
+byId("dep-test").addEventListener("click", () => safely(depTest));
 byId("dep-save").addEventListener("click", () => safely(() => depSave(false)));
 byId("dep-clear").addEventListener("click", () => safely(() => depSave(true)));
 byId("deploy-modal").addEventListener("click", e => { if (e.target === byId("deploy-modal")) depClose(); });

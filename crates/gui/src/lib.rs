@@ -2561,6 +2561,7 @@ fn handle_mutation(mem: &MemCli, options: &GuiOptions, path: &str, body: &str) -
         "/api/site/publish" => mutation_publish_site(mem, options, body),
         "/api/site/checkpoint/save" => mutation_save_checkpoint(mem, body),
         "/api/deploy/credentials" => mutation_deploy_credentials(mem, body),
+        "/api/deploy/test" => mutation_deploy_test(mem, body),
         "/api/mcp/write" => mutation_mcp_write(mem, body),
         "/api/canvas/open" => mutation_canvas_open(options, body),
         "/api/canvas/signal" => mutation_canvas_signal(mem, options, body),
@@ -2609,6 +2610,7 @@ fn mutation_label(path: &str) -> Option<&'static str> {
         "/api/site/publish" => "published a website",
         "/api/site/checkpoint/save" => "saved a Studio checkpoint",
         "/api/deploy/credentials" => "saved deploy credentials (0600, on-device)",
+        "/api/deploy/test" => "tested a publishing connection",
         "/api/mcp/write" => "toggled MCP write tools",
         "/api/canvas/snapshot" => "snapshotted the canvas",
         "/api/requests/accept" => "accepted a contact request",
@@ -2837,6 +2839,32 @@ fn mutation_deploy_credentials(mem: &MemCli, body: &str) -> Response {
     match mem.set_deploy_credentials(platform, &fields.to_string()) {
         Ok(()) => Response::json(serde_json::json!({ "ok": true }).to_string()),
         Err(error) => Response::error(error.to_string()),
+    }
+}
+
+/// "Test connection" in the connect walk-through: verify a platform's token live
+/// against its API. Tests unsaved `fields` if given, else the stored credentials.
+/// Always 200 — the pass/fail + account/error is data the modal renders inline.
+fn mutation_deploy_test(mem: &MemCli, body: &str) -> Response {
+    let value = match parse_body(body) {
+        Ok(value) => value,
+        Err(response) => return response,
+    };
+    let platform = match body_str(&value, "platform") {
+        Ok(p) => p.trim().to_string(),
+        Err(response) => return response,
+    };
+    let fields = value
+        .get("fields")
+        .filter(|v| !v.is_null())
+        .map(|v| v.to_string());
+    match mem.verify_deploy_credentials(&platform, fields.as_deref()) {
+        Ok(account) => {
+            Response::json(serde_json::json!({ "ok": true, "account": account }).to_string())
+        }
+        Err(error) => {
+            Response::json(serde_json::json!({ "ok": false, "error": error.to_string() }).to_string())
+        }
     }
 }
 
