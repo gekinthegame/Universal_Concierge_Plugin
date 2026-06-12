@@ -125,4 +125,12 @@ UCP treats the **Kubo (IPFS) node** as the "hardware" or the "engine" of your pe
 We believe in **Egalitarian Human + AI Problem Solving.** Check out our `PLATFORM_VISION.md` to see how we’re building a decentralized public square for the future of work.
 
 ---
+
+## ⚖️ License
+
+Licensed under the **[GNU Affero General Public License v3.0](LICENSE)** (`AGPL-3.0-only`). If you run a modified version of UCP as a network service, the AGPL requires you to offer your source to its users — the copyleft that keeps a sovereign, user-owned substrate sovereign.
+
+Incorporated third-party components keep their own permissive licenses (MIT / Apache-2.0 / BSD), which the AGPL allows — see [`CREDITS.md`](CREDITS.md).
+
+---
 *"The substrate, not the harness."*
