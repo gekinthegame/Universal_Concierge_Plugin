@@ -571,7 +571,13 @@
         </div>
       </div>
     </div>
-    <div id="names-view" class="view"><div class="content"><div id="names" class="names-tree"></div></div></div>
+    <div id="names-view" class="view"><div class="content">
+      <div class="messenger-tools">
+        <button id="bookmarks-sync" class="tool-button" title="Pull your Brave/Opera bookmarks into memory (deduped). They become searchable records.">🔖 Sync browser bookmarks</button>
+        <span id="bookmarks-status" class="eyebrow"></span>
+      </div>
+      <div id="names" class="names-tree"></div>
+    </div></div>
     <div id="search-view" class="view"><div class="content">
       <form id="search-form" class="search-tools">
         <input id="search-q" class="input" placeholder="Search your memory (semantic + graph-gravity)…" autocomplete="off">
@@ -2001,6 +2007,20 @@ function openIngestModal() {
 }
 
 byId("reset-view").addEventListener("click", () => fitView());
+
+// Pillar A: pull Brave/Opera bookmarks into memory (they become searchable records).
+byId("bookmarks-sync").addEventListener("click", () => safely(async () => {
+  const st = byId("bookmarks-status"); clear(st);
+  st.appendChild(document.createTextNode("Syncing…"));
+  const res = await postJson("/api/bookmarks/sync", {});
+  clear(st);
+  const msg = res.added > 0
+    ? "Added " + res.added + " bookmark" + (res.added === 1 ? "" : "s") + " to memory."
+    : "Up to date — no new bookmarks.";
+  st.appendChild(document.createTextNode(msg));
+  logSystem("synced browser bookmarks · +" + (res.added || 0), "ok");
+  await Promise.all([loadNames(), loadStats()]);
+}));
 
 // Scale + translate the graph so its full extent is centered in the viewport.
 function fitView() {

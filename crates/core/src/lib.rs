@@ -17,6 +17,7 @@
 
 pub mod actor;
 pub mod binding;
+pub mod browser;
 pub mod capability;
 pub mod car;
 pub mod compiler;

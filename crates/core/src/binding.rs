@@ -2558,6 +2558,38 @@ impl MemCli {
         Ok((root.0, ts))
     }
 
+    /// Sync the user's wallet-browser (Brave/Opera) bookmarks into memory (Pillar A,
+    /// Decision 0033). Each new bookmark (deduped by URL via a bound `bookmark:<hash>`
+    /// name) becomes a `memory`/`reference` node filed into the day calendar so it
+    /// shows in Records. Read-only on the browser's side; ingested content is an
+    /// **untrusted source** — retrievable, never auto-injected. Returns count added.
+    pub fn sync_browser_bookmarks(&self) -> Result<usize> {
+        let mut added = 0;
+        for bm in crate::browser::read_bookmarks() {
+            let key = crate::browser::url_key(&bm.url);
+            let dedup_name = format!("bookmark:{key}");
+            if self.resolve(&dedup_name).is_ok() {
+                continue; // already ingested
+            }
+            let ts = if bm.added_unix > 0 { bm.added_unix } else { now_secs() };
+            let location = if bm.folder.is_empty() {
+                String::new()
+            } else {
+                format!("\n(in {})", bm.folder)
+            };
+            let text = format!("Bookmark — {}\n{}{}", bm.title, bm.url, location);
+            let node = Node {
+                kind: "memory".to_string(),
+                fields_json: serde_json::json!({ "kind": "reference", "text": text }).to_string(),
+            };
+            let cid = self.put_node(&node)?;
+            self.bind(&dedup_name, &cid)?;
+            let _ = self.record_event_in_day(&utc_date(ts), &format!("bookmark-{key}"), &cid);
+            added += 1;
+        }
+        Ok(added)
+    }
+
     fn import_verified_car(
         &self,
         root: &cid::Cid,
@@ -3304,6 +3336,43 @@ mod tests {
             }
             other => panic!("expected live checkpoint record, got {other:?}"),
         }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn bookmark_sync_ingests_dedupes_and_files_into_records() {
+        // Pillar A: a wallet-browser bookmark becomes a retrievable memory node, once.
+        let dir = temp_workdir("bookmarks");
+        let mem = MemCli::new(&dir);
+        let bm_file = dir.join("Bookmarks");
+        std::fs::write(
+            &bm_file,
+            r#"{"roots":{"bookmark_bar":{"type":"folder","name":"Bookmarks bar","children":[
+                {"type":"url","name":"IPFS paper","url":"https://ipfs.tech/paper"},
+                {"type":"url","name":"libp2p","url":"https://libp2p.io"},
+                {"type":"url","name":"dup","url":"https://ipfs.tech/paper"}
+            ]},"other":{"type":"folder","name":"Other","children":[]}}}"#,
+        )
+        .unwrap();
+        std::env::set_var("CONCIERGE_BOOKMARKS_FILE", &bm_file);
+
+        // Two unique URLs ingested (the duplicate is deduped).
+        assert_eq!(mem.sync_browser_bookmarks().expect("sync"), 2);
+        // Re-sync adds nothing (URL-keyed dedup via the bound name).
+        assert_eq!(mem.sync_browser_bookmarks().expect("re-sync"), 0);
+
+        // Each is a retrievable `memory` node bound under bookmark:<url-hash>.
+        let key = crate::browser::url_key("https://libp2p.io");
+        let cid = mem.resolve(&format!("bookmark:{key}")).expect("bound bookmark");
+        match mem.get(&CidOrName::Cid(cid)).expect("get bookmark") {
+            Record::Live { kind, body_json, .. } => {
+                assert_eq!(kind, "memory");
+                assert!(body_json.contains("libp2p"), "carries the bookmark");
+            }
+            other => panic!("expected live bookmark record, got {other:?}"),
+        }
+
+        std::env::remove_var("CONCIERGE_BOOKMARKS_FILE");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

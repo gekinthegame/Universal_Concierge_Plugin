@@ -2567,6 +2567,7 @@ fn handle_mutation(mem: &MemCli, options: &GuiOptions, path: &str, body: &str) -
         "/api/site/checkpoint/save" => mutation_save_checkpoint(mem, body),
         "/api/deploy/credentials" => mutation_deploy_credentials(mem, body),
         "/api/deploy/test" => mutation_deploy_test(mem, body),
+        "/api/bookmarks/sync" => mutation_bookmarks_sync(mem),
         "/api/mcp/write" => mutation_mcp_write(mem, body),
         "/api/canvas/open" => mutation_canvas_open(options, body),
         "/api/canvas/signal" => mutation_canvas_signal(mem, options, body),
@@ -2616,6 +2617,7 @@ fn mutation_label(path: &str) -> Option<&'static str> {
         "/api/site/checkpoint/save" => "saved a Studio checkpoint",
         "/api/deploy/credentials" => "saved deploy credentials (0600, on-device)",
         "/api/deploy/test" => "tested a publishing connection",
+        "/api/bookmarks/sync" => "synced wallet-browser bookmarks into memory",
         "/api/mcp/write" => "toggled MCP write tools",
         "/api/canvas/snapshot" => "snapshotted the canvas",
         "/api/requests/accept" => "accepted a contact request",
@@ -2870,6 +2872,15 @@ fn mutation_deploy_test(mem: &MemCli, body: &str) -> Response {
         Err(error) => {
             Response::json(serde_json::json!({ "ok": false, "error": error.to_string() }).to_string())
         }
+    }
+}
+
+/// Pillar A: pull the wallet browser's (Brave/Opera) bookmarks into memory. Returns
+/// how many *new* bookmarks were ingested (deduped by URL).
+fn mutation_bookmarks_sync(mem: &MemCli) -> Response {
+    match mem.sync_browser_bookmarks() {
+        Ok(added) => Response::json(serde_json::json!({ "ok": true, "added": added }).to_string()),
+        Err(error) => Response::error(error.to_string()),
     }
 }
 
