@@ -4,7 +4,7 @@ Append-only record of architectural decisions. Newest first.
 
 ---
 
-## 0033 — Brave is the Concierge's runtime, portal & wallet (offloaded crypto, no token economy)
+## 0033 — A Chromium wallet browser (Brave or Opera) is the Concierge's runtime, portal & wallet (offloaded crypto, no token economy)
 
 **Date:** 2026-06-12 · **Status:** accepted (direction); not yet implemented · **Plans/Surface:** `~/Desktop/plans/BRAVE_INTEGRATION_PLAN.md`, `crates/cli` (launcher), `crates/gui`, `adapters/brave/`, `crates/core/src/identity.rs` (`WalletLink`), `crates/mcp` (opt-in `wallet.propose_tx`), `install.sh`/`install.ps1` · **Builds on / qualifies:** 0011, 0012, 0013, 0022, 0024, 0026, 0027, 0030; threat model
 
@@ -13,13 +13,17 @@ that *is* Brave under the hood — and offload the hard parts to Brave instead o
 owning them. One move ("run the GUI in Brave") unlocks all three capabilities, and
 `window.ethereum` works because Chromium treats `127.0.0.1` as a secure context.
 
-- **Shell — qualifies 0013.** The shipped shell becomes a **Brave app window**, not a
-  generic native webview. A WKWebView/WebView2 would have **neither** Brave's wallet
-  **nor** native IPFS, so Brave-app-mode is strictly better: real-app feel + web3/IPFS
-  powers + **zero webview runtime to maintain**. **Brave is recommended, never
-  required** — no Brave → default browser/webview fallback; the core memory explorer
-  is identical, only Brave-specific features are absent (same "degrade honestly"
-  stance as 0027).
+- **Shell — qualifies 0013.** The shipped shell becomes a **Chromium wallet-browser
+  app window** (`--app=`), not a generic native webview. A WKWebView/WebView2 would
+  have **neither** the wallet **nor** native IPFS, so app-mode is strictly better:
+  real-app feel + web3/IPFS powers + **zero webview runtime to maintain**. **Two
+  browsers are supported — Brave or Opera** (both Chromium with a built-in wallet);
+  the launcher detects either (`CONCIERGE_BROWSER=brave|opera` to force one) and the
+  **installer offers the user a choice**. **Brave is the fuller experience** (native
+  `ipns://` via a local node); **Opera** has the wallet + bookmarks but resolves IPFS
+  via a **gateway**. A wallet browser is **recommended, never required** — none → default
+  browser/webview fallback; the core memory explorer is identical, only the
+  browser-specific features are absent (same "degrade honestly" stance as 0027).
 - **Crypto re-enters — qualifies 0012/0022/0024.** Those decisions dropped blockchain
   to avoid **owning multi-chain wallet code** and to reject an **internal token
   economy**. Brave's built-in wallet *is* the custody/signing/RPC/multi-chain layer,

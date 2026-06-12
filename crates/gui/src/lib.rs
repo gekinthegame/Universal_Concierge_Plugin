@@ -987,11 +987,11 @@ fn me_response(mem: &MemCli, options: &GuiOptions) -> Response {
             "peer_id": peer_id,
             "online": online,
             "addresses": addresses,
-            // Brave is the preferred shell (Decision 0033): when present, the GUI runs
-            // in a Brave app window and the wallet / native-IPFS / bookmark features
-            // light up. The browser-side check (navigator.brave) is authoritative for
-            // "am I *in* Brave"; this reports "is Brave installed on this machine".
-            "brave": brave_path().is_some(),
+            // The wallet browser (Brave or Opera) is the preferred shell (Decision
+            // 0033): when present the GUI runs in its `--app` window and the wallet /
+            // native-IPFS / bookmark features light up. Reports which one is installed
+            // (browser-side checks stay authoritative for "am I *in* it"), or null.
+            "wallet_browser": wallet_browser().map(|(kind, _)| kind.label()),
         })
         .to_string(),
     )
@@ -4943,18 +4943,86 @@ pub fn brave_path() -> Option<std::path::PathBuf> {
     }
 }
 
-/// Open `url` as the Concierge **app window** — a chromeless Brave window
-/// (`--app=`) when Brave is present (so it has the wallet + native IPFS + the user's
-/// bookmarks, using their default profile), otherwise the default browser. Set
-/// `CONCIERGE_NO_BRAVE=1` to always use the default browser.
+/// Locate an installed Opera binary, or `None`. Opera is the other supported
+/// Chromium wallet browser (Decision 0033) — built-in wallet, `--app` mode, CDP.
+pub fn opera_path() -> Option<std::path::PathBuf> {
+    #[cfg(target_os = "macos")]
+    {
+        let candidates = [
+            std::path::PathBuf::from("/Applications/Opera.app/Contents/MacOS/Opera"),
+            std::env::var_os("HOME")
+                .map(std::path::PathBuf::from)
+                .unwrap_or_default()
+                .join("Applications/Opera.app/Contents/MacOS/Opera"),
+        ];
+        candidates.into_iter().find(|p| p.exists())
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        for name in ["opera", "opera-stable"] {
+            if let Ok(out) = Command::new("which").arg(name).output() {
+                if out.status.success() {
+                    let path = String::from_utf8_lossy(&out.stdout).trim().to_string();
+                    if !path.is_empty() {
+                        return Some(path.into());
+                    }
+                }
+            }
+        }
+        None
+    }
+    #[cfg(target_os = "windows")]
+    {
+        for env in ["LOCALAPPDATA", "ProgramFiles", "ProgramFiles(x86)"] {
+            if let Some(base) = std::env::var_os(env) {
+                for sub in ["Programs/Opera/opera.exe", "Opera/opera.exe"] {
+                    let p = std::path::Path::new(&base).join(sub);
+                    if p.exists() {
+                        return Some(p);
+                    }
+                }
+            }
+        }
+        None
+    }
+}
+
+/// A supported Chromium browser with a built-in crypto wallet (Decision 0033).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WalletBrowser {
+    Brave,
+    Opera,
+}
+impl WalletBrowser {
+    pub fn label(self) -> &'static str {
+        match self {
+            WalletBrowser::Brave => "Brave",
+            WalletBrowser::Opera => "Opera",
+        }
+    }
+}
+
+/// Which wallet browser to run the Concierge in. `CONCIERGE_BROWSER=brave|opera`
+/// forces a preference; otherwise Brave is preferred (fuller native-IPFS), then
+/// Opera. `None` if neither is installed.
+pub fn wallet_browser() -> Option<(WalletBrowser, std::path::PathBuf)> {
+    let brave = || brave_path().map(|p| (WalletBrowser::Brave, p));
+    let opera = || opera_path().map(|p| (WalletBrowser::Opera, p));
+    match std::env::var("CONCIERGE_BROWSER").ok().map(|s| s.to_lowercase()).as_deref() {
+        Some("opera") => opera().or_else(brave),
+        Some("brave") => brave().or_else(opera),
+        _ => brave().or_else(opera),
+    }
+}
+
+/// Open `url` as the Concierge **app window** — a chromeless `--app` window in the
+/// user's wallet browser (Brave or Opera) when one is present (so it has the wallet
+/// + the user's bookmarks + native IPFS, using their default profile), otherwise
+/// the default browser. Set `CONCIERGE_NO_BRAVE=1` to always use the default browser.
 pub fn open_app(url: &str) -> CoreResult<()> {
     if std::env::var_os("CONCIERGE_NO_BRAVE").is_none() {
-        if let Some(brave) = brave_path() {
-            if Command::new(&brave)
-                .arg(format!("--app={url}"))
-                .spawn()
-                .is_ok()
-            {
+        if let Some((_, exe)) = wallet_browser() {
+            if Command::new(&exe).arg(format!("--app={url}")).spawn().is_ok() {
                 return Ok(());
             }
         }
@@ -6659,11 +6727,15 @@ mod tests {
     }
 
     #[test]
-    fn brave_detection_is_callable_and_any_path_is_real() {
+    fn wallet_browser_detection_is_callable_and_any_path_is_real() {
         // Environment-dependent: just prove it can't panic and never returns a
-        // non-existent path (the shell launcher relies on that).
-        if let Some(path) = brave_path() {
-            assert!(path.exists(), "brave_path must only return an existing binary");
+        // non-existent path (the shell launcher relies on that), for both browsers.
+        for path in [brave_path(), opera_path()].into_iter().flatten() {
+            assert!(path.exists(), "a detected browser path must exist");
+        }
+        if let Some((kind, path)) = wallet_browser() {
+            assert!(path.exists());
+            assert!(matches!(kind, WalletBrowser::Brave | WalletBrowser::Opera));
         }
     }
 }

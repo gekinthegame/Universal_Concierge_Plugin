@@ -34,35 +34,41 @@ fi
 asset="concierge-plugin-${plat}-${a}"
 base="https://github.com/$REPO/releases/latest/download"
 
-# ── recommend Brave first (Decision 0033) ───────────────────────────────────
-# The Concierge runs best inside Brave — it powers the built-in wallet, native
-# IPFS browsing, and bookmark memory. Strongly recommended, never required.
+# ── recommend a wallet browser first (Decision 0033) ────────────────────────
+# The Concierge runs best inside a Chromium wallet browser — Brave (fuller: native
+# IPFS) or Opera — which power the built-in wallet, IPFS browsing, and bookmark
+# memory. Strongly recommended, never required; the user picks which to install.
 have_brave() {
-  if [ "$plat" = "macos" ]; then
-    [ -d "/Applications/Brave Browser.app" ] || [ -d "$HOME/Applications/Brave Browser.app" ]
-  else
-    command -v brave-browser >/dev/null 2>&1 || command -v brave >/dev/null 2>&1 \
-      || command -v brave-browser-stable >/dev/null 2>&1
-  fi
+  if [ "$plat" = "macos" ]; then [ -d "/Applications/Brave Browser.app" ] || [ -d "$HOME/Applications/Brave Browser.app" ]
+  else command -v brave-browser >/dev/null 2>&1 || command -v brave >/dev/null 2>&1 || command -v brave-browser-stable >/dev/null 2>&1; fi
+}
+have_opera() {
+  if [ "$plat" = "macos" ]; then [ -d "/Applications/Opera.app" ] || [ -d "$HOME/Applications/Opera.app" ]
+  else command -v opera >/dev/null 2>&1; fi
+}
+open_url() {
+  if [ "$plat" = "macos" ]; then open "$1" 2>/dev/null || true; else xdg-open "$1" 2>/dev/null || true; fi
 }
 if have_brave; then
-  echo "✓ Brave detected — you'll get the full Concierge experience (wallet, native IPFS, bookmark memory)."
+  echo "✓ Brave detected — full Concierge experience (wallet, native IPFS, bookmark memory)."
+elif have_opera; then
+  echo "✓ Opera detected — wallet + bookmark memory (IPFS via gateway; Brave adds native IPFS)."
 else
   echo
   echo "──────────────────────────────────────────────────────────────────────"
-  echo "  The Concierge works best in the Brave browser:"
-  echo "    • built-in crypto wallet   • native ipfs:// / ipns://   • bookmark memory"
-  echo "  Strongly recommended (not required) — install it first:"
-  echo "    https://brave.com/download/"
+  echo "  The Concierge works best in a Chromium wallet browser (pick one):"
+  echo "    1) Brave  (recommended — wallet · native ipfs:// · bookmark memory)"
+  echo "              https://brave.com/download/"
+  echo "    2) Opera  (built-in wallet · bookmark memory; IPFS via gateway)"
+  echo "              https://www.opera.com/download/"
+  echo "  Strongly recommended (not required)."
   echo "──────────────────────────────────────────────────────────────────────"
-  # Offer to open the download page only when run interactively (not curl | sh).
   if [ -t 0 ] && [ -t 1 ]; then
-    printf "  Open the Brave download page now? [y/N] "
+    printf "  Open a download page now? [1=Brave / 2=Opera / N=skip] "
     read -r reply
     case "$reply" in
-      [Yy]*)
-        if [ "$plat" = "macos" ]; then open "https://brave.com/download/" 2>/dev/null || true
-        else xdg-open "https://brave.com/download/" 2>/dev/null || true; fi ;;
+      1) open_url "https://brave.com/download/" ;;
+      2) open_url "https://www.opera.com/download/" ;;
     esac
   fi
   echo

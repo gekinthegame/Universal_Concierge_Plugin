@@ -11,20 +11,30 @@ $ErrorActionPreference = "Stop"
 
 $Repo = if ($env:CONCIERGE_REPO) { $env:CONCIERGE_REPO } else { "gekinthegame/Universal_Concierge_Plugin" }
 
-# Recommend Brave first (Decision 0033) — best experience runs inside Brave.
+# Recommend a wallet browser first (Decision 0033): Brave (fuller) or Opera.
 $braveExe = @(
   "$env:ProgramFiles\BraveSoftware\Brave-Browser\Application\brave.exe",
   "${env:ProgramFiles(x86)}\BraveSoftware\Brave-Browser\Application\brave.exe",
   "$env:LOCALAPPDATA\BraveSoftware\Brave-Browser\Application\brave.exe"
 ) | Where-Object { Test-Path $_ } | Select-Object -First 1
+$operaExe = @(
+  "$env:LOCALAPPDATA\Programs\Opera\opera.exe",
+  "$env:ProgramFiles\Opera\opera.exe",
+  "${env:ProgramFiles(x86)}\Opera\opera.exe"
+) | Where-Object { Test-Path $_ } | Select-Object -First 1
 if ($braveExe) {
-  Write-Host "Brave detected - you'll get the full Concierge experience (wallet, native IPFS, bookmark memory)."
+  Write-Host "Brave detected - full Concierge experience (wallet, native IPFS, bookmark memory)."
+} elseif ($operaExe) {
+  Write-Host "Opera detected - wallet + bookmark memory (IPFS via gateway; Brave adds native IPFS)."
 } else {
   Write-Host ""
-  Write-Host "The Concierge works best in the Brave browser (built-in wallet, native ipfs://, bookmark memory)."
-  Write-Host "Strongly recommended (not required) - install it first: https://brave.com/download/"
-  $reply = Read-Host "Open the Brave download page now? [y/N]"
-  if ($reply -match '^(y|Y)') { Start-Process "https://brave.com/download/" }
+  Write-Host "The Concierge works best in a Chromium wallet browser (pick one):"
+  Write-Host "  1) Brave  (recommended - wallet, native ipfs://, bookmark memory)  https://brave.com/download/"
+  Write-Host "  2) Opera  (built-in wallet, bookmark memory; IPFS via gateway)     https://www.opera.com/download/"
+  Write-Host "Strongly recommended (not required)."
+  $reply = Read-Host "Open a download page now? [1=Brave / 2=Opera / N=skip]"
+  if ($reply -eq '1') { Start-Process "https://brave.com/download/" }
+  elseif ($reply -eq '2') { Start-Process "https://www.opera.com/download/" }
   Write-Host ""
 }
 
