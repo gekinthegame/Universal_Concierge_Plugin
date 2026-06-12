@@ -53,6 +53,7 @@ pub mod social;
 pub(crate) mod state;
 pub mod sync;
 pub mod synthesis;
+pub mod wallet;
 
 pub use actor::{verify_actor_certificate, ActorCertificate, ActorError, ACTOR_CERT_VERSION};
 pub use binding::{

@@ -2590,6 +2590,91 @@ impl MemCli {
         Ok(added)
     }
 
+    // ── Wallet attestation + settings (Pillar C, Decision 0033) ──────────────
+    // The browser (Brave/Opera) custodies keys and signs; we only verify + store.
+
+    fn wallet_state_path(&self) -> Result<PathBuf> {
+        Ok(self.store_dir()?.join("wallet.json"))
+    }
+
+    /// Load the on-device wallet state (links + settings), empty if none yet.
+    pub fn wallet_state(&self) -> Result<crate::wallet::WalletState> {
+        match std::fs::read(self.wallet_state_path()?) {
+            Ok(bytes) => serde_json::from_slice(&bytes)
+                .map_err(|e| Error::Io(format!("parse wallet state: {e}"))),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                Ok(crate::wallet::WalletState::default())
+            }
+            Err(e) => Err(Error::Io(format!("read wallet state: {e}"))),
+        }
+    }
+
+    fn save_wallet_state(&self, state: &crate::wallet::WalletState) -> Result<()> {
+        let dir = self.store_dir()?;
+        std::fs::create_dir_all(&dir).map_err(|e| Error::Io(format!("create store dir: {e}")))?;
+        let bytes = serde_json::to_vec_pretty(state)
+            .map_err(|e| Error::Io(format!("serialize wallet state: {e}")))?;
+        std::fs::write(self.wallet_state_path()?, bytes)
+            .map_err(|e| Error::Io(format!("write wallet state: {e}")))
+    }
+
+    /// Verify a browser-wallet `personal_sign` over our AgentID and record the link
+    /// (idempotent per address). Returns the stored link. We hold no keys — this only
+    /// confirms the address controls a key that signed our AgentID.
+    pub fn link_wallet(
+        &self,
+        address: &str,
+        chain: &str,
+        signature: &str,
+    ) -> Result<crate::wallet::WalletLink> {
+        let agent_id = self.identity()?.agent_id().0;
+        let message = crate::wallet::link_message(&agent_id);
+        let recovered = crate::wallet::recover_eth_personal_sign(&message, signature)
+            .map_err(Error::Io)?;
+        if recovered.to_lowercase() != address.trim().to_lowercase() {
+            return Err(Error::Io(format!(
+                "signature does not match {address} (recovered {recovered})"
+            )));
+        }
+        let link = crate::wallet::WalletLink {
+            address: recovered.to_lowercase(),
+            chain: if chain.is_empty() { "evm".to_string() } else { chain.to_string() },
+            agent_id,
+            signature: signature.to_string(),
+            linked_at: now_secs(),
+        };
+        let mut state = self.wallet_state()?;
+        state.links.retain(|l| l.address != link.address);
+        state.links.push(link.clone());
+        self.save_wallet_state(&state)?;
+        Ok(link)
+    }
+
+    pub fn wallet_links(&self) -> Result<Vec<crate::wallet::WalletLink>> {
+        Ok(self.wallet_state()?.links)
+    }
+
+    pub fn unlink_wallet(&self, address: &str) -> Result<()> {
+        let mut state = self.wallet_state()?;
+        let want = address.trim().to_lowercase();
+        state.links.retain(|l| l.address != want);
+        self.save_wallet_state(&state)
+    }
+
+    pub fn wallet_settings(&self) -> Result<crate::wallet::WalletSettings> {
+        Ok(self.wallet_state()?.settings)
+    }
+
+    /// Replace the wallet settings from a JSON object (agent_access / spend_cap /
+    /// allowlist / preferred_chain).
+    pub fn set_wallet_settings(&self, settings_json: &str) -> Result<()> {
+        let settings: crate::wallet::WalletSettings = serde_json::from_str(settings_json)
+            .map_err(|e| Error::Io(format!("parse wallet settings: {e}")))?;
+        let mut state = self.wallet_state()?;
+        state.settings = settings;
+        self.save_wallet_state(&state)
+    }
+
     fn import_verified_car(
         &self,
         root: &cid::Cid,
@@ -3373,6 +3458,42 @@ mod tests {
         }
 
         std::env::remove_var("CONCIERGE_BOOKMARKS_FILE");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn wallet_link_verifies_a_signature_over_the_agent_id_and_rejects_mismatch() {
+        use k256::ecdsa::{RecoveryId, Signature, SigningKey};
+        use sha3::{Digest, Keccak256};
+        let dir = temp_workdir("wallet-link");
+        let mem = MemCli::new(&dir);
+        let agent_id = mem.identity().unwrap().agent_id().0;
+        let message = crate::wallet::link_message(&agent_id);
+
+        // An external EVM key signs the link message (EIP-191 personal_sign).
+        let key = SigningKey::from_bytes(&[9u8; 32].into()).unwrap();
+        let point = key.verifying_key().to_encoded_point(false);
+        let hash = Keccak256::digest(&point.as_bytes()[1..]);
+        let address: String =
+            format!("0x{}", hash[12..].iter().map(|b| format!("{b:02x}")).collect::<String>());
+        let prefixed = format!("\x19Ethereum Signed Message:\n{}{}", message.len(), message);
+        let (sig, recid): (Signature, RecoveryId) =
+            key.sign_digest_recoverable(Keccak256::new_with_prefix(prefixed.as_bytes())).unwrap();
+        let mut raw = sig.to_bytes().to_vec();
+        raw.push(recid.to_byte() + 27);
+        let sig_hex: String =
+            format!("0x{}", raw.iter().map(|b| format!("{b:02x}")).collect::<String>());
+
+        // The matching address links; the signature ties it to our AgentID.
+        let link = mem.link_wallet(&address, "evm", &sig_hex).expect("link");
+        assert_eq!(link.address, address.to_lowercase());
+        assert_eq!(link.agent_id, agent_id);
+        assert_eq!(mem.wallet_links().unwrap().len(), 1);
+        // A different claimed address with the same signature is rejected.
+        assert!(mem.link_wallet("0x000000000000000000000000000000000000dEaD", "evm", &sig_hex).is_err());
+        // Unlink removes it.
+        mem.unlink_wallet(&address).unwrap();
+        assert!(mem.wallet_links().unwrap().is_empty());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -608,6 +608,7 @@ pub fn handle_with_options(
         "/api/sidekick/status" => to_response(sidekick_status_json(mem)),
         "/api/claude-code/status" => to_response(claude_code_status_json(mem)),
         "/api/deploy/credentials" => to_response(deploy_status_json(mem)),
+        "/api/wallet" => to_response(wallet_json(mem)),
         "/api/egress-plan" => egress_plan_response(mem, options, query),
         "/api/export-car" => Response::bad_request(
             "browser plaintext CAR download is intentionally disabled; use the reviewed CLI export flow",
@@ -2568,6 +2569,9 @@ fn handle_mutation(mem: &MemCli, options: &GuiOptions, path: &str, body: &str) -
         "/api/deploy/credentials" => mutation_deploy_credentials(mem, body),
         "/api/deploy/test" => mutation_deploy_test(mem, body),
         "/api/bookmarks/sync" => mutation_bookmarks_sync(mem),
+        "/api/wallet/link" => mutation_wallet_link(mem, body),
+        "/api/wallet/unlink" => mutation_wallet_unlink(mem, body),
+        "/api/wallet/settings" => mutation_wallet_settings(mem, body),
         "/api/mcp/write" => mutation_mcp_write(mem, body),
         "/api/canvas/open" => mutation_canvas_open(options, body),
         "/api/canvas/signal" => mutation_canvas_signal(mem, options, body),
@@ -2618,6 +2622,9 @@ fn mutation_label(path: &str) -> Option<&'static str> {
         "/api/deploy/credentials" => "saved deploy credentials (0600, on-device)",
         "/api/deploy/test" => "tested a publishing connection",
         "/api/bookmarks/sync" => "synced wallet-browser bookmarks into memory",
+        "/api/wallet/link" => "linked a wallet to your AgentID",
+        "/api/wallet/unlink" => "unlinked a wallet",
+        "/api/wallet/settings" => "updated wallet settings",
         "/api/mcp/write" => "toggled MCP write tools",
         "/api/canvas/snapshot" => "snapshotted the canvas",
         "/api/requests/accept" => "accepted a contact request",
@@ -2880,6 +2887,61 @@ fn mutation_deploy_test(mem: &MemCli, body: &str) -> Response {
 fn mutation_bookmarks_sync(mem: &MemCli) -> Response {
     match mem.sync_browser_bookmarks() {
         Ok(added) => Response::json(serde_json::json!({ "ok": true, "added": added }).to_string()),
+        Err(error) => Response::error(error.to_string()),
+    }
+}
+
+/// Wallet state for the Concierge Wallet tab — verified links + on-device settings.
+/// No keys (the browser holds those); links are public attestations.
+fn wallet_json(mem: &MemCli) -> CoreResult<String> {
+    serde_json::to_string(&mem.wallet_state()?)
+        .map_err(|e| Error::Io(format!("serialize wallet state: {e}")))
+}
+
+/// Record a verified `WalletLink`: the browser wallet signed our AgentID; we recover
+/// the signer and confirm it matches the claimed address.
+fn mutation_wallet_link(mem: &MemCli, body: &str) -> Response {
+    let value = match parse_body(body) {
+        Ok(value) => value,
+        Err(response) => return response,
+    };
+    let address = match body_str(&value, "address") {
+        Ok(a) => a.trim().to_string(),
+        Err(response) => return response,
+    };
+    let signature = match body_str(&value, "signature") {
+        Ok(s) => s.trim().to_string(),
+        Err(response) => return response,
+    };
+    let chain = value.get("chain").and_then(|v| v.as_str()).unwrap_or("evm");
+    match mem.link_wallet(&address, chain, &signature) {
+        Ok(link) => Response::json(
+            serde_json::json!({ "ok": true, "address": link.address, "chain": link.chain }).to_string(),
+        ),
+        Err(error) => Response::error(error.to_string()),
+    }
+}
+
+fn mutation_wallet_unlink(mem: &MemCli, body: &str) -> Response {
+    let value = match parse_body(body) {
+        Ok(value) => value,
+        Err(response) => return response,
+    };
+    let address = match body_str(&value, "address") {
+        Ok(a) => a.trim().to_string(),
+        Err(response) => return response,
+    };
+    match mem.unlink_wallet(&address) {
+        Ok(()) => Response::json(serde_json::json!({ "ok": true }).to_string()),
+        Err(error) => Response::error(error.to_string()),
+    }
+}
+
+/// Persist the wallet settings (agent_access / spend_cap / allowlist / preferred_chain).
+fn mutation_wallet_settings(mem: &MemCli, body: &str) -> Response {
+    // The body *is* the settings object; WalletSettings is `#[serde(default)]`.
+    match mem.set_wallet_settings(body) {
+        Ok(()) => Response::json(serde_json::json!({ "ok": true }).to_string()),
         Err(error) => Response::error(error.to_string()),
     }
 }

@@ -112,6 +112,16 @@
   .dep-open { display: inline-flex; align-items: center; gap: 6px; }
   .dep-test-ok { color: var(--synapse); }
   .dep-test-bad { color: var(--vermilion); }
+  /* Concierge Wallet tab (Pillar C) — the UX lives here; the browser holds the keys. */
+  .wallet-card { border: 1px solid var(--line); border-radius: 8px; background: var(--deep); padding: 12px 14px; margin: 6px 0 12px; display: flex; flex-direction: column; gap: 9px; }
+  .wallet-row { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+  .wallet-k { font: 11px var(--mono); color: var(--muted); }
+  .wallet-v { font: 13px var(--mono); color: var(--ink); }
+  .wallet-v.mono, .mono { font-family: var(--mono); }
+  .wallet-field { display: flex; flex-direction: column; gap: 4px; }
+  .wallet-toggle { display: flex; align-items: flex-start; gap: 8px; font: 12px/1.4 var(--mono); color: var(--ink); }
+  .wallet-link-row { display: flex; align-items: center; gap: 8px; padding: 5px 0; }
+  .wallet-link-row .tool-button { margin-left: auto; }
   .profile-did { width: 100%; font: 9px var(--mono); color: var(--faint); letter-spacing: .02em; }
   #sites { display: flex; flex-direction: column; gap: 8px; margin-top: 6px; }
   .site-card { display: flex; align-items: center; gap: 12px; padding: 11px 13px; border: 1px solid var(--line); border-radius: 7px; background: var(--deep); }
@@ -180,6 +190,23 @@
   #cv-publish:hover { background: var(--pale-gold); }
   .cv-domain { font: 10px var(--mono); color: var(--faint); letter-spacing: .02em; margin: 5px 2px 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .cv-domain b { color: var(--patina); font-weight: 600; }
+  .cv-link { color: var(--patina); font-weight: 600; text-decoration: none; border-bottom: 1px solid transparent; }
+  .cv-link:hover { border-bottom-color: var(--patina); }
+  .cv-link.brave { color: var(--gold); }
+  .cv-link.brave:hover { border-bottom-color: var(--gold); }
+  .cv-copy {
+    margin-left: 12px;
+    padding: 3px 8px;
+    background: var(--deep);
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    color: var(--gold);
+    font: 9px var(--mono);
+    text-transform: uppercase;
+    cursor: pointer;
+    vertical-align: middle;
+  }
+  .cv-copy:hover { border-color: var(--gold); background: var(--graphite); }
   .cv-domain.live { color: var(--muted); }
   .cv-domain.live b { color: var(--gold); }
   .ckpt-list { display: flex; flex-direction: column; gap: 6px; max-height: 46vh; overflow: auto; margin: 6px 0; }
@@ -535,6 +562,7 @@
       <button class="tab" data-view="messenger">Messenger<span id="msg-badge" class="tab-badge" style="display:none">0</span></button>
       <button class="tab" data-view="canvas">Studio</button>
       <button class="tab" data-view="network">Network</button>
+      <button class="tab" data-view="wallet">Wallet</button>
     </div>
     <div id="graph-view" class="view active">
       <div class="swarm-badge"><img src="/api/swarm.png" alt="Swarm protocol"><span>Swarm protocol<br>protected node</span></div>
@@ -677,6 +705,48 @@
       <input id="chat-msg" class="input chat-msg" placeholder="Direct private message…" autocomplete="off">
       <button id="chat-send" class="chat-send" type="submit">Send</button>
     </form>
+    <div id="wallet-view" class="view"><div class="content">
+      <div class="msg-section">Concierge Wallet</div>
+      <div class="eyebrow">Your wallet, inside the Concierge — connect it, bind it to your sovereign identity, and set what the AI may do. Keys never leave your browser's wallet; the Concierge holds none.</div>
+      <div id="wallet-unavailable" class="wallet-card" style="display:none;">
+        <div class="eyebrow">No in-browser wallet detected. Open the Concierge in <b>Brave</b> or <b>Opera</b> (both have a built-in wallet) to use this tab.</div>
+      </div>
+      <div id="wallet-main" style="display:none;">
+        <div class="wallet-card">
+          <div class="wallet-row"><span class="wallet-k">Status</span><span id="wallet-status" class="wallet-v">Not connected</span></div>
+          <div class="wallet-row"><span class="wallet-k">Address</span><span id="wallet-addr" class="wallet-v mono">—</span></div>
+          <div class="wallet-row"><span class="wallet-k">Network</span><span id="wallet-net" class="wallet-v">—</span></div>
+          <div class="wallet-row"><span class="wallet-k">Balance</span><span id="wallet-bal" class="wallet-v">—</span></div>
+          <div class="modal-actions">
+            <button id="wallet-connect" class="tool-button" style="flex:1;">Connect wallet</button>
+            <button id="wallet-refresh" class="tool-button">Refresh</button>
+          </div>
+        </div>
+        <div class="msg-section">Linked to your identity</div>
+        <div class="eyebrow">Sign a message to bind this wallet to your AgentID — a verifiable link, no funds moved. Link several wallets; they all anchor to the same identity.</div>
+        <div class="wallet-card">
+          <div id="wallet-links"></div>
+          <button id="wallet-link" class="tool-button" style="width:100%;">Link this wallet to my AgentID</button>
+        </div>
+        <div class="msg-section">Wallet settings</div>
+        <div class="wallet-card">
+          <label class="wallet-field"><span class="wallet-k">Preferred network</span>
+            <select id="wallet-chain" class="input">
+              <option value="">— current —</option>
+              <option value="0x1">Ethereum</option>
+              <option value="0x2105">Base</option>
+              <option value="0x89">Polygon</option>
+              <option value="0xa">Optimism</option>
+              <option value="0xa4b1">Arbitrum</option>
+            </select>
+          </label>
+          <label class="wallet-toggle"><input id="wallet-agent" type="checkbox"> <span>Let the AI <b>propose</b> transactions — your browser still confirms every one</span></label>
+          <label class="wallet-field"><span class="wallet-k">Per-transaction cap</span><input id="wallet-cap" class="input" placeholder="e.g. 0.05  (blank = the AI can't send)"></label>
+          <label class="wallet-field"><span class="wallet-k">Allowed recipient addresses (one per line)</span><textarea id="wallet-allow" class="cv-src" style="min-height:60px;flex:none;"></textarea></label>
+          <button id="wallet-save" class="tool-button" style="width:100%;">Save settings</button>
+        </div>
+      </div>
+    </div></div>
   </section>
 
   <aside class="panel">
@@ -2181,7 +2251,98 @@ document.querySelectorAll("[data-view]").forEach(button => button.addEventListen
   if (button.dataset.view === "network") { safely(loadNetwork); startDiscPoll(); }
   if (button.dataset.view === "canvas") safely(cvLoadSites);
   if (button.dataset.view === "messenger") { safely(loadProfile); safely(loadContacts); }
+  if (button.dataset.view === "wallet") safely(walletInit);
 }));
+
+// ── Concierge Wallet (Pillar C): the UX is ours; the browser's wallet does custody. ──
+const WALLET = { provider: null, account: null, agentId: "" };
+const WALLET_CHAINS = { "0x1": "Ethereum", "0x2105": "Base", "0x89": "Polygon", "0xa": "Optimism", "0xa4b1": "Arbitrum", "0xaa36a7": "Sepolia" };
+function walletShort(a) { return a ? a.slice(0, 6) + "…" + a.slice(-4) : "—"; }
+function walletChainName(cid) { return WALLET_CHAINS[cid] || ("Chain " + cid); }
+function walletEth(weiHex) { try { return (Number(BigInt(weiHex)) / 1e18).toFixed(4); } catch (e) { return "?"; } }
+async function walletInit() {
+  WALLET.provider = window.ethereum || null;
+  const has = !!WALLET.provider;
+  byId("wallet-unavailable").style.display = has ? "none" : "";
+  byId("wallet-main").style.display = has ? "" : "none";
+  if (!has) return;
+  try { const me = await getJson("/api/me"); WALLET.agentId = me.username || ""; } catch (e) {}
+  await walletLoadState();
+  try {
+    const accts = await WALLET.provider.request({ method: "eth_accounts" });
+    if (accts && accts[0]) { WALLET.account = accts[0]; await walletRefresh(); }
+  } catch (e) {}
+}
+async function walletConnect() {
+  if (!WALLET.provider) return;
+  const accts = await WALLET.provider.request({ method: "eth_requestAccounts" });
+  WALLET.account = accts && accts[0];
+  await walletRefresh();
+  notice("Wallet connected.");
+}
+async function walletRefresh() {
+  if (!WALLET.provider || !WALLET.account) return;
+  byId("wallet-status").textContent = "Connected";
+  byId("wallet-addr").textContent = walletShort(WALLET.account);
+  try { byId("wallet-net").textContent = walletChainName(await WALLET.provider.request({ method: "eth_chainId" })); } catch (e) {}
+  try {
+    const wei = await WALLET.provider.request({ method: "eth_getBalance", params: [WALLET.account, "latest"] });
+    byId("wallet-bal").textContent = walletEth(wei) + " ETH";
+  } catch (e) {}
+}
+async function walletLoadState() {
+  let st; try { st = await getJson("/api/wallet"); } catch (e) { st = { links: [], settings: {} }; }
+  const wrap = byId("wallet-links"); clear(wrap);
+  (st.links || []).forEach(l => {
+    const row = node("div", "wallet-link-row");
+    row.append(node("span", "mono", walletShort(l.address)));
+    row.append(node("span", "eyebrow", " · " + (l.chain || "evm")));
+    const rm = node("button", "tool-button", "Unlink");
+    rm.addEventListener("click", () => safely(async () => {
+      await postJson("/api/wallet/unlink", { address: l.address });
+      await walletLoadState();
+    }));
+    row.append(rm);
+    wrap.append(row);
+  });
+  if (!(st.links || []).length) wrap.append(node("div", "eyebrow", "No wallet linked yet."));
+  const s = st.settings || {};
+  byId("wallet-agent").checked = !!s.agent_access;
+  byId("wallet-cap").value = s.spend_cap || "";
+  byId("wallet-allow").value = (s.allowlist || []).join("\n");
+  if (s.preferred_chain) byId("wallet-chain").value = s.preferred_chain;
+}
+async function walletLink() {
+  if (!WALLET.provider || !WALLET.account) { notice("Connect your wallet first."); return; }
+  if (!WALLET.agentId) { notice("Your AgentID isn't ready yet."); return; }
+  const msg = "Link this wallet to my Concierge identity (AgentID): " + WALLET.agentId;
+  const sig = await WALLET.provider.request({ method: "personal_sign", params: [msg, WALLET.account] });
+  await postJson("/api/wallet/link", { address: WALLET.account, chain: "evm", signature: sig });
+  notice("Linked " + walletShort(WALLET.account) + " to your identity.");
+  logSystem("wallet · linked " + walletShort(WALLET.account), "ok");
+  await walletLoadState();
+}
+async function walletSwitchChain(cid) {
+  if (!WALLET.provider || !cid) return;
+  try { await WALLET.provider.request({ method: "wallet_switchEthereumChain", params: [{ chainId: cid }] }); await walletRefresh(); }
+  catch (e) { notice("Couldn't switch network — add it in your wallet first."); }
+}
+async function walletSaveSettings() {
+  const settings = {
+    agent_access: byId("wallet-agent").checked,
+    spend_cap: byId("wallet-cap").value.trim(),
+    allowlist: byId("wallet-allow").value.split("\n").map(s => s.trim()).filter(Boolean),
+    preferred_chain: byId("wallet-chain").value,
+  };
+  await postJson("/api/wallet/settings", settings);
+  if (settings.preferred_chain) await walletSwitchChain(settings.preferred_chain);
+  notice("Wallet settings saved.");
+}
+byId("wallet-connect").addEventListener("click", () => safely(walletConnect));
+byId("wallet-refresh").addEventListener("click", () => safely(walletRefresh));
+byId("wallet-link").addEventListener("click", () => safely(walletLink));
+byId("wallet-save").addEventListener("click", () => safely(walletSaveSettings));
+byId("wallet-chain").addEventListener("change", () => safely(() => walletSwitchChain(byId("wallet-chain").value)));
 byId("search-form").addEventListener("submit", event => { event.preventDefault(); safely(runSearch); });
 document.querySelectorAll("[data-command]").forEach(button => button.addEventListener("click", () => {
   if (button.dataset.command === "Ingest") { openIngestModal(); return; }
@@ -2380,14 +2541,40 @@ function cvUpdateDomain() {
   const el = byId("cv-domain"); if (!el) return;
   const name = byId("cv-name").value.trim().toLowerCase();
   const match = (cv.sites || []).find(s => (s.name || "").toLowerCase() === name && s.ipns);
-  clear(el);   // build with safe DOM nodes (the site name is user input — no raw markup)
+  clear(el);
   if (match) {
-    const short = cvIpnsShort(match.ipns);
+    const fullUrl = "https://ipfs.io/ipns/" + match.ipns + "/";
+    const dwebUrl = "https://" + match.ipns + ".ipns.dweb.link/";
+    const braveUrl = "ipns://" + match.ipns + "/";
+    
     el.classList.add("live");
     el.append(document.createTextNode("✓ live at "));
-    el.append(node("b", "", "ipfs.io/ipns/" + short));
+    
+    const link = node("a", "cv-link", "ipfs.io/ipns/" + cvIpnsShort(match.ipns));
+    link.href = fullUrl; link.target = "_blank"; link.title = "View on public gateway";
+    el.append(link);
+    
     el.append(document.createTextNode("  ·  also "));
-    el.append(node("b", "", short + ".ipns.dweb.link"));
+    const dlink = node("a", "cv-link", "dweb.link");
+    dlink.href = dwebUrl; dlink.target = "_blank"; dlink.title = "View on dweb.link gateway";
+    el.append(dlink);
+
+    if (cvIsBrave) {
+      el.append(document.createTextNode("  ·  "));
+      const blink = node("a", "cv-link brave", "Open in Brave");
+      blink.href = braveUrl; blink.target = "_blank"; blink.title = "Open sovereignly in Brave (ipns://)";
+      el.append(blink);
+    }
+
+    const copy = node("button", "cv-copy", "Copy URL");
+    copy.title = "Copy full IPFS gateway URL to clipboard";
+    copy.onclick = () => {
+      navigator.clipboard.writeText(fullUrl).then(() => {
+        const old = copy.textContent; copy.textContent = "Copied!";
+        setTimeout(() => copy.textContent = old, 1500);
+      });
+    };
+    el.append(copy);
   } else {
     el.classList.remove("live");
     el.append(document.createTextNode((name ? "“" + name + "”" : "your site") + " publishes to a permanent IPFS address — "));
