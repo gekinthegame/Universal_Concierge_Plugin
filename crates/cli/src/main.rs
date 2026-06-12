@@ -2761,7 +2761,7 @@ fn cmd_gui(args: &[String]) -> ExitCode {
             let url = format!("http://127.0.0.1:{port}");
             println!("Data Platter already running → {url} (reusing)");
             if open_browser {
-                let _ = concierge_gui::open_browser(&url);
+                let _ = concierge_gui::open_app(&url);
             }
             return ExitCode::SUCCESS;
         }

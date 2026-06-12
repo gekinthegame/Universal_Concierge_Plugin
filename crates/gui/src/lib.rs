@@ -987,6 +987,11 @@ fn me_response(mem: &MemCli, options: &GuiOptions) -> Response {
             "peer_id": peer_id,
             "online": online,
             "addresses": addresses,
+            // Brave is the preferred shell (Decision 0033): when present, the GUI runs
+            // in a Brave app window and the wallet / native-IPFS / bookmark features
+            // light up. The browser-side check (navigator.brave) is authoritative for
+            // "am I *in* Brave"; this reports "is Brave installed on this machine".
+            "brave": brave_path().is_some(),
         })
         .to_string(),
     )
@@ -4627,7 +4632,7 @@ pub fn serve_with_options(mem: MemCli, addr: &str, options: GuiOptions) -> CoreR
         write_gui_lock(&mem, local.port());
     }
     if options.open_browser {
-        let _ = open_browser(&format!("http://{addr}"));
+        let _ = open_app(&format!("http://{addr}"));
     }
 
     if let Some(pid) = options.watch_pid {
@@ -4892,6 +4897,71 @@ pub fn pick_free_port(preferred: u16) -> u16 {
 }
 
 /// Open the explorer URL with the platform's default browser.
+/// Locate an installed Brave binary, or `None`. Brave is the Concierge's preferred
+/// shell (Decision 0033): running the GUI inside Brave is what makes the wallet,
+/// native `ipns://`, and bookmark memory available.
+pub fn brave_path() -> Option<std::path::PathBuf> {
+    #[cfg(target_os = "macos")]
+    {
+        let candidates = [
+            std::path::PathBuf::from(
+                "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser",
+            ),
+            std::env::var_os("HOME")
+                .map(std::path::PathBuf::from)
+                .unwrap_or_default()
+                .join("Applications/Brave Browser.app/Contents/MacOS/Brave Browser"),
+        ];
+        candidates.into_iter().find(|p| p.exists())
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        for name in ["brave-browser", "brave", "brave-browser-stable"] {
+            if let Ok(out) = Command::new("which").arg(name).output() {
+                if out.status.success() {
+                    let path = String::from_utf8_lossy(&out.stdout).trim().to_string();
+                    if !path.is_empty() {
+                        return Some(path.into());
+                    }
+                }
+            }
+        }
+        None
+    }
+    #[cfg(target_os = "windows")]
+    {
+        for env in ["ProgramFiles", "ProgramFiles(x86)", "LOCALAPPDATA"] {
+            if let Some(base) = std::env::var_os(env) {
+                let p = std::path::Path::new(&base)
+                    .join("BraveSoftware/Brave-Browser/Application/brave.exe");
+                if p.exists() {
+                    return Some(p);
+                }
+            }
+        }
+        None
+    }
+}
+
+/// Open `url` as the Concierge **app window** — a chromeless Brave window
+/// (`--app=`) when Brave is present (so it has the wallet + native IPFS + the user's
+/// bookmarks, using their default profile), otherwise the default browser. Set
+/// `CONCIERGE_NO_BRAVE=1` to always use the default browser.
+pub fn open_app(url: &str) -> CoreResult<()> {
+    if std::env::var_os("CONCIERGE_NO_BRAVE").is_none() {
+        if let Some(brave) = brave_path() {
+            if Command::new(&brave)
+                .arg(format!("--app={url}"))
+                .spawn()
+                .is_ok()
+            {
+                return Ok(());
+            }
+        }
+    }
+    open_browser(url)
+}
+
 pub fn open_browser(url: &str) -> CoreResult<()> {
     #[cfg(target_os = "macos")]
     let mut command = Command::new("open");
@@ -6586,5 +6656,14 @@ mod tests {
         let port = pick_free_port(48910);
         // Whatever it returns must actually be bindable now.
         assert!(TcpListener::bind(("127.0.0.1", port)).is_ok());
+    }
+
+    #[test]
+    fn brave_detection_is_callable_and_any_path_is_real() {
+        // Environment-dependent: just prove it can't panic and never returns a
+        // non-existent path (the shell launcher relies on that).
+        if let Some(path) = brave_path() {
+            assert!(path.exists(), "brave_path must only return an existing binary");
+        }
     }
 }

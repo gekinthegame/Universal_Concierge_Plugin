@@ -34,6 +34,40 @@ fi
 asset="concierge-plugin-${plat}-${a}"
 base="https://github.com/$REPO/releases/latest/download"
 
+# ── recommend Brave first (Decision 0033) ───────────────────────────────────
+# The Concierge runs best inside Brave — it powers the built-in wallet, native
+# IPFS browsing, and bookmark memory. Strongly recommended, never required.
+have_brave() {
+  if [ "$plat" = "macos" ]; then
+    [ -d "/Applications/Brave Browser.app" ] || [ -d "$HOME/Applications/Brave Browser.app" ]
+  else
+    command -v brave-browser >/dev/null 2>&1 || command -v brave >/dev/null 2>&1 \
+      || command -v brave-browser-stable >/dev/null 2>&1
+  fi
+}
+if have_brave; then
+  echo "✓ Brave detected — you'll get the full Concierge experience (wallet, native IPFS, bookmark memory)."
+else
+  echo
+  echo "──────────────────────────────────────────────────────────────────────"
+  echo "  The Concierge works best in the Brave browser:"
+  echo "    • built-in crypto wallet   • native ipfs:// / ipns://   • bookmark memory"
+  echo "  Strongly recommended (not required) — install it first:"
+  echo "    https://brave.com/download/"
+  echo "──────────────────────────────────────────────────────────────────────"
+  # Offer to open the download page only when run interactively (not curl | sh).
+  if [ -t 0 ] && [ -t 1 ]; then
+    printf "  Open the Brave download page now? [y/N] "
+    read -r reply
+    case "$reply" in
+      [Yy]*)
+        if [ "$plat" = "macos" ]; then open "https://brave.com/download/" 2>/dev/null || true
+        else xdg-open "https://brave.com/download/" 2>/dev/null || true; fi ;;
+    esac
+  fi
+  echo
+fi
+
 # ── download ────────────────────────────────────────────────────────────────
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT

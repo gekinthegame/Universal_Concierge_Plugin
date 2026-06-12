@@ -4,6 +4,66 @@ Append-only record of architectural decisions. Newest first.
 
 ---
 
+## 0033 — Brave is the Concierge's runtime, portal & wallet (offloaded crypto, no token economy)
+
+**Date:** 2026-06-12 · **Status:** accepted (direction); not yet implemented · **Plans/Surface:** `~/Desktop/plans/BRAVE_INTEGRATION_PLAN.md`, `crates/cli` (launcher), `crates/gui`, `adapters/brave/`, `crates/core/src/identity.rs` (`WalletLink`), `crates/mcp` (opt-in `wallet.propose_tx`), `install.sh`/`install.ps1` · **Builds on / qualifies:** 0011, 0012, 0013, 0022, 0024, 0026, 0027, 0030; threat model
+
+Ship the Concierge **inside Brave** — a chromeless Brave **app window** (`--app=`)
+that *is* Brave under the hood — and offload the hard parts to Brave instead of
+owning them. One move ("run the GUI in Brave") unlocks all three capabilities, and
+`window.ethereum` works because Chromium treats `127.0.0.1` as a secure context.
+
+- **Shell — qualifies 0013.** The shipped shell becomes a **Brave app window**, not a
+  generic native webview. A WKWebView/WebView2 would have **neither** Brave's wallet
+  **nor** native IPFS, so Brave-app-mode is strictly better: real-app feel + web3/IPFS
+  powers + **zero webview runtime to maintain**. **Brave is recommended, never
+  required** — no Brave → default browser/webview fallback; the core memory explorer
+  is identical, only Brave-specific features are absent (same "degrade honestly"
+  stance as 0027).
+- **Crypto re-enters — qualifies 0012/0022/0024.** Those decisions dropped blockchain
+  to avoid **owning multi-chain wallet code** and to reject an **internal token
+  economy**. Brave's built-in wallet *is* the custody/signing/RPC/multi-chain layer,
+  so crypto re-enters **Brave-mediated**, in three tiers of authority: **(1) Link** —
+  the wallet signs your AgentID → a verifiable `WalletLink` attestation (self-sovereign,
+  same pattern as did:key ContactCards, 0011-adjacent); **(2) Transact** — the user
+  pays via *their own* Brave wallet end-to-end (this is **not** the rejected token
+  economy: no minted token, no pay-to-retrieve, no karma — just the user's financial
+  agency, offloaded); **(3) Agent-propose** — the *host* AI (the Concierge has no agent
+  of its own — sidekick positioning) may **propose** a transaction via an **opt-in MCP
+  tool**; Brave's wallet UI **confirms every transaction** (we never hold keys, never
+  auto-sign). Residual code is signature *verification* only (ETH `secp256k1+keccak`;
+  Solana ed25519 already present), not a wallet.
+- **Bookmarks are curated memory — no history ingestion.** Browsing-history ingestion
+  is **dropped** (privacy + injection surface). Instead, the user's **native Brave
+  bookmarks ARE the AI's memory**: an adapter reads Brave's local `Bookmarks` JSON
+  (deduped by URL), surfaced in a "Bookmarks" view. Ingested web content is an
+  **untrusted source — retrievable, never auto-injected** (threat model: memory is the
+  attack surface). This untrusted-memory isolation is a **hard precondition** for the
+  agent-propose wallet tier (poisoned memory + an agent that can move funds is the
+  textbook prompt-injection-to-funds path; Brave's per-tx confirm + spend caps +
+  allowlists are the mitigations).
+- **Agentic browsing — the Concierge exposes browser tools, the host AI drives.** Via
+  MCP, backed by Brave under Chrome DevTools Protocol (`--remote-debugging-port`), the
+  host model can browse. Mapped onto the MCP read/write split (0028): **read-only browse
+  (open URL, extract text, screenshot) is ON by default** (a read tool); **interactive
+  browse (click/fill/submit) is OFF until the user turns it on** (an action tool). The
+  agent drives an **isolated Brave profile** (`--user-data-dir`) with **no access to the
+  user's real sessions/cookies/tabs**, and is **public-web-only** (refuses
+  localhost/private ranges — SSRF guard). This closes the loop research→remember→build→
+  publish→transact, but it makes the untrusted-content isolation load-bearing (a
+  browsing agent + the wallet is the page-says-"send-funds" injection path; Brave's
+  per-tx confirm + caps + allowlists are the mitigation). The Concierge still has no LLM
+  — it exposes hands; the host model is the agent (sidekick positioning).
+- **Install wizard recommends Brave first.** The install walk-through detects Brave and,
+  if absent, **strongly recommends + offers** installing it (`brave.com/download`)
+  *before* the Concierge installs — but never blocks.
+
+This is not a reversal of "no token economy" — it's a qualification: we add crypto
+**capability** (identity + the user's own external payments + gated agent proposals)
+while still **building no token, holding no keys, and owning no chain code**.
+
+---
+
 ## 0032 — IPFS Cluster is an optional, self-hosted pin-replication layer (CRDT, user-owned secret), never a landlord
 
 **Date:** 2026-06-12 · **Status:** accepted (direction); not yet implemented · **Plans/Surface:** `IPFS_CLUSTER_PLAN.md`, `crates/core/src/node.rs`, `crates/core/src/config.rs`, `crates/core/src/publishing.rs`, `crates/core/src/pairing.rs`, `crates/gui` (BACKENDS + PIN STATUS, Sidekick toggle, Network map) · **Builds on:** 0011, 0022, 0026, 0027, 0029, 0030, 0031

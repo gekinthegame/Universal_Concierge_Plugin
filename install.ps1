@@ -11,6 +11,23 @@ $ErrorActionPreference = "Stop"
 
 $Repo = if ($env:CONCIERGE_REPO) { $env:CONCIERGE_REPO } else { "gekinthegame/Universal_Concierge_Plugin" }
 
+# Recommend Brave first (Decision 0033) — best experience runs inside Brave.
+$braveExe = @(
+  "$env:ProgramFiles\BraveSoftware\Brave-Browser\Application\brave.exe",
+  "${env:ProgramFiles(x86)}\BraveSoftware\Brave-Browser\Application\brave.exe",
+  "$env:LOCALAPPDATA\BraveSoftware\Brave-Browser\Application\brave.exe"
+) | Where-Object { Test-Path $_ } | Select-Object -First 1
+if ($braveExe) {
+  Write-Host "Brave detected - you'll get the full Concierge experience (wallet, native IPFS, bookmark memory)."
+} else {
+  Write-Host ""
+  Write-Host "The Concierge works best in the Brave browser (built-in wallet, native ipfs://, bookmark memory)."
+  Write-Host "Strongly recommended (not required) - install it first: https://brave.com/download/"
+  $reply = Read-Host "Open the Brave download page now? [y/N]"
+  if ($reply -match '^(y|Y)') { Start-Process "https://brave.com/download/" }
+  Write-Host ""
+}
+
 $asset = "concierge-plugin-windows-x64"
 $base  = "https://github.com/$Repo/releases/latest/download"
 $dest  = Join-Path $env:LOCALAPPDATA "Programs\concierge-plugin"
