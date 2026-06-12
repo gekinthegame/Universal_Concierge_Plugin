@@ -2675,6 +2675,100 @@ impl MemCli {
         self.save_wallet_state(&state)
     }
 
+    /// Stage a transaction the host AI *proposes* (the agent-propose tier). We never
+    /// send it — the GUI surfaces it and the user approves it in their browser wallet,
+    /// which confirms again. All guards are enforced HERE, before staging:
+    /// `agent_access` must be on, the spend cap must cover the value, and (if set) the
+    /// recipient must be allowlisted.
+    pub fn propose_wallet_tx(
+        &self,
+        to: &str,
+        value: &str,
+        data: &str,
+        reason: &str,
+    ) -> Result<crate::wallet::WalletProposal> {
+        let s = self.wallet_settings()?;
+        if !s.agent_access {
+            return Err(Error::Io(
+                "AI wallet access is off — enable it in the Wallet tab to let the AI propose transactions".to_string(),
+            ));
+        }
+        let to_l = to.trim().to_lowercase();
+        if !to_l.starts_with("0x") || to_l.len() != 42 {
+            return Err(Error::Io(format!("invalid recipient address: {to}")));
+        }
+        if !s.allowlist.is_empty()
+            && !s.allowlist.iter().any(|a| a.trim().to_lowercase() == to_l)
+        {
+            return Err(Error::Io(format!("recipient {to} is not in your allowlist")));
+        }
+        let cap: f64 = s
+            .spend_cap
+            .trim()
+            .parse()
+            .map_err(|_| Error::Io("no per-transaction spend cap set — AI sends are disabled".to_string()))?;
+        let amount: f64 = value
+            .trim()
+            .parse()
+            .map_err(|_| Error::Io(format!("invalid value: {value}")))?;
+        if amount <= 0.0 || amount > cap {
+            return Err(Error::Io(format!(
+                "value {value} exceeds your per-transaction cap of {}",
+                s.spend_cap
+            )));
+        }
+        let proposed_at = now_secs();
+        let id = format!(
+            "tx-{}",
+            &crate::browser::url_key(&format!("{to_l}{value}{data}{proposed_at}"))[..12]
+        );
+        let proposal = crate::wallet::WalletProposal {
+            id,
+            to: to_l,
+            value: value.trim().to_string(),
+            data: data.trim().to_string(),
+            reason: reason.trim().to_string(),
+            proposed_at,
+            status: "pending".to_string(),
+            tx_hash: String::new(),
+        };
+        let mut state = self.wallet_state()?;
+        state.proposals.push(proposal.clone());
+        // Bound the history.
+        if state.proposals.len() > 50 {
+            let drop = state.proposals.len() - 50;
+            state.proposals.drain(0..drop);
+        }
+        self.save_wallet_state(&state)?;
+        Ok(proposal)
+    }
+
+    /// Pending (not-yet-approved/rejected) proposals, newest first.
+    pub fn pending_wallet_proposals(&self) -> Result<Vec<crate::wallet::WalletProposal>> {
+        let mut out: Vec<_> = self
+            .wallet_state()?
+            .proposals
+            .into_iter()
+            .filter(|p| p.status == "pending")
+            .collect();
+        out.reverse();
+        Ok(out)
+    }
+
+    /// Record the user's decision on a proposal (`approved` with a tx hash, or
+    /// `rejected`).
+    pub fn resolve_wallet_proposal(&self, id: &str, status: &str, tx_hash: &str) -> Result<()> {
+        let mut state = self.wallet_state()?;
+        let p = state
+            .proposals
+            .iter_mut()
+            .find(|p| p.id == id)
+            .ok_or_else(|| Error::Io(format!("no such proposal: {id}")))?;
+        p.status = status.to_string();
+        p.tx_hash = tx_hash.to_string();
+        self.save_wallet_state(&state)
+    }
+
     fn import_verified_car(
         &self,
         root: &cid::Cid,
@@ -3494,6 +3588,37 @@ mod tests {
         // Unlink removes it.
         mem.unlink_wallet(&address).unwrap();
         assert!(mem.wallet_links().unwrap().is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn wallet_propose_enforces_guards_and_stages_for_approval() {
+        let dir = temp_workdir("wallet-propose");
+        let mem = MemCli::new(&dir);
+        let to = "0x000000000000000000000000000000000000bEEF";
+
+        // Off by default → refused.
+        assert!(mem.propose_wallet_tx(to, "0.01", "", "pay").is_err());
+
+        // Enable access, cap 0.05, allowlist the recipient.
+        mem.set_wallet_settings(
+            &serde_json::json!({ "agent_access": true, "spend_cap": "0.05",
+                "allowlist": [to.to_lowercase()], "preferred_chain": "" })
+            .to_string(),
+        )
+        .unwrap();
+
+        // Over the cap → refused; off-allowlist → refused; bad address → refused.
+        assert!(mem.propose_wallet_tx(to, "0.10", "", "pay").is_err());
+        assert!(mem.propose_wallet_tx("0x0000000000000000000000000000000000001234", "0.01", "", "x").is_err());
+        assert!(mem.propose_wallet_tx("not-an-address", "0.01", "", "x").is_err());
+
+        // Valid → staged pending; resolving clears it from pending.
+        let p = mem.propose_wallet_tx(to, "0.01", "", "pay for X").unwrap();
+        assert_eq!(p.status, "pending");
+        assert_eq!(mem.pending_wallet_proposals().unwrap().len(), 1);
+        mem.resolve_wallet_proposal(&p.id, "approved", "0xhash").unwrap();
+        assert!(mem.pending_wallet_proposals().unwrap().is_empty());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

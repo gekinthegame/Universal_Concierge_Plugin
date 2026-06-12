@@ -46,6 +46,28 @@ impl Default for WalletSettings {
     }
 }
 
+/// A transaction the host AI has *proposed*. It is never sent by us — the GUI
+/// surfaces it for the user, who approves it in their browser wallet (which confirms
+/// again). Guards (agent_access / spend cap / allowlist) are enforced before it's
+/// even staged.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WalletProposal {
+    pub id: String,
+    pub to: String,
+    /// ETH amount as a decimal string (e.g. "0.01"); the GUI converts to wei.
+    pub value: String,
+    /// Hex calldata, or empty.
+    #[serde(default)]
+    pub data: String,
+    #[serde(default)]
+    pub reason: String,
+    pub proposed_at: u64,
+    /// "pending" | "approved" | "rejected".
+    pub status: String,
+    #[serde(default)]
+    pub tx_hash: String,
+}
+
 /// The persisted wallet state (`<store>/wallet.json`).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct WalletState {
@@ -53,6 +75,8 @@ pub struct WalletState {
     pub links: Vec<WalletLink>,
     #[serde(default)]
     pub settings: WalletSettings,
+    #[serde(default)]
+    pub proposals: Vec<WalletProposal>,
 }
 
 /// The exact message a wallet signs to link itself to an AgentID. Both the GUI

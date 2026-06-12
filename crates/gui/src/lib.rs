@@ -609,6 +609,7 @@ pub fn handle_with_options(
         "/api/claude-code/status" => to_response(claude_code_status_json(mem)),
         "/api/deploy/credentials" => to_response(deploy_status_json(mem)),
         "/api/wallet" => to_response(wallet_json(mem)),
+        "/api/wallet/proposals" => to_response(wallet_proposals_json(mem)),
         "/api/egress-plan" => egress_plan_response(mem, options, query),
         "/api/export-car" => Response::bad_request(
             "browser plaintext CAR download is intentionally disabled; use the reviewed CLI export flow",
@@ -2573,6 +2574,7 @@ fn handle_mutation(mem: &MemCli, options: &GuiOptions, path: &str, body: &str) -
         "/api/wallet/link" => mutation_wallet_link(mem, body),
         "/api/wallet/unlink" => mutation_wallet_unlink(mem, body),
         "/api/wallet/settings" => mutation_wallet_settings(mem, body),
+        "/api/wallet/proposals/resolve" => mutation_wallet_resolve(mem, body),
         "/api/mcp/write" => mutation_mcp_write(mem, body),
         "/api/canvas/open" => mutation_canvas_open(options, body),
         "/api/canvas/signal" => mutation_canvas_signal(mem, options, body),
@@ -2627,6 +2629,7 @@ fn mutation_label(path: &str) -> Option<&'static str> {
         "/api/wallet/link" => "linked a wallet to your AgentID",
         "/api/wallet/unlink" => "unlinked a wallet",
         "/api/wallet/settings" => "updated wallet settings",
+        "/api/wallet/proposals/resolve" => "resolved an AI transaction proposal",
         "/api/mcp/write" => "toggled MCP write tools",
         "/api/canvas/snapshot" => "snapshotted the canvas",
         "/api/requests/accept" => "accepted a contact request",
@@ -2963,6 +2966,30 @@ fn mutation_wallet_unlink(mem: &MemCli, body: &str) -> Response {
 fn mutation_wallet_settings(mem: &MemCli, body: &str) -> Response {
     // The body *is* the settings object; WalletSettings is `#[serde(default)]`.
     match mem.set_wallet_settings(body) {
+        Ok(()) => Response::json(serde_json::json!({ "ok": true }).to_string()),
+        Err(error) => Response::error(error.to_string()),
+    }
+}
+
+/// Pending AI transaction proposals for the Wallet tab to surface for approval.
+fn wallet_proposals_json(mem: &MemCli) -> CoreResult<String> {
+    serde_json::to_string(&mem.pending_wallet_proposals()?)
+        .map_err(|e| Error::Io(format!("serialize proposals: {e}")))
+}
+
+/// Record the user's decision on a proposal ("approved" + tx hash, or "rejected").
+fn mutation_wallet_resolve(mem: &MemCli, body: &str) -> Response {
+    let value = match parse_body(body) {
+        Ok(value) => value,
+        Err(response) => return response,
+    };
+    let id = match body_str(&value, "id") {
+        Ok(id) => id.trim().to_string(),
+        Err(response) => return response,
+    };
+    let status = value.get("status").and_then(|v| v.as_str()).unwrap_or("rejected");
+    let tx_hash = value.get("tx_hash").and_then(|v| v.as_str()).unwrap_or("");
+    match mem.resolve_wallet_proposal(&id, status, tx_hash) {
         Ok(()) => Response::json(serde_json::json!({ "ok": true }).to_string()),
         Err(error) => Response::error(error.to_string()),
     }

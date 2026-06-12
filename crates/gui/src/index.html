@@ -724,6 +724,11 @@
           <div id="wallet-links"></div>
           <button id="wallet-link" class="tool-button" style="width:100%;">Link this wallet to my AgentID</button>
         </div>
+        <div id="wallet-proposals-wrap" style="display:none;">
+          <div class="msg-section">AI transaction proposals</div>
+          <div class="eyebrow">The AI can only <b>propose</b> — you approve here, and your wallet then confirms again. Never approve something you didn't ask for.</div>
+          <div id="wallet-proposals"></div>
+        </div>
         <div class="msg-section">Wallet settings</div>
         <div class="wallet-card">
           <label class="wallet-field"><span class="wallet-k">Preferred network</span>
@@ -2250,12 +2255,12 @@ document.querySelectorAll("[data-view]").forEach(button => button.addEventListen
     safely(async () => { await Promise.all([loadGraph(), loadStats(), refreshPrivacy()]); });
   }
   showView(button.dataset.view);
-  stopDiscPoll(); // only poll the discovery map while the Network tab is open
+  stopDiscPoll(); walletStopPoll(); // only poll these while their tab is open
   if (button.dataset.view === "search") byId("search-q").focus();
   if (button.dataset.view === "network") { safely(loadNetwork); startDiscPoll(); }
   if (button.dataset.view === "canvas") safely(cvLoadSites);
   if (button.dataset.view === "messenger") { safely(loadProfile); safely(loadContacts); }
-  if (button.dataset.view === "wallet") safely(walletInit);
+  if (button.dataset.view === "wallet") { safely(walletInit); walletStartPoll(); }
 }));
 
 // ── Concierge Wallet (Pillar C): the UX is ours; the browser's wallet does custody. ──
@@ -2377,6 +2382,49 @@ async function walletSaveSettings() {
   if (settings.preferred_chain) await walletSwitchChain(settings.preferred_chain);
   notice("Wallet settings saved.");
 }
+// AI transaction proposals: the AI can only *propose*; the user approves here, then
+// the browser wallet confirms again. Polled while the Wallet tab is open.
+let walletPoll = null;
+function walletEthToWeiHex(ethStr) {
+  const n = parseFloat(ethStr); if (!isFinite(n) || n <= 0) return "0x0";
+  return "0x" + BigInt(Math.round(n * 1e18)).toString(16);
+}
+async function walletLoadProposals() {
+  let list; try { list = await getJson("/api/wallet/proposals"); } catch (e) { return; }
+  const wrap = byId("wallet-proposals"); clear(wrap);
+  byId("wallet-proposals-wrap").style.display = (list && list.length) ? "" : "none";
+  (list || []).forEach(p => {
+    const card = node("div", "wallet-card");
+    card.append(node("div", "wallet-v", "Send " + p.value + " ETH"));
+    card.append(Object.assign(node("div", "wallet-k mono", "to " + p.to), { title: p.to }));
+    if (p.reason) card.append(node("div", "eyebrow", "“" + p.reason + "”"));
+    const row = node("div", "modal-actions");
+    const ok = node("button", "tool-button", "Approve & send");
+    ok.addEventListener("click", () => safely(() => walletApprove(p)));
+    const no = node("button", "tool-button", "Reject");
+    no.addEventListener("click", () => safely(async () => {
+      await postJson("/api/wallet/proposals/resolve", { id: p.id, status: "rejected" });
+      await walletLoadProposals();
+    }));
+    row.append(ok, no); card.append(row);
+    wrap.append(card);
+  });
+}
+async function walletApprove(p) {
+  if (!WALLET.provider) { notice("Connect your wallet first."); return; }
+  if (!WALLET.account) { await walletConnect(); if (!WALLET.account) return; }
+  const tx = { from: WALLET.account, to: p.to, value: walletEthToWeiHex(p.value) };
+  if (p.data) tx.data = p.data;
+  // Brave/Opera shows its own confirm dialog here — the final human gate.
+  const hash = await WALLET.provider.request({ method: "eth_sendTransaction", params: [tx] });
+  await postJson("/api/wallet/proposals/resolve", { id: p.id, status: "approved", tx_hash: hash || "" });
+  notice("Sent. " + (hash ? hash.slice(0, 12) + "…" : ""));
+  logSystem("wallet · approved AI tx " + p.id, "ok");
+  await walletLoadProposals();
+}
+function walletStartPoll() { walletStopPoll(); safely(walletLoadProposals); walletPoll = setInterval(() => quietly(walletLoadProposals), 5000); }
+function walletStopPoll() { if (walletPoll) { clearInterval(walletPoll); walletPoll = null; } }
+
 byId("wallet-connect").addEventListener("click", () => safely(walletConnect));
 byId("wallet-refresh").addEventListener("click", () => safely(walletInit));
 byId("wallet-create").addEventListener("click", () => safely(walletCreate));
