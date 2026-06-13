@@ -1,0 +1,1013 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Universal Concierge Plugin — Serving up Data on a Silver Platter</title>
+<meta name="description" content="The Universal Concierge Plugin (UCP) is a mountable, content-addressed memory substrate for any AI harness. Organize, rank, and serve your entire agent history as a sovereign context layer you own and verify.">
+<style>
+  :root{
+    --black:#050510; --deep:#0a0b1a; --raised:#131429; --graphite:#1c1d38;
+    --gold:#d122e3; --deep-gold:#8a1299; --pale-gold:#f085fa; --patina:#00e5ff;
+    --vermilion:#ff2a55; --ink:#e0e6ff; --muted:#939abf; --faint:#565d8a; --synapse:#a855f7;
+    --line:rgba(209,34,227,.18); --strong-line:rgba(209,34,227,.40);
+    --body:"Avenir Next","Helvetica Neue",Helvetica,Arial,sans-serif;
+    --mono:"SFMono-Regular",Consolas,"Liberation Mono",Menlo,monospace;
+    --accent:linear-gradient(120deg,var(--pale-gold),var(--gold) 38%,var(--synapse) 68%,var(--patina));
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{
+    margin:0; color:var(--ink); font:16px/1.6 var(--body);
+    background:radial-gradient(1100px 700px at 78% -8%,rgba(209,34,227,.16),transparent 60%),
+               radial-gradient(950px 680px at 8% 12%,rgba(0,229,255,.10),transparent 55%),
+               linear-gradient(150deg,#070715,var(--black) 60%);
+    background-attachment:fixed; overflow-x:hidden; -webkit-font-smoothing:antialiased;
+  }
+  a{color:inherit;text-decoration:none}
+  ::selection{background:var(--gold);color:#fff}
+
+  /* aurora drift */
+  .aurora{position:fixed;inset:0;z-index:0;pointer-events:none;overflow:hidden}
+  .aurora i{position:absolute;border-radius:50%;filter:blur(70px);opacity:.5;mix-blend-mode:screen;animation:drift 22s ease-in-out infinite}
+  .aurora i:nth-child(1){width:520px;height:520px;background:var(--gold);top:-130px;left:58%}
+  .aurora i:nth-child(2){width:460px;height:460px;background:var(--patina);top:42%;left:-130px;animation-delay:-7s}
+  .aurora i:nth-child(3){width:380px;height:380px;background:var(--synapse);top:70%;left:66%;animation-delay:-13s}
+  @keyframes drift{0%,100%{transform:translate(0,0) scale(1)}33%{transform:translate(40px,-50px) scale(1.12)}66%{transform:translate(-30px,40px) scale(.94)}}
+
+  .wrap{max-width:1180px;margin:0 auto;padding:0 28px;position:relative;z-index:2}
+  .eyebrow{color:var(--patina);font:10px var(--mono);letter-spacing:.28em;text-transform:uppercase}
+  .grad{background:var(--accent);-webkit-background-clip:text;background-clip:text;color:transparent;background-size:200% 200%;animation:shimmer 8s ease infinite}
+  @keyframes shimmer{0%,100%{background-position:0% 50%}50%{background-position:100% 50%}}
+
+  /* nav */
+  header{position:sticky;top:0;z-index:30;transition:.35s}
+  nav{display:flex;align-items:center;gap:14px;max-width:1180px;margin:0 auto;padding:18px 28px;transition:.35s}
+  header.scrolled{backdrop-filter:blur(12px);background:rgba(5,5,16,.72);border-bottom:1px solid var(--line)}
+  header.scrolled nav{padding:12px 28px}
+  .brand{display:flex;align-items:center;gap:12px;font-weight:700;letter-spacing:.02em}
+  .brand .mark{width:34px;height:34px;flex:0 0 auto;filter:drop-shadow(0 0 7px rgba(209,34,227,.55))}
+  .brand b{font-size:16px}
+  .brand small{display:block;color:var(--patina);font:8px var(--mono);letter-spacing:.24em;text-transform:uppercase;margin-top:1px}
+  .navlinks{margin-left:auto;display:flex;gap:28px;align-items:center}
+  .navlinks a{color:var(--muted);font:12px var(--mono);letter-spacing:.06em;text-transform:uppercase;transition:.2s}
+  .navlinks a:hover{color:var(--ink)}
+  .btn{display:inline-flex;align-items:center;gap:9px;padding:12px 22px;border-radius:8px;font:12px var(--mono);letter-spacing:.1em;text-transform:uppercase;font-weight:600;cursor:pointer;border:1px solid transparent;transition:.25s;white-space:nowrap}
+  .btn-primary{background:var(--accent);background-size:180% 180%;color:#0a0414;box-shadow:0 8px 30px rgba(209,34,227,.34);animation:shimmer 8s ease infinite}
+  .btn-primary:hover{transform:translateY(-2px);box-shadow:0 12px 40px rgba(209,34,227,.5)}
+  .btn-ghost{border-color:var(--strong-line);color:var(--ink);background:rgba(255,255,255,.02)}
+  .btn-ghost:hover{border-color:var(--gold);background:rgba(209,34,227,.08)}
+  @media(max-width:780px){.navlinks{display:none}}
+
+  /* hero */
+  .hero{display:grid;grid-template-columns:1.08fr .92fr;gap:30px;align-items:center;padding:70px 0 80px}
+  @media(max-width:900px){.hero{grid-template-columns:1fr;padding:40px 0 50px}}
+  .slogan-chip{display:inline-flex;align-items:center;gap:9px;padding:7px 14px;border:1px solid var(--strong-line);border-radius:100px;background:rgba(209,34,227,.06);font:11px var(--mono);letter-spacing:.04em;color:var(--pale-gold);margin-bottom:22px}
+  .slogan-chip .dot{width:7px;height:7px;border-radius:50%;background:var(--patina);box-shadow:0 0 10px var(--patina);animation:blink 2.4s ease infinite}
+  @keyframes blink{0%,100%{opacity:1}50%{opacity:.25}}
+  h1{font-size:clamp(36px,5.4vw,62px);line-height:1.03;letter-spacing:-.02em;margin:0 0 20px;font-weight:800}
+  .hero p.lead{font-size:18px;color:var(--muted);max-width:560px;margin:0 0 30px}
+  .hero p.lead b{color:var(--ink);font-weight:600}
+  .cta-row{display:flex;gap:14px;flex-wrap:wrap}
+  .hero-meta{margin-top:30px;display:flex;gap:26px;flex-wrap:wrap}
+  .hero-meta div{font:11px var(--mono);color:var(--faint);letter-spacing:.04em}
+  .hero-meta b{display:block;color:var(--ink);font:600 20px var(--body);letter-spacing:0}
+
+  /* hero graph */
+  .stage{position:relative;aspect-ratio:1;max-width:480px;margin:0 auto;width:100%}
+  .stage svg{width:100%;height:100%;overflow:visible}
+  .ring{transform-origin:300px 300px;animation:spin 60s linear infinite}
+  .ring.rev{animation:spin 90s linear infinite reverse}
+  @keyframes spin{to{transform:rotate(360deg)}}
+  .brainGlow{animation:pulse 3.4s ease-in-out infinite;transform-origin:300px 300px}
+  @keyframes pulse{0%,100%{opacity:.55;transform:scale(1)}50%{opacity:1;transform:scale(1.08)}}
+  .floatY{animation:floatY 7s ease-in-out infinite}
+  @keyframes floatY{0%,100%{transform:translateY(0)}50%{transform:translateY(-12px)}}
+
+  /* sections */
+  section{position:relative;z-index:2;padding:64px 0}
+  .sec-head{text-align:center;max-width:720px;margin:0 auto 46px}
+  .sec-head h2{font-size:clamp(26px,3.6vw,40px);margin:12px 0 14px;letter-spacing:-.02em;font-weight:800}
+  .sec-head p{color:var(--muted);font-size:16px;margin:0}
+
+  /* trust marquee */
+  .trust{border-top:1px solid var(--line);border-bottom:1px solid var(--line);background:rgba(10,11,26,.5);overflow:hidden;padding:18px 0}
+  .marq{display:flex;gap:54px;width:max-content;animation:marq 26s linear infinite}
+  .marq span{font:12px var(--mono);letter-spacing:.18em;text-transform:uppercase;color:var(--faint);display:inline-flex;align-items:center;gap:11px;white-space:nowrap}
+  .marq span::before{content:"";width:6px;height:6px;border-radius:50%;background:var(--gold);box-shadow:0 0 8px var(--gold)}
+  @keyframes marq{to{transform:translateX(-50%)}}
+
+  /* feature grid */
+  .grid{display:grid;grid-template-columns:repeat(3,1fr);gap:20px}
+  @media(max-width:900px){.grid{grid-template-columns:1fr 1fr}}
+  @media(max-width:620px){.grid{grid-template-columns:1fr}}
+  .card{position:relative;padding:26px 24px;border-radius:16px;background:linear-gradient(180deg,rgba(28,29,56,.6),rgba(10,11,26,.55));border:1px solid var(--line);overflow:hidden;transition:.3s;will-change:transform}
+  .card::before{content:"";position:absolute;inset:0;background:radial-gradient(380px 200px at var(--mx,50%) var(--my,0%),rgba(209,34,227,.16),transparent 60%);opacity:0;transition:.3s}
+  .card:hover{transform:translateY(-6px);border-color:var(--strong-line);box-shadow:0 18px 50px rgba(0,0,0,.5)}
+  .card:hover::before{opacity:1}
+  .ic{width:46px;height:46px;border-radius:12px;display:grid;place-items:center;margin-bottom:16px;background:rgba(209,34,227,.1);border:1px solid var(--strong-line)}
+  .ic svg{width:24px;height:24px}
+  .card h3{margin:0 0 9px;font-size:18px;letter-spacing:-.01em}
+  .card p{margin:0;color:var(--muted);font-size:14.5px}
+  .card .num{position:absolute;top:18px;right:22px;font:700 13px var(--mono);color:var(--faint);letter-spacing:.1em}
+
+  /* pillars (alternating) */
+  .pillar{display:grid;grid-template-columns:1fr 1fr;gap:40px;align-items:center;margin:0 auto 60px;max-width:1000px}
+  .pillar:nth-child(even) .pcopy{order:2}
+  @media(max-width:820px){.pillar{grid-template-columns:1fr;gap:22px}.pillar:nth-child(even) .pcopy{order:0}}
+  .pcopy .eyebrow{margin-bottom:12px;display:block}
+  .pcopy h3{font-size:26px;margin:0 0 14px;letter-spacing:-.02em}
+  .pcopy ul{list-style:none;padding:0;margin:18px 0 0}
+  .pcopy li{position:relative;padding:8px 0 8px 28px;color:var(--muted);font-size:15px;border-top:1px solid var(--line)}
+  .pcopy li:first-child{border-top:0}
+  .pcopy li::before{content:"";position:absolute;left:4px;top:15px;width:9px;height:9px;border-radius:2px;background:var(--accent);box-shadow:0 0 9px rgba(209,34,227,.6)}
+  .pcopy li b{color:var(--ink);font-weight:600}
+  .pviz{aspect-ratio:4/3;border-radius:18px;border:1px solid var(--line);background:linear-gradient(160deg,rgba(28,29,56,.55),rgba(10,11,26,.6));display:grid;place-items:center;overflow:hidden;position:relative}
+  .pviz svg{width:78%;height:78%;overflow:visible}
+
+  /* stats band */
+  .band{border-top:1px solid var(--line);border-bottom:1px solid var(--line);background:linear-gradient(120deg,rgba(209,34,227,.07),rgba(0,229,255,.05))}
+  .stats{display:grid;grid-template-columns:repeat(4,1fr);gap:18px;text-align:center}
+  @media(max-width:760px){.stats{grid-template-columns:1fr 1fr}}
+  .stat b{display:block;font-size:clamp(28px,4vw,44px);font-weight:800;letter-spacing:-.02em;line-height:1;background:var(--accent);-webkit-background-clip:text;background-clip:text;color:transparent}
+  .stat span{display:block;margin-top:8px;font:11px var(--mono);letter-spacing:.12em;text-transform:uppercase;color:var(--muted)}
+
+  /* adapters */
+  .chips{display:flex;flex-wrap:wrap;gap:12px;justify-content:center;max-width:820px;margin:0 auto}
+  .chip{padding:10px 18px;border-radius:100px;border:1px solid var(--line);background:rgba(19,20,41,.6);font:12px var(--mono);letter-spacing:.05em;color:var(--muted);transition:.25s}
+  .chip:hover{border-color:var(--gold);color:var(--ink);transform:translateY(-3px);box-shadow:0 8px 22px rgba(209,34,227,.25)}
+
+  /* final cta */
+  .finale{text-align:center;max-width:780px;margin:0 auto;padding:54px 34px;border-radius:24px;border:1px solid var(--strong-line);background:radial-gradient(700px 360px at 50% -20%,rgba(209,34,227,.18),transparent 60%),linear-gradient(180deg,rgba(19,20,41,.7),rgba(10,11,26,.7));position:relative;overflow:hidden}
+  .finale h2{font-size:clamp(28px,4vw,42px);margin:0 0 16px;font-weight:800;letter-spacing:-.02em}
+  .finale p{color:var(--muted);margin:0 0 28px;font-size:17px}
+
+  footer{border-top:1px solid var(--line);margin-top:30px;padding:36px 0 50px;color:var(--faint)}
+  .foot{display:flex;flex-wrap:wrap;gap:18px;align-items:center;justify-content:space-between}
+  .foot .badges{display:flex;gap:18px;flex-wrap:wrap;font:10px var(--mono);letter-spacing:.14em;text-transform:uppercase}
+  .foot .badges b{color:var(--muted);font-weight:400}
+  .gen{margin-top:26px;padding-top:22px;border-top:1px solid var(--line);display:flex;align-items:center;justify-content:center;gap:12px;text-align:center;flex-wrap:wrap}
+  .gen .spark{width:9px;height:9px;border-radius:50%;background:var(--accent);box-shadow:0 0 10px rgba(168,85,247,.7);animation:blink 2.4s ease infinite;flex:0 0 auto}
+  .gen p{margin:0;font:11px var(--mono);letter-spacing:.06em;color:var(--faint);max-width:640px}
+  .gen p b{color:var(--ink);font-weight:600}
+  .gen p .grad{font-weight:700}
+
+  /* arcade */
+  .arcade-wrap{max-width:500px;margin:0 auto}
+  .game-frame{position:relative;border:1px solid var(--strong-line);border-radius:18px;overflow:hidden;background:#04040c;box-shadow:0 24px 70px rgba(0,0,0,.55),0 0 50px rgba(209,34,227,.16)}
+  #synapse-game{display:block;width:100%;height:auto;touch-action:none;cursor:crosshair}
+  .overlay{position:absolute;inset:0;display:grid;place-items:center;text-align:center;background:rgba(4,4,12,.86);backdrop-filter:blur(3px);transition:.35s;padding:22px}
+  .overlay.hide{opacity:0;visibility:hidden}
+  .overlay h3{font-size:clamp(26px,7vw,34px);margin:8px 0 10px;font-weight:800}
+  .overlay p{color:var(--muted);font:12px var(--mono);margin:0 0 22px;letter-spacing:.05em;line-height:1.7}
+  .overlay .hi{color:var(--patina);margin-top:14px;font:11px var(--mono);letter-spacing:.1em}
+  .legend{display:flex;gap:20px;justify-content:center;flex-wrap:wrap;margin-top:18px;font:11px var(--mono);color:var(--muted);letter-spacing:.04em}
+  .legend i{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:7px;vertical-align:middle}
+  .arcade-tip{text-align:center;color:var(--muted);font:12px var(--mono);letter-spacing:.03em;margin:14px 0 0}
+  .arcade-tip b{color:var(--patina)}
+  /* cartoon */
+  .toon-wrap{max-width:680px;margin:0 auto}
+  .toon-frame{border:1px solid var(--line);border-radius:18px;overflow:hidden;background:radial-gradient(120% 110% at 50% 0%,rgba(168,85,247,.12),transparent 60%),linear-gradient(180deg,#08081a,#04040c);box-shadow:0 22px 60px rgba(0,0,0,.5),0 0 50px rgba(168,85,247,.12)}
+  #toon{display:block;width:100%;height:auto}
+
+  /* reveal */
+  .reveal{opacity:0;transform:translateY(26px);transition:.7s cubic-bezier(.2,.7,.2,1)}
+  .reveal.in{opacity:1;transform:none}
+  [data-d="1"]{transition-delay:.08s}[data-d="2"]{transition-delay:.16s}[data-d="3"]{transition-delay:.24s}
+  @media(prefers-reduced-motion:reduce){*{animation:none!important}.reveal{opacity:1;transform:none}}
+</style>
+</head>
+<body>
+<div class="aurora"><i></i><i></i><i></i></div>
+
+<!-- shared defs: brand mark + gradients -->
+<svg width="0" height="0" style="position:absolute"><defs>
+  <linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
+    <stop offset="0" stop-color="#f085fa"/><stop offset=".45" stop-color="#d122e3"/>
+    <stop offset=".75" stop-color="#a855f7"/><stop offset="1" stop-color="#00e5ff"/>
+  </linearGradient>
+  <radialGradient id="gb" cx="50%" cy="50%" r="50%">
+    <stop offset="0" stop-color="#f085fa"/><stop offset=".6" stop-color="#d122e3"/><stop offset="1" stop-color="#8a1299"/>
+  </radialGradient>
+  <symbol id="logo" viewBox="0 0 48 48">
+    <ellipse cx="24" cy="33" rx="18" ry="6" fill="none" stroke="url(#g)" stroke-width="2"/>
+    <circle cx="24" cy="20" r="11" fill="none" stroke="url(#g)" stroke-width="2"/>
+    <circle cx="24" cy="20" r="4.6" fill="url(#gb)"/>
+    <path d="M24 9v6M13.5 20h6M28.5 20h6M16 28l4-4M32 28l-4-4" stroke="url(#g)" stroke-width="1.6" stroke-linecap="round" opacity=".85"/>
+  </symbol>
+</defs></svg>
+
+<header id="hdr">
+  <nav>
+    <a class="brand" href="#top">
+      <svg class="mark"><use href="#logo"/></svg>
+      <span><b>Universal Concierge</b><small>Data on a Silver Platter</small></span>
+    </a>
+    <div class="navlinks">
+      <a href="#features">Features</a>
+      <a href="#pillars">Pillars</a>
+      <a href="#architecture">Architecture</a>
+      <a href="#adapters">Adapters</a>
+      <a href="#arcade">Arcade</a>
+      <a class="btn btn-primary" href="#start">Mount UCP</a>
+    </div>
+  </nav>
+</header>
+
+<main id="top" class="wrap">
+  <!-- HERO -->
+  <section class="hero">
+    <div class="reveal in">
+      <span class="slogan-chip"><span class="dot"></span>Serving up Data on a Silver Platter</span>
+      <h1>Your AI's memory,<br><span class="grad">content-addressed&nbsp;&amp; sovereign.</span></h1>
+      <p class="lead">The <b>Universal Concierge Plugin</b> is a mountable, lightweight sidekick that gives any AI harness a portable memory substrate — it <b>organizes, ranks, and serves</b> your entire agent history as a unified context layer, visualized as an interactive, forkable knowledge graph.</p>
+      <div class="cta-row">
+        <a class="btn btn-primary" href="#start">Get started</a>
+        <a class="btn btn-ghost" href="#features">Explore the platter ↘</a>
+      </div>
+      <div class="hero-meta">
+        <div><b>100%</b>local-first</div>
+        <div><b>0</b>hosting fees</div>
+        <div><b>IPLD</b>Merkle-DAG core</div>
+      </div>
+    </div>
+    <div class="stage floatY">
+      <svg viewBox="0 0 600 600" aria-hidden="true">
+        <g class="ring"><circle cx="300" cy="300" r="250" fill="none" stroke="rgba(209,34,227,.16)" stroke-width="1" stroke-dasharray="3 9"/></g>
+        <g class="ring rev"><circle cx="300" cy="300" r="200" fill="none" stroke="rgba(0,229,255,.16)" stroke-width="1" stroke-dasharray="2 12"/></g>
+        <g id="edges" stroke="url(#g)" stroke-width="1.4" opacity=".5" fill="none"></g>
+        <g id="pulses"></g>
+        <g id="nodes"></g>
+        <g class="brainGlow"><circle cx="300" cy="300" r="60" fill="rgba(209,34,227,.14)"/></g>
+        <circle cx="300" cy="300" r="38" fill="url(#gb)"/>
+        <circle cx="300" cy="300" r="38" fill="none" stroke="#f085fa" stroke-width="1.5" opacity=".7"/>
+        <use href="#logo" x="276" y="276" width="48" height="48"/>
+      </svg>
+    </div>
+  </section>
+</main>
+
+<!-- TRUST -->
+<div class="trust" aria-hidden="true"><div class="marq" id="marq"></div></div>
+
+<main class="wrap">
+  <!-- FEATURES -->
+  <section id="features">
+    <div class="sec-head reveal"><span class="eyebrow">Why UCP</span><h2>An enduring substrate, not another log</h2><p>Transient agent traces become a verifiable, sovereign knowledge base you own — locked to your device by default, shared only on your explicit say-so.</p></div>
+    <div class="grid" id="featGrid"></div>
+  </section>
+
+  <!-- PILLARS -->
+  <section id="pillars">
+    <div class="sec-head reveal"><span class="eyebrow">The four pillars</span><h2>One node-resident environment</h2><p>The Concierge orchestrates a personal cloud on top of your own Kubo (IPFS) node — engine, AI layer, and concierge in a single mountable plugin.</p></div>
+    <div id="pillarWrap"></div>
+  </section>
+</main>
+
+<!-- STATS BAND -->
+<div class="band"><div class="wrap"><section style="padding:46px 0"><div class="stats" id="stats"></div></section></div></div>
+
+<main class="wrap">
+  <!-- ARCHITECTURE -->
+  <section id="architecture">
+    <div class="sec-head reveal"><span class="eyebrow">Architecture</span><h2>The engine is yours</h2><p>UCP treats your Kubo node as the hardware of a personal cloud. Three coupled layers — never a generative LLM on your node.</p></div>
+    <div class="grid" id="archGrid"></div>
+  </section>
+
+  <!-- ADAPTERS -->
+  <section id="adapters">
+    <div class="sec-head reveal"><span class="eyebrow">Works with your stack</span><h2>Mounts onto any harness</h2><p>A fidelity ladder of capture adapters plus a built-in MCP server — your context follows you across tools, no lock-in.</p></div>
+    <div class="chips reveal" id="chips"></div>
+  </section>
+
+  <!-- CARTOON STORY -->
+  <section id="story">
+    <div class="sec-head reveal"><span class="eyebrow">A short origin story</span><h2>Plug in. Light up.</h2><p>Give one humble little brain the Universal Concierge, and watch what happens next.</p></div>
+    <div class="toon-wrap reveal"><div class="toon-frame"><canvas id="toon" width="640" height="300"></canvas></div></div>
+  </section>
+
+  <!-- ARCADE -->
+  <section id="arcade">
+    <div class="sec-head reveal"><span class="eyebrow">The story continues</span><h2>Synapse Shooter</h2><p>That brain who suited up and rocketed into space? <b>This is the battle it flew into</b> — and now you fly it. Defend your memory from incoming noise nodes: fire synapse pulses, dodge the dives, clear the wave. A little arcade tribute, written by the model, running entirely in your browser.</p></div>
+    <div class="arcade-wrap reveal">
+      <div class="game-frame">
+        <canvas id="synapse-game" width="460" height="620"></canvas>
+        <div id="ss-overlay" class="overlay">
+          <div>
+            <div class="eyebrow">Galaga, re-synapsed</div>
+            <h3 class="grad">Synapse Shooter</h3>
+            <p id="ss-text">🖱️ <b>Best played with your mouse</b><br>Move the mouse to aim &nbsp;·&nbsp; click &amp; hold to fire<br><span style="opacity:.65">or &nbsp;<b>← →</b> / <b>A&nbsp;D</b>&nbsp; and &nbsp;<b>Space</b></span></p>
+            <button id="ss-btn" class="btn btn-primary">Insert coin ▸</button>
+            <div class="hi" id="ss-hi"></div>
+          </div>
+        </div>
+      </div>
+      <p class="arcade-tip">🖱️ Use your <b>mouse</b> to play — move to aim, click &amp; hold to fire.</p>
+      <div class="legend">
+        <span><i style="background:#d122e3"></i>You — the super-hero brain</span>
+        <span><i style="background:#00e5ff"></i>Synapse pulse</span>
+        <span><i style="background:#ff2a55"></i>Noise node</span>
+      </div>
+    </div>
+  </section>
+
+  <!-- FINAL CTA -->
+  <section id="start">
+    <div class="finale reveal">
+      <span class="eyebrow">Mount it in minutes</span>
+      <h2>Own your context. Verify everything.</h2>
+      <p>Capture your agent history, rank it by meaning &times; structural gravity, and serve it back to any model — then publish to a permanent IPFS address with zero landlords, or one-click deploy to GitHub Pages, Netlify, Vercel, Cloudflare, or FTP.</p>
+      <div class="cta-row" style="justify-content:center">
+        <a class="btn btn-primary" href="#top">Mount the Concierge</a>
+        <a class="btn btn-ghost" href="#pillars">See the pillars</a>
+      </div>
+    </div>
+  </section>
+</main>
+
+<footer><div class="wrap">
+  <div class="foot">
+    <a class="brand" href="#top"><svg class="mark"><use href="#logo"/></svg><span><b>Universal Concierge Plugin</b><small>Serving up data on a silver platter</small></span></a>
+    <div class="badges"><b>Designed with Impeccable</b><b>YARA-X built-in</b><b>IPLD · libp2p · IPNS</b></div>
+  </div>
+  <div class="gen">
+    <span class="spark"></span>
+    <p>This page was designed and written by <b>Claude (<span class="grad">Opus&nbsp;4.8</span>)</b> — staged directly into the <b>Concierge Studio</b> and published through its sovereign IPFS publisher (or any host you choose). No hand-coding, no copy-paste: the model built it, you shipped it.</p>
+  </div>
+</div></footer>
+
+<script>
+(function(){
+  var ns="http://www.w3.org/2000/svg";
+  function el(t,a){var e=document.createElementNS(ns,t);for(var k in a)e.setAttribute(k,a[k]);return e;}
+
+  /* hero knowledge-graph: nodes orbiting a brain, pulses flowing inward */
+  var nodes=document.getElementById("nodes"),edges=document.getElementById("edges"),pulses=document.getElementById("pulses");
+  if(nodes){
+    var cx=300,cy=300,R=210,N=8;
+    for(var i=0;i<N;i++){
+      var a=(i/N)*Math.PI*2 - Math.PI/2;
+      var x=cx+Math.cos(a)*R, y=cy+Math.sin(a)*R;
+      edges.appendChild(el("path",{d:"M"+x+","+y+" L"+cx+","+cy}));
+      var g=el("g",{});
+      g.appendChild(el("circle",{cx:x,cy:y,r:13,fill:"rgba(10,11,26,.9)",stroke:"url(#g)","stroke-width":1.5}));
+      g.appendChild(el("circle",{cx:x,cy:y,r:4.5,fill:i%2?"#00e5ff":"#d122e3"}));
+      nodes.appendChild(g);
+      var dot=el("circle",{r:3.4,fill:i%2?"#00e5ff":"#f085fa"});
+      dot.appendChild(el("animateMotion",{dur:(2.1+i*0.18)+"s",repeatCount:"indefinite",begin:(i*0.26)+"s",path:"M"+x+","+y+" L"+cx+","+cy}));
+      pulses.appendChild(dot);
+    }
+  }
+
+  /* trust marquee (doubled for seamless loop) */
+  var items=["IPLD Merkle-DAG","Private IPFS Swarms","YARA-X scanning","Model Context Protocol","libp2p P2P","IPNS publishing","Multi-host deploy","On-node embeddings","Capability-scoped sync"];
+  var marq=document.getElementById("marq");
+  if(marq)marq.innerHTML=items.concat(items).map(function(t){return "<span>"+t+"</span>";}).join("");
+
+  function icon(p){return '<svg viewBox="0 0 24 24" fill="none" stroke="url(#g)" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">'+p+'</svg>';}
+  var feats=[
+    {t:"Content-addressed memory",d:"Every prompt, tool call, and decision becomes a CID-verifiable node in an immutable Merkle-DAG. Tamper-evident by construction.",i:'<path d="M12 2l8 4.5v9L12 22 4 15.5v-9z"/><path d="M12 22V12M4 6.5l8 5 8-5"/>'},
+    {t:"Graph-gravity ranking",d:"Retrieval ranks by Meaning × Structural Connectivity — well-linked decisions outrank isolated noise, then pack to your token budget.",i:'<circle cx="6" cy="6" r="2.4"/><circle cx="18" cy="8" r="2.4"/><circle cx="12" cy="17" r="2.4"/><path d="M7.8 7.4L11 15M16.4 9.6L13 15M8 6.6h8"/>'},
+    {t:"Egress-locked by default",d:"All data is fenced from the network until you clear it — password-gated, explicit egress. Local view is always open; leaving the device never is.",i:'<rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 018 0v3"/>'},
+    {t:"On-node embeddings",d:"A small embedding model runs beside your Kubo daemon for hot semantic retrieval — never a generative LLM on your node, never your memory leaving home.",i:'<circle cx="12" cy="12" r="8"/><path d="M12 4v4M12 16v4M4 12h4M16 12h4"/><circle cx="12" cy="12" r="2.3"/>'},
+    {t:"Publish anywhere you choose",d:"One click ships your AI-built site to a permanent IPFS/IPNS address — zero landlords, the sovereign default. Or deploy the same folder to GitHub Pages, Netlify, Vercel, Cloudflare Pages, or InfinityFree. Tokens stay on your device, every publish is password-gated.",i:'<path d="M12 3v12"/><path d="M7 8l5-5 5 5"/><path d="M5 15v4a2 2 0 002 2h10a2 2 0 002-2v-4"/>'},
+    {t:"Consent-gated messaging",d:"P2P encrypted messages to AgentID public keys — no servers. A public username is never enough to reach you; you approve every peer.",i:'<path d="M21 11.5a8 8 0 01-11.6 7.1L3 20l1.4-5.4A8 8 0 1121 11.5z"/>'}
+  ];
+  var fg=document.getElementById("featGrid");
+  if(fg)feats.forEach(function(f,i){
+    var c=document.createElement("div");c.className="card reveal";c.setAttribute("data-d",(i%3)+1);
+    c.innerHTML='<div class="ic">'+icon(f.i)+'</div><h3>'+f.t+'</h3><p>'+f.d+'</p>';
+    fg.appendChild(c);
+  });
+
+  function viz(kind){
+    if(kind=="platter")return '<svg viewBox="0 0 200 150"><ellipse cx="100" cy="110" rx="78" ry="20" fill="none" stroke="url(#g)" stroke-width="1.5"/><g stroke="url(#g)" fill="none" stroke-width="1.2" opacity=".7"><path d="M100 90V60M100 60L60 40M100 60l40-20M60 40v22M140 40v22"/></g><circle cx="100" cy="60" r="9" fill="url(#gb)"/><circle cx="60" cy="40" r="5" fill="#00e5ff"/><circle cx="140" cy="40" r="5" fill="#d122e3"/><circle cx="60" cy="62" r="4" fill="#a855f7"/><circle cx="140" cy="62" r="4" fill="#00e5ff"/></svg>';
+    if(kind=="lib")return '<svg viewBox="0 0 200 150"><g stroke="url(#g)" stroke-width="1.4" fill="none"><rect x="40" y="34" width="120" height="14" rx="3"/><rect x="40" y="58" width="120" height="14" rx="3"/><rect x="40" y="82" width="120" height="14" rx="3"/></g><rect x="40" y="58" width="86" height="14" rx="3" fill="rgba(209,34,227,.28)"/><circle cx="150" cy="108" r="13" fill="none" stroke="#00e5ff" stroke-width="1.6"/><path d="M159 117l9 9" stroke="#00e5ff" stroke-width="2" stroke-linecap="round"/></svg>';
+    if(kind=="studio")return '<svg viewBox="0 0 200 150"><rect x="34" y="28" width="132" height="94" rx="6" fill="none" stroke="url(#g)" stroke-width="1.5"/><path d="M34 44h132" stroke="url(#g)" stroke-width="1.2"/><circle cx="44" cy="36" r="2.2" fill="#ff2a55"/><circle cx="52" cy="36" r="2.2" fill="#d122e3"/><circle cx="60" cy="36" r="2.2" fill="#00e5ff"/><g stroke="#00e5ff" stroke-width="1.3" opacity=".85" fill="none"><path d="M48 60h70M48 72h54M48 84h62M48 96h40"/></g></svg>';
+    return '<svg viewBox="0 0 200 150"><circle cx="60" cy="58" r="16" fill="none" stroke="url(#g)" stroke-width="1.6"/><circle cx="140" cy="58" r="16" fill="none" stroke="url(#g)" stroke-width="1.6"/><circle cx="60" cy="58" r="5" fill="#d122e3"/><circle cx="140" cy="58" r="5" fill="#00e5ff"/><path d="M76 58h48" stroke="url(#g)" stroke-width="1.5" stroke-dasharray="4 4"><animate attributeName="stroke-dashoffset" from="16" to="0" dur="1s" repeatCount="indefinite"/></path><path d="M60 74v14M140 74v14M60 88h80v8" stroke="url(#g)" stroke-width="1.2" fill="none" opacity=".6"/><rect x="86" y="100" width="28" height="14" rx="3" fill="none" stroke="#a855f7" stroke-width="1.4"/></svg>';
+  }
+  var pillars=[
+    {tag:"01 · The Data Platter",t:"A Merkle-DAG you can touch",v:"platter",li:[["Synapse pulses","watch memory “fire” toward the central brain as the AI retrieves context."],["Forkable history","every prompt, tool call, and decision is a CID-verifiable node."],["Swarm protected","live status for your Private Kubo Swarm and YARA-X scanning."]]},
+    {tag:"02 · The Librarian",t:"Your whole history, kept hot",v:"lib",li:[["Semantic timeline","browse Years → Months → Days, or search by meaning."],["Gravity ranking","importance = meaning × structural connectivity, not keywords."],["Context budgeting","packs the most relevant history into your model's token budget."]]},
+    {tag:"03 · The Studio",t:"From talking to building",v:"studio",li:[["AI-staged web","ask your AI to design a site — it writes into the Studio, no copy-paste."],["Live preview","drafts render instantly through a hot-reloading system."],["Publish anywhere","one click to a permanent IPFS/IPNS address — or GitHub Pages, Netlify, Vercel, Cloudflare, or FTP, with tokens kept on-device."]]},
+    {tag:"04 · The Messenger",t:"A private communication plane",v:"msg",li:[["P2P messaging","encrypted, direct to AgentID public keys — no servers."],["Consent gate","approve a peer before they can ever enter your thread."],["Capability sync","a private mesh that never authorizes public publication."]]}
+  ];
+  var pw=document.getElementById("pillarWrap");
+  if(pw)pillars.forEach(function(p){
+    var row=document.createElement("div");row.className="pillar reveal";
+    var lis=p.li.map(function(x){return "<li><b>"+x[0]+"</b> — "+x[1]+"</li>";}).join("");
+    row.innerHTML='<div class="pcopy"><span class="eyebrow">'+p.tag+'</span><h3>'+p.t+'</h3><ul>'+lis+'</ul></div><div class="pviz">'+viz(p.v)+'</div>';
+    pw.appendChild(row);
+  });
+
+  var arch=[
+    {t:"The Engine",d:"Your own Kubo (IPFS) node is the hardware of a personal cloud — content-addressed storage, private swarm, no central server.",i:'<path d="M4 7l8-4 8 4v10l-8 4-8-4z"/><path d="M12 11l8-4M12 11v10M12 11L4 7"/>'},
+    {t:"The AI Layer",d:"An on-node embedding model runs beside the daemon for hot retrieval — a sidekick to your large model, never a brain on your node.",i:'<circle cx="12" cy="12" r="3"/><path d="M12 3v3M12 18v3M3 12h3M18 12h3M5.6 5.6l2.1 2.1M16.3 16.3l2.1 2.1M18.4 5.6l-2.1 2.1M7.7 16.3l-2.1 2.1"/>'},
+    {t:"The Concierge",d:"Orchestrates capture, ranking, retrieval, publishing, and messaging in one mountable plugin — the unified context layer for any harness.",i:'<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18M8 14h8M8 17h5"/>'}
+  ];
+  var ag=document.getElementById("archGrid");
+  if(ag)arch.forEach(function(a,i){
+    var c=document.createElement("div");c.className="card reveal";c.setAttribute("data-d",i+1);
+    c.innerHTML='<div class="num">0'+(i+1)+'</div><div class="ic">'+icon(a.i)+'</div><h3>'+a.t+'</h3><p>'+a.d+'</p>';
+    ag.appendChild(c);
+  });
+
+  var harnesses=["Claude Code","Codex","Cursor","Gemini","Ollama","Aider","Continue.dev","OpenHands","AutoGPT","ChatGPT","MCP Server"];
+  var chips=document.getElementById("chips");
+  if(chips)harnesses.forEach(function(h){var s=document.createElement("span");s.className="chip";s.textContent=h;chips.appendChild(s);});
+
+  var stats=[{n:9,suf:"+",l:"Harness adapters"},{n:100,suf:"%",l:"Local-first"},{n:0,suf:"",l:"Hosting fees"},{n:1,suf:" CID",l:"Per memory, verifiable"}];
+  var sc=document.getElementById("stats");
+  if(sc)stats.forEach(function(s){var d=document.createElement("div");d.className="stat";d.innerHTML='<b data-n="'+s.n+'" data-suf="'+s.suf+'">0'+s.suf+'</b><span>'+s.l+'</span>';sc.appendChild(d);});
+
+  /* card glow follows cursor */
+  document.addEventListener("mousemove",function(e){
+    var c=e.target.closest&&e.target.closest(".card");if(!c)return;
+    var r=c.getBoundingClientRect();c.style.setProperty("--mx",(e.clientX-r.left)+"px");c.style.setProperty("--my",(e.clientY-r.top)+"px");
+  });
+
+  /* reveal on scroll + count-up */
+  function countUp(b){
+    var target=+b.getAttribute("data-n"),suf=b.getAttribute("data-suf")||"",t0=null,dur=1100;
+    function step(t){if(!t0)t0=t;var p=Math.min(1,(t-t0)/dur),e=1-Math.pow(1-p,3);b.textContent=Math.round(target*e)+suf;if(p<1)requestAnimationFrame(step);}
+    requestAnimationFrame(step);
+  }
+  var io=new IntersectionObserver(function(es){
+    es.forEach(function(en){if(en.isIntersecting){en.target.classList.add("in");
+      if(en.target.querySelectorAll)en.target.querySelectorAll("b[data-n]").forEach(countUp);
+      io.unobserve(en.target);}});
+  },{threshold:.16});
+  document.querySelectorAll(".reveal").forEach(function(n){io.observe(n);});
+  var stEl=document.getElementById("stats");if(stEl)io.observe(stEl.closest("section"));
+
+  var hdr=document.getElementById("hdr");
+  addEventListener("scroll",function(){hdr.classList.toggle("scrolled",scrollY>24);},{passive:true});
+
+  // In-page nav: smooth-scroll in JS instead of hash navigation. A bare "#section"
+  // link blanks a srcdoc-preview iframe (it reloads to about:srcdoc#…); this scrolls
+  // reliably in the Studio preview AND on the published page.
+  document.querySelectorAll('a[href^="#"]').forEach(function(a){
+    a.addEventListener("click",function(e){
+      var id=a.getAttribute("href"); if(!id||id.length<2) return;
+      var el=document.getElementById(id.slice(1)); if(!el) return;
+      e.preventDefault();
+      el.scrollIntoView({behavior:"smooth",block:"start"});
+    });
+  });
+})();
+</script>
+
+<!-- ───────────────────────── SYNAPSE SHOOTER (Galaga clone) ───────────────────────── -->
+<script>
+(function(){
+  var cv=document.getElementById("synapse-game"); if(!cv) return;
+  var ctx=cv.getContext("2d"), W=cv.width, H=cv.height, TAU=Math.PI*2;
+  var overlay=document.getElementById("ss-overlay"), oTitle=overlay.querySelector("h3"),
+      oText=document.getElementById("ss-text"), oBtn=document.getElementById("ss-btn"),
+      oHi=document.getElementById("ss-hi"), oEye=overlay.querySelector(".eyebrow");
+
+  var state="start", time=0, last=0, shake=0, flash=0, flashTxt="";
+  var hi=0; try{hi=+(localStorage.getItem("ss_hi")||0)||0;}catch(e){}
+  var player,pulses,enemies,ebullets,parts,score,lives,wave,lastFire,diveTimer,clearTimer;
+  var keys={}, pointerTarget=null, firing=false;
+
+  /* ── tiny WebAudio juice (created on first user gesture) ── */
+  var AC=null;
+  function ensureAudio(){ if(!AC){ try{AC=new (window.AudioContext||window.webkitAudioContext)();}catch(e){AC=null;} } if(AC&&AC.state==="suspended")AC.resume(); }
+  function blip(freq,dur,type,vol){ if(!AC)return; try{
+    var o=AC.createOscillator(),g=AC.createGain(); o.type=type||"square"; o.frequency.value=freq;
+    g.gain.value=(vol||0.05); o.connect(g); g.connect(AC.destination);
+    var t=AC.currentTime; o.start(t); g.gain.exponentialRampToValueAtTime(0.0001,t+dur); o.stop(t+dur);
+    if(freq>200) o.frequency.exponentialRampToValueAtTime(freq*0.5,t+dur);
+  }catch(e){} }
+
+  /* ── starfield (data motes) ── */
+  var stars=[]; for(var i=0;i<70;i++)stars.push({x:Math.random()*W,y:Math.random()*H,s:18+Math.random()*60,r:Math.random()*1.6+0.3,c:Math.random()<0.5?"#d122e3":"#00e5ff"});
+
+  function rowColor(r){ return ["#ff2a55","#d122e3","#a855f7","#00e5ff"][r%4]; }
+
+  function reset(full){
+    if(full){score=0;lives=3;wave=0;}
+    player={x:W/2,y:H-58,r:18,inv:0};
+    pulses=[];ebullets=[];parts=[];
+    nextWave();
+  }
+  function nextWave(){
+    wave++;
+    enemies=[];
+    var cols=6,rows=4,padX=58,padY=44,ox=(W-(cols-1)*padX)/2,oy=96;
+    for(var r=0;r<rows;r++)for(var c=0;c<cols;c++){
+      enemies.push({hx:ox+c*padX,hy:oy+r*padY,x:ox+c*padX,y:-50-r*34-c*4,r:r===0?15:12,
+        row:r,col:c,state:"enter",hp:r===0?2:1,color:rowColor(r),val:r===0?150:(r===1?80:50),
+        shoot:1+Math.random()*2});
+    }
+    diveTimer=2.4; clearTimer=0;
+    flashTxt="WAVE "+wave; flash=1.6;
+    blip(440,0.12,"triangle",0.05);
+  }
+
+  function fire(){
+    pulses.push({x:player.x,y:player.y-player.r-2,vy:-560,c:"#00e5ff"});
+    if(wave>=3){ pulses.push({x:player.x-7,y:player.y-player.r+4,vy:-540,c:"#f085fa"});
+                 pulses.push({x:player.x+7,y:player.y-player.r+4,vy:-540,c:"#f085fa"}); }
+    blip(880,0.08,"square",0.035);
+  }
+  function boom(x,y,col,n){
+    for(var i=0;i<(n||12);i++){var a=Math.random()*TAU,sp=40+Math.random()*150;
+      parts.push({x:x,y:y,vx:Math.cos(a)*sp,vy:Math.sin(a)*sp,life:0.5+Math.random()*0.4,t:0,c:col});}
+  }
+  function hitPlayer(){
+    if(player.inv>0)return;
+    lives--; player.inv=2.2; shake=14; ebullets.length=0; boom(player.x,player.y,"#ff2a55",22);
+    blip(120,0.3,"sawtooth",0.07);
+    if(lives<=0){ gameOver(); } else { player.x=W/2; }
+  }
+  function gameOver(){
+    state="dead";
+    if(score>hi){hi=score; try{localStorage.setItem("ss_hi",hi);}catch(e){}}
+    oEye.textContent="Memory breached"; oTitle.textContent="Game Over";
+    oText.innerHTML="Score <b>"+score+"</b> &nbsp;·&nbsp; Wave <b>"+wave+"</b>";
+    oBtn.textContent="Play again ▸"; oHi.textContent="HI-SCORE  "+hi;
+    overlay.classList.remove("hide");
+  }
+  function win(){ /* endless: just keep waving */ }
+
+  /* ── input ── */
+  cv.addEventListener("contextmenu",function(e){e.preventDefault();});
+  function setTarget(e){ var r=cv.getBoundingClientRect(); pointerTarget=(e.clientX-r.left)*(W/r.width); }
+  cv.addEventListener("pointerdown",function(e){ if(state!=="playing")return; firing=true; setTarget(e); cv.setPointerCapture&&cv.setPointerCapture(e.pointerId); });
+  cv.addEventListener("pointermove",function(e){ if(state!=="playing")return; setTarget(e); });
+  window.addEventListener("pointerup",function(){ firing=false; });
+  window.addEventListener("keydown",function(e){
+    var k=e.key.toLowerCase();
+    if(state==="playing" && ["arrowleft","arrowright","arrowup","arrowdown"," "].indexOf(k)>=0) e.preventDefault();
+    keys[k]=true;
+    if(k==="escape" && state==="playing"){ state="paused"; oEye.textContent="Paused"; oTitle.textContent="Paused"; oText.innerHTML="Press <b>Esc</b> or the button to resume"; oBtn.textContent="Resume ▸"; oHi.textContent=""; overlay.classList.remove("hide"); }
+    else if(k==="escape" && state==="paused"){ resume(); }
+  });
+  window.addEventListener("keyup",function(e){ keys[e.key.toLowerCase()]=false; });
+  function start(){ ensureAudio(); reset(true); state="playing"; overlay.classList.add("hide"); }
+  function resume(){ state="playing"; overlay.classList.add("hide"); }
+  oBtn.addEventListener("click",function(){ if(state==="paused")resume(); else start(); });
+  document.addEventListener("visibilitychange",function(){ if(document.hidden&&state==="playing"){ keys={}; firing=false; } });
+
+  /* ── update ── */
+  function update(dt){
+    time+=dt;
+    for(var s=0;s<stars.length;s++){var st=stars[s]; st.y+=st.s*dt; if(st.y>H){st.y=-2;st.x=Math.random()*W;}}
+    if(shake>0)shake=Math.max(0,shake-dt*40);
+    if(flash>0)flash-=dt;
+    if(state!=="playing")return;
+
+    /* player move */
+    var sp=320;
+    if(keys["arrowleft"]||keys["a"]) player.x-=sp*dt;
+    else if(keys["arrowright"]||keys["d"]) player.x+=sp*dt;
+    else if(pointerTarget!=null) player.x+=(pointerTarget-player.x)*Math.min(1,dt*13);
+    player.x=Math.max(player.r,Math.min(W-player.r,player.x));
+    if(player.inv>0)player.inv-=dt;
+    if((keys[" "]||firing) && time-lastFire>0.24){ fire(); lastFire=time; }
+
+    /* pulses */
+    for(var i=pulses.length-1;i>=0;i--){var p=pulses[i]; p.y+=p.vy*dt; if(p.y<-10)pulses.splice(i,1);}
+
+    /* formation sway */
+    var sway=Math.min(34,22+wave*2.5), fX=Math.sin(time*0.75)*sway;
+
+    /* enemy dives */
+    diveTimer-=dt;
+    var formed=enemies.filter(function(e){return e.state==="form";});
+    if(diveTimer<=0 && formed.length){
+      var e=formed[(Math.random()*formed.length)|0];
+      e.state="dive"; e.dt=0; e.dir=player.x<e.x?-1:1; e.shootT=0.4;
+      diveTimer=Math.max(0.55,1.9-wave*0.13)*(0.6+Math.random());
+    }
+
+    /* enemies */
+    for(var j=enemies.length-1;j>=0;j--){
+      var en=enemies[j];
+      if(en.state==="enter"){
+        var tx=en.hx+fX,ty=en.hy;
+        en.x+=(tx-en.x)*Math.min(1,dt*4); en.y+=(ty-en.y)*Math.min(1,dt*4);
+        if(Math.abs(en.x-tx)<3&&Math.abs(en.y-ty)<3)en.state="form";
+      } else if(en.state==="form"){
+        en.x=en.hx+fX; en.y=en.hy+Math.sin(time*2+en.col*0.6)*3;
+        if(Math.random()<0.04*dt && en.y>0){ /* rare formation potshot */
+          ebullets.push({x:en.x,y:en.y+en.r,vx:0,vy:200}); }
+      } else if(en.state==="dive"){
+        en.dt+=dt;
+        var vy=120+Math.min(180,en.dt*150);
+        en.y+=vy*dt;
+        en.x+=Math.cos(en.dt*5)*150*dt*en.dir + (player.x-en.x)*0.6*dt;
+        en.shootT-=dt;
+        if(en.shootT<=0 && en.y<player.y-40){ var a=Math.atan2(player.y-en.y,player.x-en.x);
+          ebullets.push({x:en.x,y:en.y,vx:Math.cos(a)*230,vy:Math.sin(a)*230}); en.shootT=0.6; blip(300,0.1,"square",0.03); }
+        if(en.y>H+40){ en.state="enter"; en.y=-40; en.x=en.hx+fX; }
+        /* dive collision with player */
+        if(player.inv<=0 && Math.hypot(en.x-player.x,en.y-player.y)<en.r+player.r-4){ hitPlayer(); }
+      }
+      /* pulses vs enemy */
+      for(var k=pulses.length-1;k>=0;k--){var pu=pulses[k];
+        if(Math.hypot(pu.x-en.x,pu.y-en.y)<en.r+3){
+          pulses.splice(k,1); en.hp--;
+          boom(en.x,en.y,en.color,en.hp>0?5:14);
+          if(en.hp<=0){ score+=en.val; enemies.splice(j,1); blip(660,0.12,"square",0.05); }
+          else blip(520,0.05,"square",0.03);
+          break;
+        }
+      }
+    }
+
+    /* enemy bullets */
+    for(var b=ebullets.length-1;b>=0;b--){var bb=ebullets[b]; if(!bb)continue; bb.x+=bb.vx*dt; bb.y+=bb.vy*dt;
+      if(bb.y>H+10||bb.x<-10||bb.x>W+10){ebullets.splice(b,1);continue;}
+      if(player.inv<=0 && Math.hypot(bb.x-player.x,bb.y-player.y)<player.r-3){ ebullets.splice(b,1); hitPlayer(); break; }
+    }
+
+    /* particles */
+    for(var q=parts.length-1;q>=0;q--){var pa=parts[q]; pa.t+=dt; pa.x+=pa.vx*dt; pa.y+=pa.vy*dt; pa.vx*=0.96; pa.vy*=0.96; if(pa.t>=pa.life)parts.splice(q,1);}
+
+    /* wave cleared */
+    if(enemies.length===0){ clearTimer+=dt; if(clearTimer>1.1) nextWave(); }
+  }
+
+  /* ── draw ── */
+  function drawBrain(x,y,r,a){
+    ctx.save(); ctx.globalAlpha=a; ctx.translate(x,y);
+    var g=ctx.createLinearGradient(-r,-r,r,r);
+    g.addColorStop(0,"#f085fa"); g.addColorStop(.5,"#d122e3"); g.addColorStop(1,"#00e5ff");
+    ctx.shadowBlur=16; ctx.shadowColor="#d122e3"; ctx.strokeStyle=g; ctx.lineWidth=2;
+    ctx.beginPath(); ctx.ellipse(0,r*0.55,r*0.95,r*0.32,0,0,TAU); ctx.stroke();
+    ctx.beginPath(); ctx.arc(0,0,r*0.62,0,TAU); ctx.stroke();
+    var cg=ctx.createRadialGradient(0,0,0,0,0,r*0.42); cg.addColorStop(0,"#f085fa"); cg.addColorStop(1,"#8a1299");
+    ctx.shadowBlur=20; ctx.fillStyle=cg; ctx.beginPath(); ctx.arc(0,0,r*0.27,0,TAU); ctx.fill();
+    ctx.shadowBlur=0; ctx.lineWidth=1.4; ctx.globalAlpha=a*0.85; ctx.strokeStyle=g;
+    ctx.beginPath(); ctx.moveTo(0,-r*0.62);ctx.lineTo(0,-r*0.32); ctx.moveTo(-r*0.62,0);ctx.lineTo(-r*0.3,0); ctx.moveTo(r*0.62,0);ctx.lineTo(r*0.3,0); ctx.stroke();
+    ctx.restore();
+  }
+  // The caped super-hero brain from the cartoon — flown up into the space battle.
+  // Drawn head-up, fists raised, cape + rocket-thrust streaming down (it's flying up).
+  function drawHero(x,y,r,a){
+    ctx.save(); ctx.globalAlpha=a; ctx.translate(x,y);
+    var suit=ctx.createLinearGradient(0,-r*0.3,0,r*1.3);
+    suit.addColorStop(0,"#f085fa"); suit.addColorStop(.55,"#d122e3"); suit.addColorStop(1,"#00b3cc");
+    var sw=Math.sin(time*9)*r*0.16;
+    // cape (streams down behind)
+    ctx.fillStyle="rgba(209,34,227,.78)"; ctx.strokeStyle="rgba(0,229,255,.45)"; ctx.lineWidth=1.1;
+    ctx.beginPath();
+    ctx.moveTo(-r*0.62,0);
+    ctx.bezierCurveTo(-r*1.05,r*0.55,-r*0.55+sw,r*1.25,-r*0.22+sw,r*1.4);
+    ctx.lineTo(0,r*0.7); ctx.lineTo(r*0.22-sw,r*1.4);
+    ctx.bezierCurveTo(r*0.55-sw,r*1.25,r*1.05,r*0.55,r*0.62,0);
+    ctx.closePath(); ctx.fill(); ctx.stroke();
+    // rocket thrust under the boots (flickers)
+    var fl=r*(0.5+0.35*Math.abs(Math.sin(time*22)));
+    ctx.fillStyle="rgba(0,229,255,.7)"; ctx.beginPath(); ctx.moveTo(-r*0.32,r*1.18); ctx.lineTo(0,r*1.18+fl); ctx.lineTo(r*0.32,r*1.18); ctx.closePath(); ctx.fill();
+    ctx.fillStyle="rgba(240,133,250,.85)"; ctx.beginPath(); ctx.moveTo(-r*0.16,r*1.18); ctx.lineTo(0,r*1.18+fl*0.6); ctx.lineTo(r*0.16,r*1.18); ctx.closePath(); ctx.fill();
+    // legs + boots
+    ctx.strokeStyle=suit; ctx.lineCap="round"; ctx.lineWidth=r*0.3;
+    ctx.beginPath(); ctx.moveTo(-r*0.3,r*0.62); ctx.lineTo(-r*0.32,r*1.1); ctx.moveTo(r*0.3,r*0.62); ctx.lineTo(r*0.32,r*1.1); ctx.stroke();
+    ctx.fillStyle="#0093b8"; ctx.fillRect(-r*0.5,r*1.06,r*0.36,r*0.2); ctx.fillRect(r*0.14,r*1.06,r*0.36,r*0.2);
+    // torso (muscular V)
+    ctx.fillStyle=suit; ctx.shadowBlur=9; ctx.shadowColor="#d122e3";
+    ctx.beginPath();
+    ctx.moveTo(-r*0.92,0); ctx.quadraticCurveTo(-r*1.0,r*0.42,-r*0.38,r*0.66);
+    ctx.lineTo(r*0.38,r*0.66); ctx.quadraticCurveTo(r*1.0,r*0.42,r*0.92,0);
+    ctx.quadraticCurveTo(0,-r*0.12,-r*0.92,0); ctx.closePath(); ctx.fill();
+    ctx.shadowBlur=0;
+    // chest emblem (mini UCP: ring + core + platter)
+    ctx.strokeStyle="#fff"; ctx.lineWidth=1.1; ctx.globalAlpha=a*0.9;
+    ctx.beginPath(); ctx.arc(0,r*0.32,r*0.2,0,TAU); ctx.stroke();
+    ctx.beginPath(); ctx.ellipse(0,r*0.5,r*0.26,r*0.08,0,0,TAU); ctx.stroke();
+    ctx.fillStyle="#fff"; ctx.beginPath(); ctx.arc(0,r*0.32,r*0.08,0,TAU); ctx.fill();
+    ctx.globalAlpha=a;
+    // arms raised — fists up (flying / firing pose)
+    ctx.strokeStyle=suit; ctx.lineWidth=r*0.28; ctx.lineCap="round";
+    ctx.beginPath(); ctx.moveTo(-r*0.85,r*0.06); ctx.lineTo(-r*0.72,-r*0.78); ctx.moveTo(r*0.85,r*0.06); ctx.lineTo(r*0.72,-r*0.78); ctx.stroke();
+    ctx.fillStyle=suit; ctx.beginPath(); ctx.arc(-r*0.72,-r*0.78,r*0.2,0,TAU); ctx.fill(); ctx.beginPath(); ctx.arc(r*0.72,-r*0.78,r*0.2,0,TAU); ctx.fill();
+    // ── wrinkly brain head ──
+    var hy=-r*0.52, hr=r*0.82;
+    var hg=ctx.createLinearGradient(-hr,hy-hr,hr,hy+hr); hg.addColorStop(0,"#f0a0e6"); hg.addColorStop(1,"#c44fbf");
+    ctx.fillStyle=hg; ctx.shadowBlur=11; ctx.shadowColor="#d122e3";
+    ctx.beginPath(); ctx.ellipse(0,hy,hr*0.92,hr*0.84,0,0,TAU); ctx.fill();
+    var lb=[[-0.5,-0.55],[-0.18,-0.78],[0.18,-0.78],[0.5,-0.55],[-0.7,-0.05],[0.7,-0.05]];
+    for(var i=0;i<lb.length;i++){ ctx.beginPath(); ctx.arc(lb[i][0]*hr,hy+lb[i][1]*hr,hr*0.37,0,TAU); ctx.fill(); }
+    ctx.shadowBlur=0;
+    ctx.strokeStyle="rgba(80,10,90,.5)"; ctx.lineWidth=1.1;
+    ctx.beginPath();
+    ctx.moveTo(0,hy-hr*0.8); ctx.bezierCurveTo(hr*0.18,hy-hr*0.3,-hr*0.15,hy,0,hy+hr*0.4);
+    ctx.moveTo(-hr*0.5,hy-hr*0.18); ctx.quadraticCurveTo(-hr*0.25,hy,-hr*0.5,hy+hr*0.2);
+    ctx.moveTo(hr*0.5,hy-hr*0.18); ctx.quadraticCurveTo(hr*0.25,hy,hr*0.5,hy+hr*0.2);
+    ctx.stroke();
+    // wide curious eyes looking up
+    var ex=hr*0.34, ey=hy+hr*0.06, er=hr*0.26;
+    for(var s2=-1;s2<=1;s2+=2){
+      ctx.fillStyle="#fff"; ctx.beginPath(); ctx.ellipse(s2*ex,ey,er,er*1.05,0,0,TAU); ctx.fill();
+      ctx.fillStyle="#160620"; ctx.beginPath(); ctx.arc(s2*ex,ey-er*0.18,er*0.6,0,TAU); ctx.fill();
+      ctx.fillStyle="#fff"; ctx.beginPath(); ctx.arc(s2*ex-er*0.25,ey-er*0.48,er*0.22,0,TAU); ctx.fill();
+    }
+    ctx.restore();
+  }
+  function drawNode(e){
+    ctx.save(); ctx.translate(e.x,e.y); ctx.shadowBlur=10; ctx.shadowColor=e.color;
+    ctx.strokeStyle=e.color; ctx.lineWidth=1.7;
+    ctx.beginPath(); ctx.arc(0,0,e.r,0,TAU); ctx.stroke();
+    ctx.shadowBlur=14; ctx.fillStyle=e.color; ctx.beginPath(); ctx.arc(0,0,e.r*0.42,0,TAU); ctx.fill();
+    if(e.row===0){ ctx.globalAlpha=.5; ctx.beginPath(); ctx.arc(0,0,e.r+4,0,TAU); ctx.stroke();
+      ctx.globalAlpha=1; ctx.beginPath(); ctx.arc(-e.r*0.35,-e.r*0.1,1.6,0,TAU); ctx.arc(e.r*0.35,-e.r*0.1,1.6,0,TAU); ctx.fillStyle="#fff"; ctx.fill(); }
+    ctx.restore();
+  }
+  function render(){
+    ctx.clearRect(0,0,W,H);
+    ctx.save();
+    if(shake>0)ctx.translate((Math.random()-0.5)*shake,(Math.random()-0.5)*shake);
+    /* stars */
+    for(var s=0;s<stars.length;s++){var st=stars[s]; ctx.globalAlpha=0.5; ctx.fillStyle=st.c; ctx.beginPath(); ctx.arc(st.x,st.y,st.r,0,TAU); ctx.fill();}
+    ctx.globalAlpha=1;
+
+    if(state==="playing"||state==="paused"||state==="dead"){
+      if(enemies) for(var j=0;j<enemies.length;j++)drawNode(enemies[j]);
+      if(ebullets) for(var b=0;b<ebullets.length;b++){var bb=ebullets[b]; ctx.save(); ctx.shadowBlur=8; ctx.shadowColor="#ff2a55"; ctx.fillStyle="#ff5a78"; ctx.beginPath(); ctx.arc(bb.x,bb.y,3.4,0,TAU); ctx.fill(); ctx.restore();}
+      if(pulses) for(var i=0;i<pulses.length;i++){var p=pulses[i]; ctx.save(); ctx.shadowBlur=12; ctx.shadowColor=p.c; ctx.fillStyle=p.c; ctx.beginPath(); ctx.ellipse(p.x,p.y,2.6,8,0,0,TAU); ctx.fill(); ctx.restore();}
+      if(parts) for(var q=0;q<parts.length;q++){var pa=parts[q]; ctx.globalAlpha=Math.max(0,1-pa.t/pa.life); ctx.fillStyle=pa.c; ctx.fillRect(pa.x-1.5,pa.y-1.5,3,3);} ctx.globalAlpha=1;
+      if(player && (state!=="dead")){ var blink=player.inv>0 && (Math.floor(time*12)%2===0); drawHero(player.x,player.y,player.r, blink?0.35:1); }
+      /* HUD */
+      ctx.font="bold 13px "+"SFMono-Regular,Consolas,monospace"; ctx.textBaseline="middle";
+      ctx.fillStyle="#e0e6ff"; ctx.textAlign="left"; ctx.fillText("SCORE "+(score||0),14,20);
+      ctx.fillStyle="#939abf"; ctx.textAlign="center"; ctx.fillText("WAVE "+(wave||0),W/2,20);
+      ctx.textAlign="right"; for(var L=0;L<(lives||0);L++)drawBrain(W-18-L*22,20,8,0.95);
+    }
+    /* wave flash */
+    if(flash>0 && state==="playing"){ ctx.globalAlpha=Math.min(1,flash); ctx.fillStyle="#f085fa"; ctx.textAlign="center"; ctx.font="bold 26px SFMono-Regular,Consolas,monospace"; ctx.shadowBlur=18; ctx.shadowColor="#d122e3"; ctx.fillText(flashTxt,W/2,H/2); ctx.shadowBlur=0; ctx.globalAlpha=1; }
+    ctx.restore();
+  }
+
+  function loop(t){
+    requestAnimationFrame(loop);                 // schedule next frame FIRST — a thrown
+    t/=1000; var dt=Math.min(0.034,(t-last)||0); last=t;   // error can never freeze the loop
+    try{ update(dt); render(); }
+    catch(err){ if(window.console&&console.error) console.error("Synapse Shooter:",err); }
+  }
+  /* idle starfield until the player inserts a coin */
+  enemies=[];pulses=[];ebullets=[];parts=[];player=null;score=0;lives=0;wave=0;lastFire=0;
+  oHi.textContent = hi? ("HI-SCORE  "+hi) : "";
+  requestAnimationFrame(loop);
+})();
+</script>
+
+<!-- ───────────── CARTOON: a brain finds UCP, absorbs it, ascends to space ───────────── -->
+<script>
+(function(){
+  var cv=document.getElementById("toon"); if(!cv) return;
+  var ctx=cv.getContext("2d"), W=cv.width, H=cv.height, TAU=Math.PI*2;
+  var GY=236;                      // ground line
+  var P=14.0;                      // loop period (seconds)
+  function lerp(a,b,t){return a+(b-a)*t;}
+  function clamp(v,a,b){return v<a?a:v>b?b:v;}
+  function ease(t){t=clamp(t,0,1);return t*t*(3-2*t);}      // smoothstep
+  function easeOut(t){t=clamp(t,0,1);return 1-Math.pow(1-t,3);}
+  function seg(t,a,b){return clamp((t-a)/(b-a),0,1);}       // 0..1 within [a,b]
+
+  // backdrop stars (brighten as it goes to space)
+  var stars=[]; for(var i=0;i<60;i++)stars.push({x:Math.random()*W,y:Math.random()*(GY-10),r:Math.random()*1.4+0.3,p:Math.random()*TAU,c:Math.random()<0.5?"#f085fa":"#00e5ff"});
+
+  // city skyline silhouette behind the action (recedes/darkens as it ascends)
+  var bld=[]; (function(){ var x=-12; while(x<W+20){ var w=20+Math.random()*32, h=30+Math.random()*98, b={x:x,w:w,h:h,win:[]};
+    for(var wy=GY-h+8; wy<GY-9; wy+=9){ for(var wx=x+4; wx<x+w-4; wx+=7){ if(Math.random()<0.45) b.win.push([wx,wy]); } }
+    bld.push(b); x+=w+3+Math.random()*7; } })();
+  function drawSkyline(spaceAmt){
+    var a=1-spaceAmt; if(a<=0.02) return;
+    for(var i=0;i<bld.length;i++){ var b=bld[i];
+      ctx.globalAlpha=a*0.92; ctx.fillStyle="#0b0b1c"; ctx.fillRect(b.x,GY-b.h,b.w,b.h);
+      ctx.globalAlpha=a*0.45; ctx.strokeStyle="rgba(209,34,227,.55)"; ctx.lineWidth=1; ctx.strokeRect(b.x+0.5,GY-b.h+0.5,b.w-1,b.h-1);
+      ctx.fillStyle=i%2?"#00e5ff":"#f7c7fb";
+      for(var w2=0;w2<b.win.length;w2++){ ctx.globalAlpha=a*(0.35+0.5*Math.abs(Math.sin(time*1.3+i*1.7+w2))); ctx.fillRect(b.win[w2][0],b.win[w2][1],2.2,3); }
+    }
+    ctx.globalAlpha=1;
+  }
+
+  var STANDX=300, ICONX=398;       // brain stops left of the icon
+  var last=0,time=0;
+  var reduce=window.matchMedia&&matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+  // ── the UCP icon (brain-on-platter logo) ──
+  function drawIcon(x,y,s,glow){
+    ctx.save(); ctx.translate(x,y); ctx.scale(s,s);
+    var g=ctx.createLinearGradient(-16,-16,16,16);
+    g.addColorStop(0,"#f085fa"); g.addColorStop(.5,"#d122e3"); g.addColorStop(1,"#00e5ff");
+    if(glow){ ctx.shadowBlur=18*glow; ctx.shadowColor="#d122e3"; }
+    ctx.strokeStyle=g; ctx.lineWidth=2.4; ctx.fillStyle=g;
+    ctx.beginPath(); ctx.ellipse(0,9,15,5,0,0,TAU); ctx.stroke();      // platter
+    ctx.beginPath(); ctx.arc(0,-1,9,0,TAU); ctx.stroke();             // head ring
+    var cg=ctx.createRadialGradient(0,-1,0,0,-1,5); cg.addColorStop(0,"#f085fa"); cg.addColorStop(1,"#8a1299");
+    ctx.fillStyle=cg; ctx.beginPath(); ctx.arc(0,-1,4,0,TAU); ctx.fill();
+    ctx.shadowBlur=0; ctx.lineWidth=1.3; ctx.strokeStyle=g; ctx.globalAlpha=.85;
+    ctx.beginPath(); ctx.moveTo(0,-10);ctx.lineTo(0,-5); ctx.moveTo(-9,-1);ctx.lineTo(-4,-1); ctx.moveTo(9,-1);ctx.lineTo(4,-1); ctx.stroke();
+    ctx.restore();
+  }
+
+  // ── the cartoon brain character ──
+  function limb(x1,y1,x2,y2,w,cap){ ctx.lineWidth=w; ctx.lineCap="round"; ctx.beginPath(); ctx.moveTo(x1,y1); ctx.lineTo(x2,y2); ctx.stroke(); if(cap){ ctx.beginPath(); ctx.arc(x2,y2,w*0.7,0,TAU); ctx.fillStyle=ctx.strokeStyle; ctx.fill(); } }
+  // a wrinkly, anatomical brain (cauliflower of lobes + deep gyri), not a cute blob
+  var LOBES=[[-15,-13,10],[-6,-19,10],[6,-19,10],[15,-13,10],[-20,-2,9],[20,-2,9],[-13,6,9],[0,9,10],[13,6,9],[-9,-5,7],[9,-5,7]];
+  function brainBody(lit){
+    var g=ctx.createLinearGradient(-26,-26,26,26);
+    if(lit>0.05){ g.addColorStop(0,"#f085fa"); g.addColorStop(.5,lerp01("#cf5fb8","#d122e3",lit)); g.addColorStop(1,lerp01("#b85fa8","#00e5ff",lit)); }
+    else { g.addColorStop(0,"#dd8ad0"); g.addColorStop(1,"#9c5390"); }   // duller, less candy-cute
+    ctx.fillStyle=g;
+    // bumpy silhouette = base ellipse + overlapping lobes
+    ctx.beginPath(); ctx.ellipse(0,-2,23,20,0,0,TAU); ctx.fill();
+    for(var i=0;i<LOBES.length;i++){ ctx.beginPath(); ctx.arc(LOBES[i][0],LOBES[i][1],LOBES[i][2],0,TAU); ctx.fill(); }
+    // shade each lobe so the wrinkles read as 3D
+    ctx.strokeStyle="rgba(60,6,66,.30)"; ctx.lineWidth=1;
+    for(i=0;i<LOBES.length;i++){ ctx.beginPath(); ctx.arc(LOBES[i][0],LOBES[i][1],LOBES[i][2]-0.5,0,TAU); ctx.stroke(); }
+    // deep central fissure + many gyri squiggles
+    ctx.strokeStyle="rgba(52,4,58,.55)"; ctx.lineWidth=1.5; ctx.lineCap="round";
+    ctx.beginPath();
+    ctx.moveTo(0,-22); ctx.bezierCurveTo(3.5,-13,-3,-5,1,3); ctx.bezierCurveTo(4,9,-2,14,1,19);
+    ctx.moveTo(-19,-11); ctx.quadraticCurveTo(-12,-7,-18,-2);
+    ctx.moveTo(-11,-15); ctx.quadraticCurveTo(-5,-10,-12,-6);
+    ctx.moveTo(19,-11); ctx.quadraticCurveTo(12,-7,18,-2);
+    ctx.moveTo(11,-15); ctx.quadraticCurveTo(5,-10,12,-6);
+    ctx.moveTo(-15,3); ctx.quadraticCurveTo(-9,7,-15,11);
+    ctx.moveTo(15,3); ctx.quadraticCurveTo(9,7,15,11);
+    ctx.moveTo(-7,-19); ctx.quadraticCurveTo(-3,-15,-7,-12);
+    ctx.moveTo(7,-19); ctx.quadraticCurveTo(3,-15,7,-12);
+    ctx.stroke();
+  }
+  function lerp01(c1,c2,t){ // blend two hex colors
+    function p(c){return [parseInt(c.substr(1,2),16),parseInt(c.substr(3,2),16),parseInt(c.substr(5,2),16)];}
+    var a=p(c1),b=p(c2); return "rgb("+Math.round(lerp(a[0],b[0],t))+","+Math.round(lerp(a[1],b[1],t))+","+Math.round(lerp(a[2],b[2],t))+")";
+  }
+  function eyes(state){
+    // big, wide, curious eyes with a lively glint; raised arched brows (not mean)
+    var ex=8, ey=-4, er=state.r;
+    for(var s=-1;s<=1;s+=2){
+      ctx.fillStyle="#fff"; ctx.beginPath(); ctx.ellipse(s*ex,ey,er,er*1.05,0,0,TAU); ctx.fill();
+      var px=s*ex+state.dx, py=ey+state.dy;
+      if(state.star){
+        ctx.fillStyle="#00e5ff";
+        for(var k=0;k<4;k++){var a=k*Math.PI/2; ctx.beginPath(); ctx.moveTo(px,py); ctx.lineTo(px+Math.cos(a)*er*0.95,py+Math.sin(a)*er*0.95); ctx.lineTo(px+Math.cos(a+0.5)*er*0.4,py+Math.sin(a+0.5)*er*0.4); ctx.closePath(); ctx.fill();}
+        ctx.beginPath(); ctx.arc(px,py,er*0.34,0,TAU); ctx.fill();
+      } else {
+        // big round pupil + bright catch-light = wide-eyed and curious
+        ctx.fillStyle="#160620"; ctx.beginPath(); ctx.arc(px,py,er*0.62,0,TAU); ctx.fill();
+        ctx.fillStyle="#fff"; ctx.beginPath(); ctx.arc(px-er*0.26,py-er*0.32,er*0.24,0,TAU); ctx.fill();
+      }
+    }
+    // raised, arched eyebrows — curious / interested, never angry
+    ctx.strokeStyle="#5a1060"; ctx.lineWidth=1.8; ctx.lineCap="round";
+    ctx.beginPath();
+    ctx.moveTo(-ex-er, ey-er-3.5); ctx.quadraticCurveTo(-ex, ey-er-6.5, -ex+er, ey-er-3);
+    ctx.moveTo(ex-er, ey-er-3); ctx.quadraticCurveTo(ex, ey-er-6.5, ex+er, ey-er-3.5);
+    ctx.stroke();
+  }
+
+  // ── muscular super-hero body (appears after he absorbs the UCP) ──
+  function thickLine(x1,y1,x2,y2,w){ ctx.lineWidth=w; ctx.lineCap="round"; ctx.beginPath(); ctx.moveTo(x1,y1); ctx.lineTo(x2,y2); ctx.stroke(); }
+  function arm(sx,sy,ex,ey,hx,hy){
+    thickLine(sx,sy,ex,ey,9);                                   // upper arm
+    ctx.beginPath(); ctx.arc((sx+ex)/2,(sy+ey)/2,5.5,0,TAU); ctx.fill();   // bicep
+    thickLine(ex,ey,hx,hy,7);                                   // forearm
+    ctx.beginPath(); ctx.arc(hx,hy,6,0,TAU); ctx.fill();        // fist
+  }
+  function heroBody(hero, fly, lit, flex){
+    ctx.save();
+    ctx.translate(0,18); ctx.scale(hero,hero); ctx.translate(0,-18);   // grow from the neck
+    var suit=ctx.createLinearGradient(0,18,0,92);
+    suit.addColorStop(0,"#d122e3"); suit.addColorStop(.6,lerp01("#a8189c","#7a3bd6",lit)); suit.addColorStop(1,"#0093b8");
+    var sw=fly>0.5?Math.sin(time*9)*8:Math.sin(time*4)*4;
+    // CAPE (behind)
+    ctx.fillStyle="rgba(209,34,227,.82)"; ctx.strokeStyle="rgba(0,229,255,.5)"; ctx.lineWidth=1.3;
+    ctx.beginPath();
+    if(fly>0.5){ ctx.moveTo(-15,24); ctx.bezierCurveTo(-34,44,-26+sw,72,-9+sw,80); ctx.lineTo(0,44); ctx.lineTo(9-sw,80); ctx.bezierCurveTo(26-sw,72,34,44,15,24); }
+    else { ctx.moveTo(-17,26); ctx.bezierCurveTo(-34,56,-26+sw,90,-17+sw,96); ctx.lineTo(0,60); ctx.lineTo(17-sw,96); ctx.bezierCurveTo(26-sw,90,34,56,17,26); }
+    ctx.closePath(); ctx.fill(); ctx.stroke();
+    // LEGS + BOOTS
+    ctx.strokeStyle=suit;
+    if(fly>0.5){ thickLine(-7,58,-9,86,9); thickLine(7,58,10,86,9); }
+    else { thickLine(-8,58,-11,90,11); thickLine(8,58,11,90,11); }
+    ctx.fillStyle="#0093b8";
+    rr(-17,fly>0.5?80:86,15,9,4); ctx.fill(); rr(2,fly>0.5?80:86,15,9,4); ctx.fill();
+    // TORSO (muscular V)
+    ctx.fillStyle=suit;
+    ctx.beginPath();
+    ctx.moveTo(-26,28); ctx.quadraticCurveTo(-31,42,-12,58); ctx.lineTo(12,58);
+    ctx.quadraticCurveTo(31,42,26,28); ctx.quadraticCurveTo(0,23,-26,28); ctx.closePath(); ctx.fill();
+    // pecs + abs
+    ctx.fillStyle="rgba(255,255,255,.10)"; ctx.beginPath(); ctx.ellipse(-9,36,8,5.5,0,0,TAU); ctx.fill(); ctx.beginPath(); ctx.ellipse(9,36,8,5.5,0,0,TAU); ctx.fill();
+    ctx.strokeStyle="rgba(16,2,24,.4)"; ctx.lineWidth=1.2; ctx.beginPath();
+    ctx.moveTo(0,42); ctx.lineTo(0,56); ctx.moveTo(-7,46); ctx.lineTo(7,46); ctx.moveTo(-6,51); ctx.lineTo(6,51); ctx.stroke();
+    // chest emblem = the UCP icon
+    drawIcon(0,38,0.62,0.4);
+    // ARMS (big, biceps + fists)
+    ctx.fillStyle=suit; ctx.strokeStyle=suit;
+    if(fly>0.5){ arm(26,30,42,12,52,-6); arm(-26,30,-36,46,-22,56); }     // one fist punched up
+    else { var f=(flex||0)*4; arm(26,30,40,40-f,17,55); arm(-26,30,-40,40-f,-17,55); }  // double flex
+    ctx.restore();
+  }
+  function bubble(x,y,txt){
+    ctx.save(); ctx.font="bold 15px SFMono-Regular,Consolas,monospace";
+    var w=ctx.measureText(txt).width+18, h=24;
+    ctx.fillStyle="rgba(20,12,30,.92)"; ctx.strokeStyle="rgba(240,133,250,.6)"; ctx.lineWidth=1.2;
+    var bx=x-w/2, by=y-h;
+    rr(bx,by,w,h,8); ctx.fill(); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(x-5,by+h); ctx.lineTo(x+5,by+h); ctx.lineTo(x,by+h+7); ctx.closePath(); ctx.fill();
+    ctx.fillStyle="#f085fa"; ctx.textAlign="center"; ctx.textBaseline="middle"; ctx.fillText(txt,x,by+h/2);
+    ctx.restore();
+  }
+  function rr(x,y,w,h,r){ ctx.beginPath(); ctx.moveTo(x+r,y); ctx.arcTo(x+w,y,x+w,y+h,r); ctx.arcTo(x+w,y+h,x,y+h,r); ctx.arcTo(x,y+h,x,y,r); ctx.arcTo(x,y,x+w,y,r); ctx.closePath(); }
+
+  function frame(t){
+    // ── phase timeline ──
+    var wEnd=3.2, nEnd=4.3, rEnd=6.3, aEnd=7.3, cEnd=9.6, ascEnd=12.9;
+    var lit=0, glow=0, bx=STANDX, by=198, sc=1, rot=0;
+    var iconOnGround=true, iconLift=0, reach=0, exclaim="", eye={r:6,dx:0,dy:0,star:false,hero:0};
+    var walking=false, hero=0, fly=0, flex=0;
+    var GW=198;   // grounded stand height — feet land near the street, not floating
+
+    if(t<wEnd){ walking=true; bx=lerp(-60,STANDX,easeOut(t/wEnd)); by=GW-Math.abs(Math.sin(time*7))*5; eye.dx=1; }
+    else if(t<nEnd){ var k=seg(t,wEnd,nEnd); by=GW-Math.sin(k*Math.PI)*16; eye.r=7.5; eye.dy=2; exclaim="!"; } // notice + hop (eyes go wide)
+    else if(t<rEnd){ var k=seg(t,nEnd,rEnd); reach=Math.sin(ease(k)*Math.PI); iconLift=ease(k); iconOnGround=k<0.5; by=GW+reach*6; eye.r=6.6; eye.dy=2; } // bend & lift
+    else if(t<aEnd){ var k=seg(t,rEnd,aEnd); hero=ease(k); lit=ease(k); glow=ease(k); iconOnGround=false; iconLift=1; by=lerp(GW,150,hero); exclaim=k>0.3?"ZAP!":""; } // absorb → TRANSFORM (rise onto feet)
+    else if(t<cEnd){ var k=seg(t,aEnd,cEnd); hero=1; lit=1; glow=0.55+Math.sin(time*16)*0.25; by=150+Math.sin(time*9)*1.5; eye.star=true; eye.hero=1; flex=0.5+0.5*Math.sin(time*5); exclaim=k<0.55?"HRAAH!":""; } // flex / charge
+    else if(t<ascEnd){ var k=seg(t,cEnd,ascEnd); var e=easeOut(k); hero=1; fly=1; lit=1; glow=1; by=lerp(150,-170,e); bx=STANDX+Math.sin(time*5)*5; sc=lerp(1,0.6,e); eye.star=true; eye.hero=1; exclaim=k<0.5?"WHOOSH!":""; rot=Math.sin(time*6)*0.05; } // launch
+    else { by=-340; } // gone (brief pause before loop)
+
+    // ── render ──
+    ctx.clearRect(0,0,W,H);
+    var spaceAmt=clamp(seg(t,cEnd,ascEnd),0,1);
+    // stars (brighten as it leaves the city for space)
+    for(var i=0;i<stars.length;i++){var st=stars[i]; var tw=0.4+0.5*Math.abs(Math.sin(time*1.5+st.p)); ctx.globalAlpha=(0.18+spaceAmt*0.62)*tw; ctx.fillStyle=st.c; ctx.beginPath(); ctx.arc(st.x,st.y,st.r,0,TAU); ctx.fill();}
+    ctx.globalAlpha=1;
+    // city skyline behind everything
+    drawSkyline(spaceAmt);
+    // street / ground line (fades as it ascends)
+    var ga=1-spaceAmt;
+    var gg=ctx.createLinearGradient(0,0,W,0); gg.addColorStop(0,"transparent"); gg.addColorStop(.5,"rgba(209,34,227,"+(.5*ga)+")"); gg.addColorStop(1,"transparent");
+    ctx.strokeStyle=gg; ctx.lineWidth=1.4; ctx.beginPath(); ctx.moveTo(0,GY); ctx.lineTo(W,GY); ctx.stroke();
+    ctx.globalAlpha=ga; ctx.fillStyle="rgba(0,229,255,.25)"; for(var d=20;d<W;d+=46){ctx.fillRect(d,GY+4,2,2);} ctx.globalAlpha=1;
+
+    // UCP icon on the ground (soft glow) until lifted/absorbed
+    if(iconOnGround){
+      ctx.save(); ctx.globalAlpha=0.5; ctx.fillStyle="rgba(0,229,255,.5)"; ctx.beginPath(); ctx.ellipse(ICONX,GY-1,16,4,0,0,TAU); ctx.fill(); ctx.restore();
+      drawIcon(ICONX, GY-12, 1, 0.6+0.4*Math.sin(time*3));
+    }
+
+    // character ground shadow (shrinks as it rises)
+    var shA=clamp(1-(200-by)/140,0,1)*0.45;
+    if(shA>0){ ctx.save(); ctx.globalAlpha=shA; ctx.fillStyle="#000"; ctx.beginPath(); ctx.ellipse(bx,GY,(hero?32:26)*sc*shA+8,5*shA+2,0,0,TAU); ctx.fill(); ctx.restore(); }
+
+    ctx.save(); ctx.translate(bx,by); ctx.rotate(rot); ctx.scale(sc,sc);
+    // power halo + rays when lit
+    if(glow>0){ ctx.save(); ctx.globalAlpha=clamp(glow,0,1)*0.85; var rg=ctx.createRadialGradient(0,-4,0,0,-4,58); rg.addColorStop(0,"rgba(240,133,250,.9)"); rg.addColorStop(.5,"rgba(168,85,247,.4)"); rg.addColorStop(1,"transparent"); ctx.fillStyle=rg; ctx.beginPath(); ctx.arc(0,-4,58,0,TAU); ctx.fill(); ctx.restore(); }
+    if(lit>0.6){ ctx.save(); ctx.globalAlpha=(lit-0.6)*1.6*(0.6+0.4*Math.sin(time*10)); ctx.strokeStyle="#f7c7fb"; ctx.lineWidth=1.4; for(var r=0;r<8;r++){var a=time*1.2+r*TAU/8; ctx.beginPath(); ctx.moveTo(Math.cos(a)*36,Math.sin(a)*36-4); ctx.lineTo(Math.cos(a)*52,Math.sin(a)*52-4); ctx.stroke();} ctx.restore(); }
+
+    if(hero>0.02){
+      // ── muscular super-hero (post-absorb) ──
+      heroBody(hero, fly, lit, flex);
+      brainBody(lit);                                   // wrinkly brain head on top
+      eyes(eye);
+      ctx.strokeStyle="#3c0a44"; ctx.lineWidth=2; ctx.lineCap="round"; ctx.beginPath();   // determined mouth
+      ctx.moveTo(-5,9); ctx.lineTo(5,9); ctx.stroke();
+    } else {
+      // ── little brain with stick limbs (walk / notice / pick-up) ──
+      var col=lit>0.5?"#f085fa":"#c86cd6"; ctx.strokeStyle=col;
+      var wc=time*7;
+      if(walking){ var s1=Math.sin(wc), s2=Math.sin(wc+Math.PI); limb(-8,20,-8+s1*9,34,5,true); limb(8,20,8+s2*9,34,5,true); }
+      else { limb(-8,20,-9,34,5,true); limb(8,20,9,34,5,true); }
+      var as=walking?Math.sin(wc+Math.PI):0;
+      limb(-22,-2,-30,8+as*8,4.5,true);                 // left arm
+      var rax=30, ray=8-(walking?as*8:0);
+      if(reach>0){ rax=18+reach*6; ray=8+reach*26; }     // reach toward icon
+      limb(22,-2,rax,ray,4.5,true);                      // right arm
+      brainBody(lit);
+      eyes(eye);
+      ctx.strokeStyle="#4a0c52"; ctx.lineWidth=2; ctx.lineCap="round"; ctx.beginPath();   // small neutral mouth
+      ctx.moveTo(-5,9); ctx.quadraticCurveTo(0,9+1.5+reach*2,5,9); ctx.stroke();
+    }
+    ctx.restore();
+
+    // ascent exhaust trail
+    if(fly>0.5 && t<ascEnd){ for(var p2=0;p2<4;p2++){ var ty=by+34+p2*12+(time*70%12); ctx.globalAlpha=clamp((ty-by)/90,0,1)*0.7; ctx.fillStyle=p2%2?"#00e5ff":"#f085fa"; var tw=5-p2; ctx.beginPath(); ctx.arc(bx+Math.sin(time*9+p2)*6,ty,tw,0,TAU); ctx.fill(); } ctx.globalAlpha=1; }
+
+    // UCP icon carried up into the brain during pickup (before transform)
+    if(iconLift>0 && hero<0.5 && t<aEnd){
+      var ix=lerp(ICONX, bx, ease(iconLift)), iy=lerp(GY-12, by-2, ease(iconLift)), isc=lerp(1,0.2,ease(iconLift));
+      drawIcon(ix,iy,isc,1);
+    }
+
+    if(exclaim){ bubble(bx+(t<ascEnd?38:0), by-(hero?54:30)*sc-6, exclaim); }
+  }
+
+  function loop(now){
+    requestAnimationFrame(loop);
+    now/=1000; var dt=Math.min(0.05,(now-last)||0); last=now; time+=dt;
+    try{ frame(reduce?6.6:(time%P)); }    // reduced motion: hold a calm "absorbing" pose
+    catch(err){ if(window.console&&console.error)console.error("toon:",err); }
+  }
+  requestAnimationFrame(loop);
+})();
+</script>
+</body>
+</html>
