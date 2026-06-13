@@ -274,34 +274,14 @@ pub fn launch_public_node(store_dir: &Path) -> Result<()> {
             ));
         }
         // Move off the private node's default ports so both daemons coexist.
-        let set = |args: &[&str]| {
-            let _ = ipfs(&repo)
-                .args(args)
-                .stdin(Stdio::null())
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .status();
-        };
-        set(&[
-            "config",
-            "Addresses.API",
-            &format!("/ip4/127.0.0.1/tcp/{PUBLIC_API_PORT}"),
-        ]);
-        set(&[
-            "config",
-            "Addresses.Gateway",
-            &format!("/ip4/127.0.0.1/tcp/{PUBLIC_GATEWAY_PORT}"),
-        ]);
-        set(&[
-            "config",
-            "--json",
-            "Addresses.Swarm",
-            &format!(
-                "[\"/ip4/0.0.0.0/tcp/{PUBLIC_SWARM_PORT}\",\"/ip4/0.0.0.0/udp/{PUBLIC_SWARM_PORT}/quic-v1\"]"
-            ),
-        ]);
+        ipfs_set(&repo, &["config", "Addresses.API", &format!("/ip4/127.0.0.1/tcp/{PUBLIC_API_PORT}")]);
+        ipfs_set(&repo, &["config", "Addresses.Gateway", &format!("/ip4/127.0.0.1/tcp/{PUBLIC_GATEWAY_PORT}")]);
     }
     if !public_node_running() {
+        // Apply reachability config every (re)start so existing repos get upgraded —
+        // it only takes effect when the daemon starts, so a running node needs a
+        // restart to pick it up.
+        ensure_public_reachability(&repo);
         // No LIBP2P_FORCE_PNET here — this node MUST reach the public network.
         ipfs(&repo)
             .arg("daemon")
@@ -312,6 +292,40 @@ pub fn launch_public_node(store_dir: &Path) -> Result<()> {
             .map_err(|e| Error::Io(format!("launch public ipfs daemon: {e}")))?;
     }
     Ok(())
+}
+
+fn ipfs_set(repo: &Path, args: &[&str]) {
+    let _ = ipfs(repo)
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+}
+
+/// Configure the public node for the best shot at being reachable from outside the
+/// LAN: listen on **WebTransport** (so browser/service-worker gateways like
+/// `inbrowser.link` can fetch directly), and enable **relay client + hole-punching**
+/// so a NAT'd home node can still be dialed. Idempotent; takes effect on daemon
+/// start. (None of this beats NAT outright — port-forwarding `PUBLIC_SWARM_PORT`
+/// TCP+UDP, or pinning to a reachable peer, is the guaranteed path.)
+fn ensure_public_reachability(repo: &Path) {
+    ipfs_set(
+        repo,
+        &[
+            "config",
+            "--json",
+            "Addresses.Swarm",
+            &format!(
+                "[\"/ip4/0.0.0.0/tcp/{P}\",\"/ip4/0.0.0.0/udp/{P}/quic-v1\",\"/ip4/0.0.0.0/udp/{P}/quic-v1/webtransport\"]",
+                P = PUBLIC_SWARM_PORT
+            ),
+        ],
+    );
+    ipfs_set(repo, &["config", "--json", "Swarm.RelayClient.Enabled", "true"]);
+    ipfs_set(repo, &["config", "--json", "Swarm.EnableHolePunching", "true"]);
+    // Announce content to the public DHT so providers can be found.
+    ipfs_set(repo, &["config", "Routing.Type", "auto"]);
 }
 
 /// The IPNS key id (`k51…`) for `site`, if a key by that name already exists.
