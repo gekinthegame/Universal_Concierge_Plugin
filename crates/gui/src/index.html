@@ -718,13 +718,10 @@
             <button id="wallet-refresh" class="tool-button">Refresh</button>
           </div>
         </div>
-        <div class="msg-section">Manage in your wallet</div>
-        <div class="eyebrow">Balances, accounts, base currency, NFTs, auto-lock, networks, and reset all live in your browser's wallet (we can't touch them — same boundary that protects your keys). Open them here.</div>
+        <div class="msg-section">Your wallet</div>
+        <div class="eyebrow">Pop open your wallet's panel — the full portfolio (balances, send, swap, accounts). It lives in your browser; the Concierge just opens it.</div>
         <div class="wallet-card">
-          <div class="modal-actions">
-            <button id="wallet-open" class="tool-button" style="flex:1;">Open full wallet ↗</button>
-            <button id="wallet-settings-open" class="tool-button" style="flex:1;">Wallet settings ↗</button>
-          </div>
+          <button id="wallet-panel" class="tool-button" style="width:100%;">🦁 Open my wallet (portfolio) ▸</button>
         </div>
         <div class="msg-section">Linked to your identity</div>
         <div class="eyebrow">Sign a message to bind this wallet to your AgentID — a verifiable link, no funds moved. Link several wallets; they all anchor to the same identity.</div>
@@ -2337,6 +2334,15 @@ async function walletOpen(target) {
   }
 }
 function walletCreate() { return walletOpen("wallet"); }
+// Pop Brave/Opera's own wallet panel (the small window shown for permissions) — the
+// full portfolio. wallet_requestPermissions re-prompts it even when already connected.
+async function walletPanel() {
+  if (!WALLET.provider) { await walletInit(); if (!WALLET.provider) { notice("No wallet detected — open the Concierge in Brave or Opera."); return; } }
+  try {
+    await WALLET.provider.request({ method: "wallet_requestPermissions", params: [{ eth_accounts: {} }] });
+  } catch (e) { /* user closed the panel — fine */ }
+  await walletRefresh();
+}
 async function walletRefresh() {
   if (!WALLET.provider || !WALLET.account) return;
   byId("wallet-status").textContent = "Connected";
@@ -2442,8 +2448,7 @@ byId("wallet-connect").addEventListener("click", () => safely(walletConnect));
 byId("wallet-refresh").addEventListener("click", () => safely(walletInit));
 byId("wallet-create").addEventListener("click", () => safely(walletCreate));
 byId("wallet-recheck").addEventListener("click", () => safely(walletInit));
-byId("wallet-open").addEventListener("click", () => safely(() => walletOpen("wallet")));
-byId("wallet-settings-open").addEventListener("click", () => safely(() => walletOpen("settings")));
+byId("wallet-panel").addEventListener("click", () => safely(walletPanel));
 byId("wallet-link").addEventListener("click", () => safely(walletLink));
 byId("wallet-save").addEventListener("click", () => safely(walletSaveSettings));
 byId("wallet-chain").addEventListener("change", () => safely(() => walletSwitchChain(byId("wallet-chain").value)));
