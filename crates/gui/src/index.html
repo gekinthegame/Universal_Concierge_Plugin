@@ -112,6 +112,10 @@
   .dep-open { display: inline-flex; align-items: center; gap: 6px; }
   .dep-test-ok { color: var(--synapse); }
   .dep-test-bad { color: var(--vermilion); }
+  .reach-list { margin: 10px 0; padding-left: 20px; }
+  .reach-list li { margin: 0 0 11px; }
+  .reach-list li b { font: 12px var(--mono); color: var(--ink); }
+  .reach-list .eyebrow { margin-top: 3px; }
   /* Concierge Wallet tab (Pillar C) — the UX lives here; the browser holds the keys. */
   .wallet-card { border: 1px solid var(--line); border-radius: 8px; background: var(--deep); padding: 12px 14px; margin: 6px 0 12px; display: flex; flex-direction: column; gap: 9px; }
   .wallet-row { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
@@ -578,6 +582,21 @@
       <div class="modal-card record-card">
         <button id="record-close" class="record-close" title="Close (Esc)" aria-label="Close">✕</button>
         <div id="record" class="content empty">Select a graph node or name to inspect it.</div>
+      </div>
+    </div>
+    <div id="reach-modal" class="modal-overlay record-modal" style="display:none;" role="dialog" aria-label="Make your site reachable">
+      <div class="modal-card">
+        <div style="display:flex;align-items:center;justify-content:space-between;">
+          <div class="modal-title">⚠ Make your site reachable from anywhere</div>
+          <button id="reach-close" class="record-close" title="Close (Esc)" aria-label="Close">✕</button>
+        </div>
+        <div id="reach-status" class="eyebrow"></div>
+        <div id="reach-steps"></div>
+        <div class="modal-actions">
+          <button id="reach-recheck" class="tool-button" style="flex:1;">Recheck</button>
+          <button id="reach-view" class="tool-button">Open published site</button>
+          <button id="reach-ok" class="tool-button">Close</button>
+        </div>
       </div>
     </div>
     <div id="deploy-modal" class="modal-overlay record-modal" style="display:none;" role="dialog" aria-label="Deploy settings">
@@ -2612,15 +2631,15 @@ async function cvPublish(platform = "ipfs") {
     logSystem("studio · live at " + (res.ipns || res.url), "ok");
     if (res.ipns) cv.lastIpns = res.ipns;
     notice("Published. View it now with “Open published site” (served from your node).");
-    // Tell the user honestly whether outsiders can load a shared link.
+    // Tell the user honestly whether outsiders can load a shared link — and if not,
+    // pop up the explicit instructions to fix it.
     try {
       const r = await getJson("/api/publish/reachability");
       if (r.reachable) {
         logSystem("publish · node is publicly reachable — a shared link will load for others", "ok");
       } else {
-        const how = r.relay_only ? "only relay-reachable (unreliable for gateways)" : "NOT publicly reachable";
-        logSystem("publish · node " + how + " — enable UPnP or forward port " + r.swarm_port + " (TCP+UDP)", "warn");
-        notice("Heads up: your node is " + how + ", so a shared link won't reliably load for others yet. Enable UPnP on your router, or port-forward " + r.swarm_port + " (TCP+UDP). (Detection can lag a minute after a node restart.)");
+        logSystem("publish · node " + (r.relay_only ? "relay-only" : "NOT publicly reachable") + " — see the popup to fix", "warn");
+        reachOpen(r);
       }
     } catch (e) {}
   } else {
@@ -2628,6 +2647,47 @@ async function cvPublish(platform = "ipfs") {
   }
   await cvLoadSites();
 }
+
+// ── Reachability instructions popup: shown after publish when a shared link won't
+// reach others (node not publicly reachable). Explicit, do-one-of-these steps. ──
+function reachOpen(r) {
+  const port = (r && r.swarm_port) || 4011;
+  const how = r && r.relay_only ? "only relay-reachable (public gateways often can't dial a relay)" : "not publicly reachable";
+  const status = byId("reach-status"); clear(status);
+  status.appendChild(document.createTextNode(
+    "Your site is published and already works for you (Open published site). But your node is " + how +
+    ", so a link you send to someone else won't reliably load. Do ONE of these, then restart the node and click Recheck:"));
+  const steps = byId("reach-steps"); clear(steps);
+  const ol = node("ol", "reach-list");
+  [
+    ["Enable UPnP on your router — easiest.",
+     "Open your router's admin page (often http://192.168.1.1), find UPnP / NAT-PMP, and turn it on. Then restart the node here. Many routers have this on already."],
+    ["Port-forward port " + port + " — both TCP and UDP — most reliable.",
+     "In your router settings, forward TCP and UDP port " + port + " to this computer's local IP address."],
+    ["Pin to an always-on peer — bulletproof, no router changes.",
+     "Pin the site to a reachable Kubo node (a cheap VPS), a pinning service, or an IPFS Cluster peer — then the link loads regardless of your home node."],
+  ].forEach(([h, d]) => {
+    const li = node("li", "");
+    li.appendChild(node("b", "", h));
+    li.appendChild(node("div", "eyebrow", d));
+    ol.appendChild(li);
+  });
+  steps.appendChild(ol);
+  byId("reach-modal").style.display = "flex";
+}
+function reachClose() { byId("reach-modal").style.display = "none"; }
+async function reachRecheck() {
+  let r; try { r = await getJson("/api/publish/reachability"); } catch (e) { return; }
+  if (r.reachable) { reachClose(); notice("✓ Your node is now publicly reachable — shared links will load for others."); }
+  else { reachOpen(r); notice("Still " + (r.relay_only ? "relay-only" : "not reachable") + " — detection can lag a minute after a node restart."); }
+}
+byId("reach-close").addEventListener("click", reachClose);
+byId("reach-ok").addEventListener("click", reachClose);
+byId("reach-recheck").addEventListener("click", () => safely(reachRecheck));
+byId("reach-view").addEventListener("click", () => byId("cv-open-native").click());
+byId("reach-modal").addEventListener("click", e => { if (e.target === byId("reach-modal")) reachClose(); });
+document.addEventListener("keydown", e => { if (e.key === "Escape" && byId("reach-modal").style.display === "flex") reachClose(); });
+
 // ── AI write-access toggle ──
 async function cvLoadMcp() {
   let s; try { s = await getJson("/api/mcp/status"); } catch (e) { return; }
