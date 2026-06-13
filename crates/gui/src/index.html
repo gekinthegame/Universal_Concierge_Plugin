@@ -718,6 +718,14 @@
             <button id="wallet-refresh" class="tool-button">Refresh</button>
           </div>
         </div>
+        <div class="msg-section">Manage in your wallet</div>
+        <div class="eyebrow">Balances, accounts, base currency, NFTs, auto-lock, networks, and reset all live in your browser's wallet (we can't touch them — same boundary that protects your keys). Open them here.</div>
+        <div class="wallet-card">
+          <div class="modal-actions">
+            <button id="wallet-open" class="tool-button" style="flex:1;">Open full wallet ↗</button>
+            <button id="wallet-settings-open" class="tool-button" style="flex:1;">Wallet settings ↗</button>
+          </div>
+        </div>
         <div class="msg-section">Linked to your identity</div>
         <div class="eyebrow">Sign a message to bind this wallet to your AgentID — a verifiable link, no funds moved. Link several wallets; they all anchor to the same identity.</div>
         <div class="wallet-card">
@@ -2318,12 +2326,17 @@ async function walletConnect() {
   await walletRefresh();
   notice(WALLET.account ? "Wallet connected." : "Wallet setup started — finish it in your browser, then Refresh.");
 }
-async function walletCreate() {
-  // Ask the backend to open the browser's wallet onboarding (brave://wallet).
-  const res = await postJson("/api/wallet/setup", {});
-  if (res.ok) notice("Opening your browser's wallet setup… create your wallet, then click Refresh.");
-  else notice(res.error || "Open your browser's built-in wallet to create one, then Refresh.");
+// Open a browser-wallet page (onboarding or settings) as a small app window via
+// the backend (web pages can't navigate to brave://). target ∈ "wallet"|"settings".
+async function walletOpen(target) {
+  const res = await postJson("/api/wallet/setup", { target: target });
+  if (res.ok) {
+    notice(target === "settings" ? "Opening your wallet settings…" : "Opening your wallet… set it up, then click Refresh.");
+  } else {
+    notice(res.error || "Open your browser's built-in wallet, then Refresh.");
+  }
 }
+function walletCreate() { return walletOpen("wallet"); }
 async function walletRefresh() {
   if (!WALLET.provider || !WALLET.account) return;
   byId("wallet-status").textContent = "Connected";
@@ -2429,6 +2442,8 @@ byId("wallet-connect").addEventListener("click", () => safely(walletConnect));
 byId("wallet-refresh").addEventListener("click", () => safely(walletInit));
 byId("wallet-create").addEventListener("click", () => safely(walletCreate));
 byId("wallet-recheck").addEventListener("click", () => safely(walletInit));
+byId("wallet-open").addEventListener("click", () => safely(() => walletOpen("wallet")));
+byId("wallet-settings-open").addEventListener("click", () => safely(() => walletOpen("settings")));
 byId("wallet-link").addEventListener("click", () => safely(walletLink));
 byId("wallet-save").addEventListener("click", () => safely(walletSaveSettings));
 byId("wallet-chain").addEventListener("change", () => safely(() => walletSwitchChain(byId("wallet-chain").value)));
