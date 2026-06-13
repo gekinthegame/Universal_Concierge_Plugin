@@ -2911,10 +2911,11 @@ fn mutation_wallet_setup(body: &str) -> Response {
                 "settings" => "brave://settings/wallet",
                 _ => "brave://wallet",
             };
-            // Open as a small chromeless app window (like the Concierge), not a tab.
+            // Open in a separate, compact window (not a tab). Brave blocks internal
+            // `brave://` pages in chromeless `--app` mode, so this is a normal window;
+            // --window-size is best-effort (honored when it starts a fresh instance).
             match Command::new(&exe)
-                .arg(format!("--app={url}"))
-                .arg("--window-size=460,800")
+                .args(["--new-window", "--window-size=480,840", url])
                 .spawn()
             {
                 Ok(_) => Response::json(serde_json::json!({ "ok": true }).to_string()),
