@@ -122,6 +122,10 @@
   .wallet-toggle { display: flex; align-items: flex-start; gap: 8px; font: 12px/1.4 var(--mono); color: var(--ink); }
   .wallet-link-row { display: flex; align-items: center; gap: 8px; padding: 5px 0; }
   .wallet-link-row .tool-button { margin-left: auto; }
+  /* Wallet form controls take natural height (the global .input has flex-grow:1,
+     which otherwise stretches the select + cap input to fill the card). */
+  .wallet-field .input, .wallet-field select, .wallet-field textarea { flex: none; width: 100%; box-sizing: border-box; }
+  .wallet-field select { height: 36px; }
   .profile-did { width: 100%; font: 9px var(--mono); color: var(--faint); letter-spacing: .02em; }
   #sites { display: flex; flex-direction: column; gap: 8px; margin-top: 6px; }
   .site-card { display: flex; align-items: center; gap: 12px; padding: 11px 13px; border: 1px solid var(--line); border-radius: 7px; background: var(--deep); }
