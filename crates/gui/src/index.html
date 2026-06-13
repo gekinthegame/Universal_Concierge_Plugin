@@ -2611,7 +2611,18 @@ async function cvPublish(platform = "ipfs") {
   if (res.url) {
     logSystem("studio · live at " + (res.ipns || res.url), "ok");
     if (res.ipns) cv.lastIpns = res.ipns;
-    notice("Published. View it now with “Open published site” (served from your node). Public access via " + res.url + " needs your node reachable + propagated.");
+    notice("Published. View it now with “Open published site” (served from your node).");
+    // Tell the user honestly whether outsiders can load a shared link.
+    try {
+      const r = await getJson("/api/publish/reachability");
+      if (r.reachable) {
+        logSystem("publish · node is publicly reachable — a shared link will load for others", "ok");
+      } else {
+        const how = r.relay_only ? "only relay-reachable (unreliable for gateways)" : "NOT publicly reachable";
+        logSystem("publish · node " + how + " — enable UPnP or forward port " + r.swarm_port + " (TCP+UDP)", "warn");
+        notice("Heads up: your node is " + how + ", so a shared link won't reliably load for others yet. Enable UPnP on your router, or port-forward " + r.swarm_port + " (TCP+UDP). (Detection can lag a minute after a node restart.)");
+      }
+    } catch (e) {}
   } else {
     notice("Publishing initiated for " + platform.toUpperCase() + ". Check your dashboard.");
   }

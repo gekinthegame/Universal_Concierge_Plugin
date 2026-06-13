@@ -324,8 +324,65 @@ fn ensure_public_reachability(repo: &Path) {
     );
     ipfs_set(repo, &["config", "--json", "Swarm.RelayClient.Enabled", "true"]);
     ipfs_set(repo, &["config", "--json", "Swarm.EnableHolePunching", "true"]);
+    // UPnP / NAT-PMP automatic port mapping — the easiest path when the router
+    // supports it (Kubo's default; set explicitly so it's never off).
+    ipfs_set(repo, &["config", "--json", "Swarm.DisableNatPortMap", "false"]);
     // Announce content to the public DHT so providers can be found.
     ipfs_set(repo, &["config", "Routing.Type", "auto"]);
+}
+
+/// Public reachability of the publish node, derived from the addresses it has
+/// observed/mapped (AutoNAT + UPnP/relay). `reachable` = it has at least one public,
+/// directly-dialable address; `relay_only` = only reachable via a relay circuit;
+/// otherwise it's effectively private (a sent link won't load for outsiders).
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct PublicReach {
+    pub reachable: bool,
+    pub relay_only: bool,
+    pub public_addrs: Vec<String>,
+    pub swarm_port: u16,
+}
+
+pub fn public_node_reachability(store_dir: &Path) -> PublicReach {
+    let repo = ipfs_public_repo(store_dir);
+    let mut public_addrs = Vec::new();
+    let mut relay_only = false;
+    if let Ok(out) = ipfs(&repo).args(["id"]).stdin(Stdio::null()).output() {
+        if let Ok(value) =
+            serde_json::from_slice::<serde_json::Value>(&out.stdout)
+        {
+            if let Some(addrs) = value.get("Addresses").and_then(|a| a.as_array()) {
+                for addr in addrs.iter().filter_map(|a| a.as_str()) {
+                    if addr.contains("/p2p-circuit") {
+                        relay_only = true;
+                        continue;
+                    }
+                    if let Some(ip) = multiaddr_ip(addr) {
+                        if !crate::browser::is_blocked_host(&ip) {
+                            public_addrs.push(addr.to_string());
+                        }
+                    }
+                }
+            }
+        }
+    }
+    PublicReach {
+        reachable: !public_addrs.is_empty(),
+        relay_only: public_addrs.is_empty() && relay_only,
+        public_addrs,
+        swarm_port: PUBLIC_SWARM_PORT,
+    }
+}
+
+/// Extract the `/ip4/…` or `/ip6/…` host from a multiaddr.
+fn multiaddr_ip(addr: &str) -> Option<String> {
+    let mut parts = addr.split('/').filter(|s| !s.is_empty());
+    while let Some(proto) = parts.next() {
+        if proto == "ip4" || proto == "ip6" {
+            return parts.next().map(str::to_string);
+        }
+    }
+    None
 }
 
 /// The IPNS key id (`k51…`) for `site`, if a key by that name already exists.
@@ -454,6 +511,12 @@ pub fn public_repo_for(store_dir: &Path) -> PathBuf {
 }
 
 impl MemCli {
+    /// Whether the publish node is reachable from outside the LAN (so a shared link
+    /// loads for others), per its observed/mapped public addresses.
+    pub fn public_reachability(&self) -> Result<PublicReach> {
+        Ok(public_node_reachability(&self.store_dir()?))
+    }
+
     /// The Sidekick-enabled sentinel (persisted consent), under the store.
     fn sidekick_flag_path(&self) -> Result<PathBuf> {
         Ok(self.store_dir()?.join("sidekick-enabled"))

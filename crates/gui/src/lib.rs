@@ -581,6 +581,7 @@ pub fn handle_with_options(
         "/api/meta" => to_response(meta_json(mem, options)),
         "/api/me" => me_response(mem, options),
         "/api/sites" => to_response(sites_json(mem)),
+        "/api/publish/reachability" => to_response(reachability_json(mem)),
         "/api/site/checkpoints" => to_response(site_checkpoints_json(mem)),
         "/api/site/checkpoint" => site_checkpoint_response(mem, query),
         "/api/mcp/status" => to_response(mcp_status_json(mem)),
@@ -2885,6 +2886,13 @@ fn mutation_deploy_test(mem: &MemCli, body: &str) -> Response {
             Response::json(serde_json::json!({ "ok": false, "error": error.to_string() }).to_string())
         }
     }
+}
+
+/// Whether the publish node is reachable from outside the LAN (so shared links load
+/// for others), with its public addresses.
+fn reachability_json(mem: &MemCli) -> CoreResult<String> {
+    serde_json::to_string(&mem.public_reachability()?)
+        .map_err(|e| Error::Io(format!("serialize reachability: {e}")))
 }
 
 /// Pillar A: pull the wallet browser's (Brave/Opera) bookmarks into memory. Returns
