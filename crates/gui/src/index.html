@@ -695,7 +695,7 @@
         <button id="cv-save-ckpt" class="tool-button" title="Snapshot the current draft now — a content-addressed checkpoint you can reopen later (no publish)">💾 Save checkpoint</button>
         <button id="cv-ckpts-btn" class="tool-button" title="Past published versions — reopen any to update (same IPNS address)">⏱ Checkpoints</button>
         <select id="cv-view" class="input" style="max-width:220px;"><option value="">— view a published site —</option></select>
-        <button id="cv-open-native" class="tool-button" title="Open the selected site's ipns:// address natively in Brave (no gateway)" style="display:none;">⟁ Open in Brave</button>
+        <button id="cv-open-native" class="tool-button" title="Open the published site through your own node's local gateway — works without any public gateway">⬈ Open published site</button>
         <button id="cv-edit" class="tool-button" title="Back to live preview">Preview</button>
         <button id="cv-expand" class="tool-button" title="Maximize the preview for testing (Esc to exit)">⛶ Expand</button>
       </div>
@@ -2611,7 +2611,7 @@ async function cvPublish(platform = "ipfs") {
   if (res.url) {
     logSystem("studio · live at " + (res.ipns || res.url), "ok");
     if (res.ipns) cv.lastIpns = res.ipns;
-    notice("Published — live at " + res.url + (res.ipns && cvIsBrave ? "  ·  ⟁ Open in Brave (ipns://) ↗" : ""));
+    notice("Published. View it now with “Open published site” (served from your node). Public access via " + res.url + " needs your node reachable + propagated.");
   } else {
     notice("Publishing initiated for " + platform.toUpperCase() + ". Check your dashboard.");
   }
@@ -2779,13 +2779,14 @@ byId("cv-view").addEventListener("change", () => {
 let cvIsBrave = false;
 (async () => {
   try { cvIsBrave = !!(navigator.brave && await navigator.brave.isBrave()); } catch (e) {}
-  if (cvIsBrave) byId("cv-open-native").style.display = "";
 })();
+// Open the published site through YOUR OWN node's local gateway (it has the content).
+// ipns:// routes Brave to a public gateway that can't find a local-only, NAT'd node.
 byId("cv-open-native").addEventListener("click", () => {
   const ipns = byId("cv-view").value || cv.lastIpns || "";
   if (!ipns) { notice("Publish or select a site first."); return; }
-  window.open("ipns://" + ipns, "_blank");
-  logSystem("studio · opened ipns://" + String(ipns).slice(0, 12) + "… natively in Brave", "ok");
+  window.open("http://127.0.0.1:8090/ipns/" + ipns + "/", "_blank");
+  logSystem("studio · opened " + String(ipns).slice(0, 12) + "… via your node's local gateway", "ok");
 });
 byId("cv-edit").addEventListener("click", () => {
   if (cv.mode === "write") { cvWritePreview(); cvStatus("writing"); }
