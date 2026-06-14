@@ -274,8 +274,22 @@ pub fn launch_public_node(store_dir: &Path) -> Result<()> {
             ));
         }
         // Move off the private node's default ports so both daemons coexist.
-        ipfs_set(&repo, &["config", "Addresses.API", &format!("/ip4/127.0.0.1/tcp/{PUBLIC_API_PORT}")]);
-        ipfs_set(&repo, &["config", "Addresses.Gateway", &format!("/ip4/127.0.0.1/tcp/{PUBLIC_GATEWAY_PORT}")]);
+        ipfs_set(
+            &repo,
+            &[
+                "config",
+                "Addresses.API",
+                &format!("/ip4/127.0.0.1/tcp/{PUBLIC_API_PORT}"),
+            ],
+        );
+        ipfs_set(
+            &repo,
+            &[
+                "config",
+                "Addresses.Gateway",
+                &format!("/ip4/127.0.0.1/tcp/{PUBLIC_GATEWAY_PORT}"),
+            ],
+        );
     }
     if !public_node_running() {
         // Apply reachability config every (re)start so existing repos get upgraded —
@@ -322,11 +336,20 @@ fn ensure_public_reachability(repo: &Path) {
             ),
         ],
     );
-    ipfs_set(repo, &["config", "--json", "Swarm.RelayClient.Enabled", "true"]);
-    ipfs_set(repo, &["config", "--json", "Swarm.EnableHolePunching", "true"]);
+    ipfs_set(
+        repo,
+        &["config", "--json", "Swarm.RelayClient.Enabled", "true"],
+    );
+    ipfs_set(
+        repo,
+        &["config", "--json", "Swarm.EnableHolePunching", "true"],
+    );
     // UPnP / NAT-PMP automatic port mapping — the easiest path when the router
     // supports it (Kubo's default; set explicitly so it's never off).
-    ipfs_set(repo, &["config", "--json", "Swarm.DisableNatPortMap", "false"]);
+    ipfs_set(
+        repo,
+        &["config", "--json", "Swarm.DisableNatPortMap", "false"],
+    );
     // Announce content to the public DHT so providers can be found.
     ipfs_set(repo, &["config", "Routing.Type", "auto"]);
 }
@@ -348,9 +371,7 @@ pub fn public_node_reachability(store_dir: &Path) -> PublicReach {
     let mut public_addrs = Vec::new();
     let mut relay_only = false;
     if let Ok(out) = ipfs(&repo).args(["id"]).stdin(Stdio::null()).output() {
-        if let Ok(value) =
-            serde_json::from_slice::<serde_json::Value>(&out.stdout)
-        {
+        if let Ok(value) = serde_json::from_slice::<serde_json::Value>(&out.stdout) {
             if let Some(addrs) = value.get("Addresses").and_then(|a| a.as_array()) {
                 for addr in addrs.iter().filter_map(|a| a.as_str()) {
                     if addr.contains("/p2p-circuit") {

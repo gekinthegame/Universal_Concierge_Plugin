@@ -36,16 +36,9 @@ jobs:
           done
       - name: Python syntax
         run: python -m compileall -q adapters
-      - name: Embedded GUI JavaScript syntax
+      - name: GUI JavaScript syntax
         run: |
-          node - <<'NODE'
-          const fs = require("fs");
-          const vm = require("vm");
-          const html = fs.readFileSync("crates/gui/src/index.html", "utf8");
-          const scripts = [...html.matchAll(/<script(?:\s[^>]*)?>([\s\S]*?)<\/script>/gi)];
-          for (const [index, match] of scripts.entries()) {
-            new vm.Script(match[1], { filename: `index.html#script-${index + 1}` });
-          }
-          if (scripts.length === 0) throw new Error("no embedded GUI scripts found");
-          NODE
+          node --check crates/gui/src/app.js
+          node --check crates/gui/src/wallet.js
+          node --check crates/gui/src/studio.js
       - run: git diff --check

@@ -22,7 +22,7 @@ pub struct WalletLink {
 
 /// On-device wallet preferences — what the Concierge wallet UX remembers. None of
 /// this is secret (no keys), but it gates the future agent-propose tier.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct WalletSettings {
     /// May the host AI *propose* transactions? Off by default (Brave still confirms).
@@ -33,17 +33,6 @@ pub struct WalletSettings {
     pub allowlist: Vec<String>,
     /// Preferred EVM chain id (hex, e.g. "0x1" = Ethereum mainnet).
     pub preferred_chain: String,
-}
-
-impl Default for WalletSettings {
-    fn default() -> Self {
-        Self {
-            agent_access: false,
-            spend_cap: String::new(),
-            allowlist: Vec::new(),
-            preferred_chain: String::new(),
-        }
-    }
 }
 
 /// A transaction the host AI has *proposed*. It is never sent by us — the GUI
@@ -101,7 +90,8 @@ pub fn recover_eth_personal_sign(message: &str, signature_hex: &str) -> Result<S
     let v = raw[64];
     let rec = if v >= 27 { v - 27 } else { v };
     let recovery_id = RecoveryId::from_byte(rec).ok_or("invalid recovery id")?;
-    let signature = Signature::from_slice(&raw[..64]).map_err(|e| format!("invalid signature: {e}"))?;
+    let signature =
+        Signature::from_slice(&raw[..64]).map_err(|e| format!("invalid signature: {e}"))?;
 
     // EIP-191 personal-sign prefix, then Keccak-256.
     let prefixed = format!("\x19Ethereum Signed Message:\n{}{}", message.len(), message);
@@ -120,7 +110,7 @@ fn hex_encode(bytes: &[u8]) -> String {
 }
 
 fn hex_decode(s: &str) -> Result<Vec<u8>, String> {
-    if s.len() % 2 != 0 {
+    if !s.len().is_multiple_of(2) {
         return Err("hex must have an even length".to_string());
     }
     (0..s.len())
@@ -132,7 +122,7 @@ fn hex_decode(s: &str) -> Result<Vec<u8>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use k256::ecdsa::{SigningKey, RecoveryId, Signature};
+    use k256::ecdsa::{RecoveryId, Signature, SigningKey};
     use sha3::{Digest, Keccak256};
 
     fn address_of(key: &SigningKey) -> String {
@@ -149,8 +139,7 @@ mod tests {
         let message = "deadbeefAGENTID";
         let prefixed = format!("\x19Ethereum Signed Message:\n{}{}", message.len(), message);
         let digest = Keccak256::new_with_prefix(prefixed.as_bytes());
-        let (sig, recid): (Signature, RecoveryId) =
-            key.sign_digest_recoverable(digest).unwrap();
+        let (sig, recid): (Signature, RecoveryId) = key.sign_digest_recoverable(digest).unwrap();
         let mut raw = sig.to_bytes().to_vec();
         raw.push(recid.to_byte() + 27);
         let recovered = recover_eth_personal_sign(message, &hex_encode(&raw)).unwrap();

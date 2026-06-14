@@ -458,8 +458,7 @@ pub fn verify(platform: &str, creds: &DeployCredentials) -> Result<String, Strin
                 "vercel sign-in",
             )?;
             let u = me.get("user").unwrap_or(&me);
-            Ok(u
-                .get("username")
+            Ok(u.get("username")
                 .or_else(|| u.get("name"))
                 .or_else(|| u.get("email"))
                 .and_then(|s| s.as_str())
@@ -467,11 +466,17 @@ pub fn verify(platform: &str, creds: &DeployCredentials) -> Result<String, Strin
                 .to_string())
         }
         "cloudflare" => {
-            let c = creds.cloudflare.as_ref().ok_or("no Cloudflare credentials")?;
-            let api =
-                base("CONCIERGE_DEPLOY_CLOUDFLARE_BASE", "https://api.cloudflare.com/client/v4");
+            let c = creds
+                .cloudflare
+                .as_ref()
+                .ok_or("no Cloudflare credentials")?;
+            let api = base(
+                "CONCIERGE_DEPLOY_CLOUDFLARE_BASE",
+                "https://api.cloudflare.com/client/v4",
+            );
             let v = ok_json(
-                cl.get(format!("{api}/user/tokens/verify")).bearer_auth(&c.token),
+                cl.get(format!("{api}/user/tokens/verify"))
+                    .bearer_auth(&c.token),
                 "cloudflare token",
             )?;
             let status = v

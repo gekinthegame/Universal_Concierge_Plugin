@@ -134,7 +134,11 @@ fn walk(node: &BNode, folder: &str, out: &mut Vec<Bookmark>, seen: &mut HashSet<
             if !url.is_empty() && seen.insert(url.clone()) {
                 out.push(Bookmark {
                     url: url.clone(),
-                    title: if node.name.is_empty() { url.clone() } else { node.name.clone() },
+                    title: if node.name.is_empty() {
+                        url.clone()
+                    } else {
+                        node.name.clone()
+                    },
                     folder: folder.to_string(),
                     added_unix: node
                         .date_added
@@ -146,7 +150,11 @@ fn walk(node: &BNode, folder: &str, out: &mut Vec<Bookmark>, seen: &mut HashSet<
         }
     }
     for child in &node.children {
-        let next = if child.node_type == "folder" { child.name.as_str() } else { folder };
+        let next = if child.node_type == "folder" {
+            child.name.as_str()
+        } else {
+            folder
+        };
         walk(child, next, out, seen);
     }
 }
@@ -169,9 +177,15 @@ pub fn read_bookmarks() -> Vec<Bookmark> {
     let mut out = Vec::new();
     let mut seen = HashSet::new();
     for browser in [Browser::Brave, Browser::Opera] {
-        let Some(path) = bookmarks_file(browser) else { continue };
-        let Ok(json) = std::fs::read_to_string(&path) else { continue };
-        let Ok(marks) = parse_bookmarks(&json) else { continue };
+        let Some(path) = bookmarks_file(browser) else {
+            continue;
+        };
+        let Ok(json) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let Ok(marks) = parse_bookmarks(&json) else {
+            continue;
+        };
         for m in marks {
             if seen.insert(m.url.clone()) {
                 out.push(m);
@@ -191,17 +205,26 @@ const BROWSE_MAX_CHARS: usize = 8000;
 
 /// True if `host` is a local/private/loopback target the agent must not reach.
 pub(crate) fn is_blocked_host(host: &str) -> bool {
-    let host = host.trim().trim_start_matches('[').trim_end_matches(']').to_lowercase();
+    let host = host
+        .trim()
+        .trim_start_matches('[')
+        .trim_end_matches(']')
+        .to_lowercase();
     if host.is_empty() || host == "localhost" || host.ends_with(".localhost") {
         return true;
     }
     if let Ok(ip) = host.parse::<std::net::IpAddr>() {
         return match ip {
             std::net::IpAddr::V4(v4) => {
-                v4.is_loopback() || v4.is_private() || v4.is_link_local() || v4.is_unspecified()
+                v4.is_loopback()
+                    || v4.is_private()
+                    || v4.is_link_local()
+                    || v4.is_unspecified()
                     || v4.octets()[0] == 0
             }
-            std::net::IpAddr::V6(v6) => v6.is_loopback() || v6.is_unspecified() || v6.is_unique_local(),
+            std::net::IpAddr::V6(v6) => {
+                v6.is_loopback() || v6.is_unspecified() || v6.is_unique_local()
+            }
         };
     }
     false
@@ -247,16 +270,28 @@ pub fn fetch_readable(url: &str) -> Result<String, String> {
 pub fn extract_text(html: &str) -> String {
     let title = regex::Regex::new(r"(?is)<title[^>]*>(.*?)</title>")
         .ok()
-        .and_then(|re| re.captures(html).map(|c| collapse_ws(&decode_entities(&c[1]))))
+        .and_then(|re| {
+            re.captures(html)
+                .map(|c| collapse_ws(&decode_entities(&c[1])))
+        })
         .unwrap_or_default();
-    let no_scripts = regex::Regex::new(r"(?is)<(script|style|noscript|template)[^>]*>.*?</(script|style|noscript|template)>")
-        .map(|re| re.replace_all(html, " ").into_owned())
-        .unwrap_or_else(|_| html.to_string());
+    let no_scripts = regex::Regex::new(
+        r"(?is)<(script|style|noscript|template)[^>]*>.*?</(script|style|noscript|template)>",
+    )
+    .map(|re| re.replace_all(html, " ").into_owned())
+    .unwrap_or_else(|_| html.to_string());
     let no_tags = regex::Regex::new(r"(?is)<[^>]+>")
         .map(|re| re.replace_all(&no_scripts, " ").into_owned())
         .unwrap_or(no_scripts);
-    let body: String = collapse_ws(&decode_entities(&no_tags)).chars().take(BROWSE_MAX_CHARS).collect();
-    if title.is_empty() { body } else { format!("{title}\n\n{body}") }
+    let body: String = collapse_ws(&decode_entities(&no_tags))
+        .chars()
+        .take(BROWSE_MAX_CHARS)
+        .collect();
+    if title.is_empty() {
+        body
+    } else {
+        format!("{title}\n\n{body}")
+    }
 }
 
 fn decode_entities(s: &str) -> String {
@@ -302,14 +337,25 @@ mod tests {
         assert!(urls.contains(&"https://libp2p.io"));
         assert!(urls.contains(&"https://example.com"));
         // The duplicate URL appears once.
-        assert_eq!(urls.iter().filter(|u| **u == "https://ipfs.tech/paper").count(), 1);
+        assert_eq!(
+            urls.iter()
+                .filter(|u| **u == "https://ipfs.tech/paper")
+                .count(),
+            1
+        );
         // Folder is tracked; empty title falls back to the URL.
         let libp2p = marks.iter().find(|m| m.url == "https://libp2p.io").unwrap();
         assert_eq!(libp2p.folder, "Research");
-        let ex = marks.iter().find(|m| m.url == "https://example.com").unwrap();
+        let ex = marks
+            .iter()
+            .find(|m| m.url == "https://example.com")
+            .unwrap();
         assert_eq!(ex.title, "https://example.com");
         // Chromium timestamp converts into a sane unix range (the 2020s).
-        let paper = marks.iter().find(|m| m.url == "https://ipfs.tech/paper").unwrap();
+        let paper = marks
+            .iter()
+            .find(|m| m.url == "https://ipfs.tech/paper")
+            .unwrap();
         assert!(paper.added_unix > 1_600_000_000);
     }
 
@@ -345,7 +391,16 @@ mod tests {
 
     #[test]
     fn ssrf_guard_blocks_local_and_private_hosts() {
-        for h in ["localhost", "127.0.0.1", "0.0.0.0", "10.0.0.5", "192.168.1.1", "172.16.0.1", "169.254.1.1", "::1"] {
+        for h in [
+            "localhost",
+            "127.0.0.1",
+            "0.0.0.0",
+            "10.0.0.5",
+            "192.168.1.1",
+            "172.16.0.1",
+            "169.254.1.1",
+            "::1",
+        ] {
             assert!(is_blocked_host(h), "{h} must be blocked");
         }
         for h in ["example.com", "ipfs.tech", "8.8.8.8", "1.1.1.1"] {

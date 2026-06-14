@@ -1,0 +1,1575 @@
+use super::*;
+use concierge_core::{cid_link, Node};
+use concierge_net::content_message_id;
+
+pub(super) fn handle_mutation(
+    mem: &MemCli,
+    options: &GuiOptions,
+    path: &str,
+    body: &str,
+) -> Response {
+    let response = match path {
+        "/api/ingest" => mutation_ingest(mem, options, body),
+        "/api/ingest-path" => mutation_ingest_path(mem, body),
+        "/api/lock" => mutation_lock(mem, body),
+        "/api/unlock" => mutation_unlock(mem, body),
+        "/api/clear-for-egress" => mutation_clear_for_egress(mem, body),
+        "/api/refence" => mutation_refence(mem, body),
+        "/api/claude-code/attach" => mutation_claude_code_attach(mem, true),
+        "/api/claude-code/detach" => mutation_claude_code_attach(mem, false),
+        "/api/sidekick/enable" => mutation_sidekick(mem, true),
+        "/api/sidekick/disable" => mutation_sidekick(mem, false),
+        "/api/set-password" => mutation_set_password(mem, body),
+        "/api/authorize-publish" => mutation_authorize_publish(mem, options, body),
+        "/api/convert-private" => mutation_convert_private(mem, options, body),
+        "/api/message" => mutation_post_message(mem, options, body),
+        "/api/site/deploy-plan" => mutation_site_deploy_plan(mem, options, body),
+        "/api/site/publish" => mutation_publish_site(mem, options, body),
+        "/api/site/checkpoint/save" => mutation_save_checkpoint(mem, body),
+        "/api/deploy/credentials" => mutation_deploy_credentials(mem, body),
+        "/api/deploy/test" => mutation_deploy_test(mem, body),
+        "/api/bookmarks/sync" => mutation_bookmarks_sync(mem),
+        "/api/wallet/setup" => mutation_wallet_setup(body),
+        "/api/wallet/link" => mutation_wallet_link(mem, body),
+        "/api/wallet/unlink" => mutation_wallet_unlink(mem, body),
+        "/api/wallet/settings" => mutation_wallet_settings(mem, body),
+        "/api/wallet/proposals/resolve" => mutation_wallet_resolve(mem, body),
+        "/api/mcp/write" => mutation_mcp_write(mem, body),
+        "/api/canvas/open" => mutation_canvas_open(options, body),
+        "/api/canvas/signal" => mutation_canvas_signal(mem, options, body),
+        "/api/canvas/snapshot" => mutation_canvas_snapshot(mem, body),
+        "/api/requests/accept" => mutation_request_decision(mem, body, true),
+        "/api/requests/decline" => mutation_request_decision(mem, body, false),
+        "/api/contacts/remove" => mutation_contact_remove(mem, body),
+        "/api/petname" => mutation_petname(mem, body),
+        "/api/profile" => mutation_profile(mem, body),
+        "/api/compact" => mutation_compact(mem, options),
+        "/api/network/create" => mutation_network_create(mem, body),
+        "/api/network/revoke" => mutation_network_revoke(mem, body),
+        "/api/network/rotate" => mutation_network_rotate(mem, body),
+        _ => Response::not_found(),
+    };
+    // Surface every action in the System Console so the user sees what the concierge
+    // does. Noisy/secret paths are handled by their own handlers (chat, search) or
+    // skipped here (live-canvas WebRTC signalling fires many times a second).
+    if let Some(label) = mutation_label(path) {
+        if response.status < 400 {
+            options.log("ok", label.to_string());
+        } else {
+            options.log("wn", format!("{label} — declined ({})", response.status));
+        }
+    }
+    response
+}
+
+/// A human label for the System Console, or `None` to keep an action off the feed
+/// (high-frequency signalling, or paths whose own handler already logs richer detail).
+fn mutation_label(path: &str) -> Option<&'static str> {
+    Some(match path {
+        "/api/ingest" => "ingested host-neutral events",
+        "/api/ingest-path" => "ingested a file of events",
+        "/api/lock" => "locked a node from egress",
+        "/api/unlock" => "unlocked a node",
+        "/api/clear-for-egress" => "cleared a node for egress (password-gated)",
+        "/api/refence" => "re-fenced a node",
+        "/api/claude-code/attach" => "attached the Claude Code adapter",
+        "/api/claude-code/detach" => "detached the Claude Code adapter",
+        "/api/sidekick/enable" => "enabling Sidekick (private Kubo node + on-node embedder)",
+        "/api/sidekick/disable" => "disabled Sidekick",
+        "/api/set-password" => "set the store password",
+        "/api/authorize-publish" => "authorized a public publish (egress)",
+        "/api/convert-private" => "converted a node to private (encrypted)",
+        "/api/site/publish" => "published a website",
+        "/api/site/checkpoint/save" => "saved a Studio checkpoint",
+        "/api/deploy/credentials" => "saved deploy credentials (0600, on-device)",
+        "/api/deploy/test" => "tested a publishing connection",
+        "/api/bookmarks/sync" => "synced wallet-browser bookmarks into memory",
+        "/api/wallet/setup" => "opened the browser's wallet setup",
+        "/api/wallet/link" => "linked a wallet to your AgentID",
+        "/api/wallet/unlink" => "unlinked a wallet",
+        "/api/wallet/settings" => "updated wallet settings",
+        "/api/wallet/proposals/resolve" => "resolved an AI transaction proposal",
+        "/api/mcp/write" => "toggled MCP write tools",
+        "/api/canvas/snapshot" => "snapshotted the canvas",
+        "/api/requests/accept" => "accepted a contact request",
+        "/api/requests/decline" => "declined a contact request",
+        "/api/contacts/remove" => "removed an approved peer",
+        "/api/petname" => "set a petname",
+        "/api/profile" => "updated your contact card",
+        "/api/network/create" => "created a network / certificate",
+        "/api/network/revoke" => "revoked network access",
+        "/api/network/rotate" => "rotated a capability key",
+        // /api/message logs its own delivered/queued line; /api/canvas/* signalling is too noisy.
+        _ => return None,
+    })
+}
+
+/// Rotate a private graph's capability key (Phase N · Phase G) after a revocation,
+/// so the revoked holder's old key cannot decrypt the re-rooted ciphertext. Password
+/// travels in the loopback body (same pattern as convert-private), never the URL.
+fn mutation_network_rotate(mem: &MemCli, body: &str) -> Response {
+    let value = match parse_body(body) {
+        Ok(value) => value,
+        Err(response) => return response,
+    };
+    let ciphertext_root = match body_str(&value, "ciphertext_root") {
+        Ok(root) => root,
+        Err(response) => return response,
+    };
+    let password = match body_str(&value, "password") {
+        Ok(pw) => pw,
+        Err(response) => return response,
+    };
+    match mem.rotate_private_capability(ciphertext_root, password) {
+        Ok(result) => Response::json(
+            serde_json::json!({
+                "old_ciphertext_root": result.old_ciphertext_root,
+                "new_ciphertext_root": result.new_ciphertext_root,
+                "capability_epoch": result.capability_epoch,
+                "block_count": result.block_count,
+            })
+            .to_string(),
+        ),
+        Err(error) => Response::error(error.to_string()),
+    }
+}
+
+/// Post a direct private chat message into a local room thread (RoomBook). The
+/// message is authored locally and appended to the room; the client re-fetches the
+/// thread via `/api/thread`. Bodies travel in the loopback POST body, never the URL.
+fn mutation_post_message(mem: &MemCli, options: &GuiOptions, body: &str) -> Response {
+    let value = match parse_body(body) {
+        Ok(value) => value,
+        Err(response) => return response,
+    };
+    let room = match body_str(&value, "room") {
+        Ok(room) => room.trim(),
+        Err(response) => return response,
+    };
+    let text = match body_str(&value, "body") {
+        Ok(text) => text.trim(),
+        Err(response) => return response,
+    };
+    if room.is_empty() || text.is_empty() {
+        return Response::bad_request("recipient and message are required");
+    }
+    // A 64-hex "to" is a username (a direct message); anything else is a room name
+    // (a group thread). Direct messages are stored under a shared dm-room id and
+    // delivered to the recipient's personal inbox topic.
+    if looks_like_username(room) {
+        let me = match mem.identity() {
+            Ok(identity) => identity.agent_id().0,
+            Err(error) => return Response::error(error.to_string()),
+        };
+        if room == me {
+            return Response::bad_request("cannot send a direct message to yourself");
+        }
+        let dm_room = dm_room_id(&me, room);
+        let cid = match mem.post_message(&dm_room, text) {
+            Ok(cid) => cid,
+            Err(error) => return Response::error(error.to_string()),
+        };
+        // Initiating a conversation implies trust: approve the recipient so their
+        // replies are accepted into the thread (not held as a request).
+        let _ = mem.add_contact(room);
+        let delivered = deliver_to_user(mem, options, room, &cid);
+        return Response::json(
+            serde_json::json!({
+                "ok": true, "room": dm_room, "cid": cid.0,
+                "delivered": delivered, "direct": true,
+            })
+            .to_string(),
+        );
+    }
+    let cid = match mem.post_message(room, text) {
+        Ok(cid) => cid,
+        Err(error) => return Response::error(error.to_string()),
+    };
+    // Group room: publish the signed envelope to the room's gossipsub topic.
+    let delivered = deliver_message(mem, options, room, &cid);
+    Response::json(
+        serde_json::json!({ "ok": true, "room": room, "cid": cid.0, "delivered": delivered })
+            .to_string(),
+    )
+}
+
+/// Deliver a direct message to a username: ensure the node is up, locate the peer
+/// globally via the DHT (mDNS covers the LAN), and publish the signed envelope to
+/// the recipient's inbox topic. Best-effort — if the peer is offline/unreachable
+/// the message is still recorded locally (store-and-forward is a later stage).
+fn deliver_to_user(mem: &MemCli, options: &GuiOptions, target_username: &str, cid: &Cid) -> bool {
+    if let Err(error) = ensure_chat_node(mem, options) {
+        eprintln!("chat node unavailable: {error}");
+        return false;
+    }
+    let Ok(env) = mem.read_message(cid) else {
+        return false;
+    };
+    let Ok(bytes) = serde_json::to_string(&env) else {
+        return false;
+    };
+    let Some(peer) = peer_id_from_ed25519_hex(target_username) else {
+        return false;
+    };
+    // Queue for store-and-forward retry: if the peer is offline now, the retry
+    // loop re-sends until they ack (the ack clears the entry). Keyed by the same
+    // content id the transport reports back on delivery.
+    let bytes = bytes.into_bytes();
+    let message_id = content_message_id(&bytes);
+    let _ = mem.queue_outbound(
+        &message_id,
+        target_username,
+        &String::from_utf8_lossy(&bytes),
+    );
+    if let Ok(guard) = options.chat.lock() {
+        if let Some(chat) = guard.as_ref() {
+            // Locate the peer (DHT for global; mDNS already covers the LAN), then
+            // deliver point-to-point over the concierge-only protocol.
+            let _ = chat.node.find_peer(peer);
+            return chat.node.send_dm(peer, bytes).is_ok();
+        }
+    }
+    false
+}
+
+/// `/api/mcp/status`: whether the host AI's MCP write tools are enabled (the GUI
+/// toggle). Read-only by default (Decision 0028).
+pub(super) fn mcp_status_json(mem: &MemCli) -> CoreResult<String> {
+    Ok(serde_json::json!({ "write_enabled": mem.mcp_write_enabled() }).to_string())
+}
+
+/// `POST /api/mcp/write`: flip the MCP write-tools toggle. The MCP server re-reads
+/// this per request, so it takes effect on the AI's next tool call.
+fn mutation_mcp_write(mem: &MemCli, body: &str) -> Response {
+    let value = match parse_body(body) {
+        Ok(value) => value,
+        Err(response) => return response,
+    };
+    let enabled = value
+        .get("enabled")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    match mem.set_mcp_write_enabled(enabled) {
+        Ok(()) => {
+            Response::json(serde_json::json!({ "ok": true, "write_enabled": enabled }).to_string())
+        }
+        Err(error) => Response::error(error.to_string()),
+    }
+}
+
+/// `/api/sites`: the user's published websites (the Planet Pattern registry).
+pub(super) fn sites_json(mem: &MemCli) -> CoreResult<String> {
+    let sites: Vec<serde_json::Value> = mem
+        .site_list()?
+        .into_iter()
+        .map(|site| {
+            serde_json::json!({
+                "name": site.name,
+                "ipns": site.ipns,
+                "dir": site.dir,
+                "last_cid": site.last_cid,
+                "published_at": site.published_at,
+                "url": format!("https://ipfs.io/ipns/{}", site.ipns),
+            })
+        })
+        .collect();
+    Ok(serde_json::json!({
+        "sites": sites,
+        "kubo_installed": concierge_core::kubo_installed(),
+    })
+    .to_string())
+}
+
+/// A site name is also the public Kubo IPNS key name — keep it to safe characters.
+pub(super) fn valid_site_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 64
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.'))
+}
+
+/// `/api/site/publish`: publish (or update) a folder as a website. Password-gated
+/// egress (the password travels in the loopback body, never the URL). Publishing
+/// is the deliberate act; the AI only *staged* the folder.
+/// Non-secret deploy-credential status (which platforms are configured + their
+/// public fields). Tokens/passwords are NEVER serialized to the GUI.
+pub(super) fn deploy_status_json(mem: &MemCli) -> CoreResult<String> {
+    Ok(mem.deploy_status()?.to_string())
+}
+
+/// Store (or clear) the credentials for one external host. The token/password
+/// stays on-device (0600); only `{platform, fields}` comes in. Sending `fields:
+/// null` clears that platform.
+fn mutation_deploy_credentials(mem: &MemCli, body: &str) -> Response {
+    let value = match parse_body(body) {
+        Ok(value) => value,
+        Err(response) => return response,
+    };
+    let platform = match body_str(&value, "platform") {
+        Ok(p) => p.trim(),
+        Err(response) => return response,
+    };
+    let fields = value
+        .get("fields")
+        .cloned()
+        .unwrap_or(serde_json::Value::Null);
+    match mem.set_deploy_credentials(platform, &fields.to_string()) {
+        Ok(()) => Response::json(serde_json::json!({ "ok": true }).to_string()),
+        Err(error) => Response::error(error.to_string()),
+    }
+}
+
+/// "Test connection" in the connect walk-through: verify a platform's token live
+/// against its API. Tests unsaved `fields` if given, else the stored credentials.
+/// Always 200 — the pass/fail + account/error is data the modal renders inline.
+fn mutation_deploy_test(mem: &MemCli, body: &str) -> Response {
+    let value = match parse_body(body) {
+        Ok(value) => value,
+        Err(response) => return response,
+    };
+    let platform = match body_str(&value, "platform") {
+        Ok(p) => p.trim().to_string(),
+        Err(response) => return response,
+    };
+    let fields = value
+        .get("fields")
+        .filter(|v| !v.is_null())
+        .map(|v| v.to_string());
+    match mem.verify_deploy_credentials(&platform, fields.as_deref()) {
+        Ok(account) => {
+            Response::json(serde_json::json!({ "ok": true, "account": account }).to_string())
+        }
+        Err(error) => Response::json(
+            serde_json::json!({ "ok": false, "error": error.to_string() }).to_string(),
+        ),
+    }
+}
+
+/// Whether the publish node is reachable from outside the LAN (so shared links load
+/// for others), with its public addresses.
+pub(super) fn reachability_json(mem: &MemCli) -> CoreResult<String> {
+    serde_json::to_string(&mem.public_reachability()?)
+        .map_err(|e| Error::Io(format!("serialize reachability: {e}")))
+}
+
+/// Pillar A: pull the wallet browser's (Brave/Opera) bookmarks into memory. Returns
+/// how many *new* bookmarks were ingested (deduped by URL).
+fn mutation_bookmarks_sync(mem: &MemCli) -> Response {
+    match mem.sync_browser_bookmarks() {
+        Ok(added) => Response::json(serde_json::json!({ "ok": true, "added": added }).to_string()),
+        Err(error) => Response::error(error.to_string()),
+    }
+}
+
+/// Open one of the wallet browser's internal pages from the Concierge — wallet
+/// onboarding (`brave://wallet`) or the full wallet settings
+/// (`brave://settings/wallet`). Web pages can't navigate to `brave://`, so the
+/// Concierge process launches it. `target` ∈ {"wallet","settings"} (default wallet).
+fn mutation_wallet_setup(body: &str) -> Response {
+    let target = parse_body(body)
+        .ok()
+        .and_then(|v| v.get("target").and_then(|t| t.as_str()).map(str::to_string))
+        .unwrap_or_else(|| "wallet".to_string());
+    match wallet_browser() {
+        Some((WalletBrowser::Brave, exe)) => {
+            let url = match target.as_str() {
+                "settings" => "brave://settings/wallet",
+                _ => "brave://wallet",
+            };
+            // Open in a separate, compact window (not a tab). Brave blocks internal
+            // `brave://` pages in chromeless `--app` mode, so this is a normal window;
+            // --window-size is best-effort (honored when it starts a fresh instance).
+            match Command::new(&exe)
+                .args(["--new-window", "--window-size=480,840", url])
+                .spawn()
+            {
+                Ok(_) => Response::json(serde_json::json!({ "ok": true }).to_string()),
+                Err(error) => Response::json(
+                    serde_json::json!({ "ok": false, "error": format!("could not open Brave: {error}") }).to_string(),
+                ),
+            }
+        }
+        Some((WalletBrowser::Opera, _)) => Response::json(
+            serde_json::json!({ "ok": false, "error": "In Opera, open the Crypto Wallet from the sidebar." }).to_string(),
+        ),
+        None => Response::json(
+            serde_json::json!({ "ok": false, "error": "No wallet browser detected — open the Concierge in Brave or Opera." }).to_string(),
+        ),
+    }
+}
+
+/// Wallet state for the Concierge Wallet tab — verified links + on-device settings.
+/// No keys (the browser holds those); links are public attestations.
+pub(super) fn wallet_json(mem: &MemCli) -> CoreResult<String> {
+    serde_json::to_string(&mem.wallet_state()?)
+        .map_err(|e| Error::Io(format!("serialize wallet state: {e}")))
+}
+
+/// Record a verified `WalletLink`: the browser wallet signed our AgentID; we recover
+/// the signer and confirm it matches the claimed address.
+fn mutation_wallet_link(mem: &MemCli, body: &str) -> Response {
+    let value = match parse_body(body) {
+        Ok(value) => value,
+        Err(response) => return response,
+    };
+    let address = match body_str(&value, "address") {
+        Ok(a) => a.trim().to_string(),
+        Err(response) => return response,
+    };
+    let signature = match body_str(&value, "signature") {
+        Ok(s) => s.trim().to_string(),
+        Err(response) => return response,
+    };
+    let chain = value.get("chain").and_then(|v| v.as_str()).unwrap_or("evm");
+    match mem.link_wallet(&address, chain, &signature) {
+        Ok(link) => Response::json(
+            serde_json::json!({ "ok": true, "address": link.address, "chain": link.chain })
+                .to_string(),
+        ),
+        Err(error) => Response::error(error.to_string()),
+    }
+}
+
+fn mutation_wallet_unlink(mem: &MemCli, body: &str) -> Response {
+    let value = match parse_body(body) {
+        Ok(value) => value,
+        Err(response) => return response,
+    };
+    let address = match body_str(&value, "address") {
+        Ok(a) => a.trim().to_string(),
+        Err(response) => return response,
+    };
+    match mem.unlink_wallet(&address) {
+        Ok(()) => Response::json(serde_json::json!({ "ok": true }).to_string()),
+        Err(error) => Response::error(error.to_string()),
+    }
+}
+
+/// Persist the wallet settings (agent_access / spend_cap / allowlist / preferred_chain).
+fn mutation_wallet_settings(mem: &MemCli, body: &str) -> Response {
+    // The body *is* the settings object; WalletSettings is `#[serde(default)]`.
+    match mem.set_wallet_settings(body) {
+        Ok(()) => Response::json(serde_json::json!({ "ok": true }).to_string()),
+        Err(error) => Response::error(error.to_string()),
+    }
+}
+
+/// Pending AI transaction proposals for the Wallet tab to surface for approval.
+pub(super) fn wallet_proposals_json(mem: &MemCli) -> CoreResult<String> {
+    serde_json::to_string(&mem.pending_wallet_proposals()?)
+        .map_err(|e| Error::Io(format!("serialize proposals: {e}")))
+}
+
+/// Record the user's decision on a proposal ("approved" + tx hash, or "rejected").
+fn mutation_wallet_resolve(mem: &MemCli, body: &str) -> Response {
+    let value = match parse_body(body) {
+        Ok(value) => value,
+        Err(response) => return response,
+    };
+    let id = match body_str(&value, "id") {
+        Ok(id) => id.trim().to_string(),
+        Err(response) => return response,
+    };
+    let status = value
+        .get("status")
+        .and_then(|v| v.as_str())
+        .unwrap_or("rejected");
+    let tx_hash = value.get("tx_hash").and_then(|v| v.as_str()).unwrap_or("");
+    match mem.resolve_wallet_proposal(&id, status, tx_hash) {
+        Ok(()) => Response::json(serde_json::json!({ "ok": true }).to_string()),
+        Err(error) => Response::error(error.to_string()),
+    }
+}
+
+fn site_deploy_fields(value: &serde_json::Value) -> Result<(&str, &str, &str, &str), Response> {
+    let name = body_str(value, "name")?.trim();
+    let folder = body_str(value, "folder")?.trim();
+    let kind = value
+        .get("kind")
+        .and_then(|item| item.as_str())
+        .unwrap_or("site");
+    let platform = value
+        .get("platform")
+        .and_then(|item| item.as_str())
+        .unwrap_or("ipfs");
+    if !valid_site_name(name) {
+        return Err(Response::bad_request(
+            "site name must be letters, digits, - _ . (max 64)",
+        ));
+    }
+    if folder.is_empty() {
+        return Err(Response::bad_request("a folder path is required"));
+    }
+    Ok((name, folder, kind, platform))
+}
+
+fn mutation_site_deploy_plan(mem: &MemCli, options: &GuiOptions, body: &str) -> Response {
+    let value = match parse_body(body) {
+        Ok(value) => value,
+        Err(response) => return response,
+    };
+    let (name, folder, kind, platform) = match site_deploy_fields(&value) {
+        Ok(fields) => fields,
+        Err(response) => return response,
+    };
+    match mem.review_site_deploy(name, folder, kind, platform) {
+        Ok(plan) => match options.cache_site_deploy_review(plan.clone()) {
+            Ok(review_token) => Response::json(
+                serde_json::json!({ "review_token": review_token, "plan": plan }).to_string(),
+            ),
+            Err(error) => Response::error(error.to_string()),
+        },
+        Err(error) => Response::error(error.to_string()),
+    }
+}
+
+fn mutation_publish_site(mem: &MemCli, options: &GuiOptions, body: &str) -> Response {
+    let value = match parse_body(body) {
+        Ok(value) => value,
+        Err(response) => return response,
+    };
+    let password = match body_str(&value, "password") {
+        Ok(password) => password,
+        Err(response) => return response,
+    };
+    let review_token = match body_str(&value, "review_token") {
+        Ok(token) => token,
+        Err(response) => return response,
+    };
+    let Some(reviewed) = options.reviewed_site_deploy(review_token) else {
+        return Response::bad_request("deployment review token is missing or expired");
+    };
+    match mem.publish_site(&reviewed, password) {
+        Ok(receipt) => {
+            options.discard_review(review_token);
+            // Snapshot this published version so the user can re-open it to update.
+            let checkpoint_warning = record_site_checkpoint(
+                mem,
+                &reviewed.name,
+                &reviewed.folder,
+                receipt.ipns_name.as_deref(),
+                &receipt.root,
+                &receipt.gateway_url,
+            )
+            .err()
+            .map(|error| error.to_string());
+            Response::json(
+                serde_json::json!({
+                    "ok": true,
+                    "name": receipt.site_name,
+                    "ipns": receipt.ipns_name,
+                    "cid": receipt.root,
+                    "url": receipt.gateway_url,
+                    "checkpoint_warning": checkpoint_warning,
+                })
+                .to_string(),
+            )
+        }
+        Err(error) => Response::error(error.to_string()),
+    }
+}
+
+/// `/api/site/checkpoint/save`: snapshot the current Studio draft as a checkpoint
+/// at any time — no publish, no egress. Content-addresses the HTML (a real CID, in
+/// Records), and stores a reopen-to-edit snapshot in the Studio checkpoint list.
+/// Accepts `{name, html}` (Write mode) or `{name, folder}` (folder/preview mode).
+pub(super) fn requests_json(mem: &MemCli) -> CoreResult<String> {
+    let items: Vec<serde_json::Value> = mem
+        .message_requests()?
+        .into_iter()
+        .map(|(username, count, preview)| {
+            serde_json::json!({ "username": username, "count": count, "preview": preview })
+        })
+        .collect();
+    Ok(serde_json::json!({ "requests": items }).to_string())
+}
+
+/// The approved peers — usernames whose direct messages we accept. Surfaced in the
+/// Messenger tab so the user can see (and revoke) who can reach them. Each carries
+/// the deterministic 1:1 thread id so the UI can open the conversation directly.
+pub(super) fn contacts_json(mem: &MemCli) -> CoreResult<String> {
+    let me = mem.identity().map(|id| id.agent_id().0).unwrap_or_default();
+    let items: Vec<serde_json::Value> = mem
+        .approved_contacts()?
+        .into_iter()
+        .map(|username| {
+            let room = if me.is_empty() {
+                String::new()
+            } else {
+                dm_room_id(&me, &username)
+            };
+            // Sovereign naming (Layers 1+2): resolve a display name + provenance.
+            let resolved = mem.resolve_display(&username);
+            let card = mem.card_of(&username).ok().flatten();
+            serde_json::json!({
+                "username": username,
+                "room": room,
+                "name": resolved.text,
+                "name_source": resolved.source,
+                "verified": resolved.verified,
+                "avatar": card.as_ref().and_then(|c| c.avatar.clone()),
+                "site_ipns": card.as_ref().and_then(|c| c.site_ipns.clone()),
+            })
+        })
+        .collect();
+    Ok(serde_json::json!({ "contacts": items }).to_string())
+}
+
+/// `GET /api/profile` — the user's own (signed) contact card, for the editor.
+pub(super) fn profile_json(mem: &MemCli) -> CoreResult<String> {
+    let card = mem.my_card()?;
+    Ok(serde_json::json!({
+        "did": card.did,
+        "display_name": card.display_name,
+        "bio": card.bio,
+        "avatar": card.avatar,
+        "site_ipns": card.site_ipns,
+        "agent_id": mem.identity().map(|id| id.agent_id().0).unwrap_or_default(),
+    })
+    .to_string())
+}
+
+/// `GET /api/resolve?q=` — reverse name lookup (the disambiguation set for `@name`).
+pub(super) fn resolve_response(mem: &MemCli, query: &str) -> Response {
+    let params = parse_query(query);
+    let q = params.get("q").map(String::as_str).unwrap_or("");
+    let matches: Vec<serde_json::Value> = mem
+        .resolve_name(q)
+        .into_iter()
+        .map(|(agent_id, name)| {
+            serde_json::json!({ "agent_id": agent_id, "name": name.text, "source": name.source, "verified": name.verified })
+        })
+        .collect();
+    Response::json(serde_json::json!({ "matches": matches }).to_string())
+}
+
+/// Compact the store: run GC to reclaim unreferenced (superseded) blocks and trim
+/// the auto-checkpoint chain to the configured keep-count. Safe by construction —
+/// only blocks no live name, kept checkpoint, or Decision can reach are removed,
+/// and each removal records a tombstone receipt. Local maintenance, never egress.
+fn mutation_compact(mem: &MemCli, options: &GuiOptions) -> Response {
+    match mem.gc(&concierge_core::GcPolicy {
+        keep_checkpoints: None,
+    }) {
+        Ok(report) => {
+            options.log(
+                "ok",
+                format!(
+                    "compacted store · reclaimed {} block(s), kept {}",
+                    report.removed, report.kept
+                ),
+            );
+            Response::json(
+                serde_json::json!({ "removed": report.removed, "kept": report.kept }).to_string(),
+            )
+        }
+        Err(error) => Response::error(error.to_string()),
+    }
+}
+
+/// Set (or, with an empty name, clear) a local petname for an AgentID — Layer 1.
+fn mutation_petname(mem: &MemCli, body: &str) -> Response {
+    let value = match parse_body(body) {
+        Ok(value) => value,
+        Err(response) => return response,
+    };
+    let agent_id = match body_str(&value, "agent_id") {
+        Ok(a) => a.trim(),
+        Err(response) => return response,
+    };
+    if agent_id.is_empty() {
+        return Response::bad_request("agent_id is required");
+    }
+    let name = value
+        .get("name")
+        .and_then(|n| n.as_str())
+        .unwrap_or("")
+        .trim();
+    let result = if name.is_empty() {
+        mem.remove_nickname(agent_id)
+    } else {
+        mem.set_nickname(agent_id, name)
+    };
+    match result {
+        Ok(()) => Response::json(serde_json::json!({ "ok": true }).to_string()),
+        Err(error) => Response::error(error.to_string()),
+    }
+}
+
+/// Edit the user's own contact card (Layer 2 self-asserted profile).
+fn mutation_profile(mem: &MemCli, body: &str) -> Response {
+    let value = match parse_body(body) {
+        Ok(value) => value,
+        Err(response) => return response,
+    };
+    let field = |k: &str| value.get(k).and_then(|v| v.as_str());
+    match mem.update_my_card(
+        field("display_name"),
+        field("bio"),
+        field("avatar"),
+        field("site_ipns"),
+    ) {
+        Ok(()) => to_response(profile_json(mem)),
+        Err(error) => Response::error(error.to_string()),
+    }
+}
+
+/// Revoke approval for a peer (they go back to needing a request to reach you).
+fn mutation_contact_remove(mem: &MemCli, body: &str) -> Response {
+    let value = match parse_body(body) {
+        Ok(value) => value,
+        Err(response) => return response,
+    };
+    let username = match body_str(&value, "username") {
+        Ok(username) => username.trim(),
+        Err(response) => return response,
+    };
+    if username.is_empty() {
+        return Response::bad_request("username is required");
+    }
+    match mem.remove_contact(username) {
+        Ok(removed) => {
+            Response::json(serde_json::json!({ "ok": true, "removed": removed }).to_string())
+        }
+        Err(error) => Response::error(error.to_string()),
+    }
+}
+
+/// Accept (approve sender + flush their held messages into the thread) or decline
+/// (drop their held messages, stay blocked) a pending message request.
+fn mutation_request_decision(mem: &MemCli, body: &str, accept: bool) -> Response {
+    let value = match parse_body(body) {
+        Ok(value) => value,
+        Err(response) => return response,
+    };
+    let username = match body_str(&value, "username") {
+        Ok(username) => username.trim(),
+        Err(response) => return response,
+    };
+    if username.is_empty() {
+        return Response::bad_request("username is required");
+    }
+    if accept {
+        match mem.accept_contact(username) {
+            Ok(delivered) => Response::json(
+                serde_json::json!({ "ok": true, "delivered": delivered }).to_string(),
+            ),
+            Err(error) => Response::error(error.to_string()),
+        }
+    } else {
+        match mem.decline_contact(username) {
+            Ok(()) => Response::json(serde_json::json!({ "ok": true }).to_string()),
+            Err(error) => Response::error(error.to_string()),
+        }
+    }
+}
+
+/// Best-effort peer delivery of a just-posted message: ensure the chat node is up
+/// and publish the signed envelope to the room topic. Returns whether it was
+/// handed to the transport — *not* whether a peer received it. The message is
+/// already recorded locally, so offline / no-peer cases never fail the post.
+fn deliver_message(mem: &MemCli, options: &GuiOptions, room: &str, cid: &Cid) -> bool {
+    if let Err(error) = ensure_chat_node(mem, options) {
+        eprintln!("chat node unavailable: {error}");
+        return false;
+    }
+    let Ok(env) = mem.read_message(cid) else {
+        return false;
+    };
+    let Ok(bytes) = serde_json::to_string(&env) else {
+        return false;
+    };
+    if let Ok(guard) = options.chat.lock() {
+        if let Some(chat) = guard.as_ref() {
+            let _ = chat.node.subscribe(room);
+            return chat.node.publish(room, bytes.into_bytes()).is_ok();
+        }
+    }
+    false
+}
+
+/// Found a new private network from the Data Platter (Phase N · Phase H). Returns
+/// the refreshed network map.
+fn mutation_network_create(mem: &MemCli, body: &str) -> Response {
+    let value = match parse_body(body) {
+        Ok(value) => value,
+        Err(response) => return response,
+    };
+    let name = value
+        .get("name")
+        .and_then(|n| n.as_str())
+        .unwrap_or("")
+        .trim();
+    if name.is_empty() {
+        return Response::bad_request("network name is required");
+    }
+    match mem.create_network(name) {
+        Ok(_) => to_response(network_json(mem)),
+        Err(error) => Response::error(error.to_string()),
+    }
+}
+
+/// Revoke a subject from the Data Platter (advances the epoch; remaining members
+/// must be re-granted). Returns the refreshed network map.
+fn mutation_network_revoke(mem: &MemCli, body: &str) -> Response {
+    let value = match parse_body(body) {
+        Ok(value) => value,
+        Err(response) => return response,
+    };
+    let subject = value
+        .get("subject")
+        .and_then(|s| s.as_str())
+        .unwrap_or("")
+        .trim();
+    if subject.is_empty() {
+        return Response::bad_request("subject id is required");
+    }
+    let Some(descriptor) = mem.networks().ok().and_then(|n| n.into_iter().next()) else {
+        return Response::bad_request("no network on this device");
+    };
+    match mem.revoke(&descriptor.network_id, subject) {
+        Ok(_) => to_response(network_json(mem)),
+        Err(error) => Response::error(error.to_string()),
+    }
+}
+
+/// Convert a reviewed plaintext root into a capability-encrypted private graph,
+/// immediately consume the exact private-share grant, and return the read-only
+/// bearer capability to the local Data Platter handoff.
+fn mutation_convert_private(mem: &MemCli, options: &GuiOptions, body: &str) -> Response {
+    let value = match parse_body(body) {
+        Ok(value) => value,
+        Err(response) => return response,
+    };
+    let review_token = match body_str(&value, "review_token") {
+        Ok(token) => token,
+        Err(response) => return response,
+    };
+    let password = match body_str(&value, "password") {
+        Ok(password) => password,
+        Err(response) => return response,
+    };
+    if value
+        .get("acknowledge_private")
+        .and_then(|value| value.as_bool())
+        != Some(true)
+    {
+        return Response::bad_request(
+            "private sharing requires destination and recipient acknowledgement",
+        );
+    }
+    let plan = match options.reviewed_private_plan(review_token) {
+        Some(plan) => plan,
+        None => {
+            return Response::bad_request(
+                "private-share review expired or was not created by this Data Platter",
+            )
+        }
+    };
+    if let Err(error) = mem.create_encrypt_and_share_private_grant(&plan, password) {
+        return mutation_error(&error);
+    }
+    match mem.convert_and_share_private(&plan, password) {
+        Ok(result) => {
+            options.discard_review(review_token);
+            Response::json(
+                serde_json::json!({
+                    "converted": true,
+                    "ciphertext_root": result.conversion.ciphertext_root,
+                    "plaintext_root": result.conversion.plaintext_root,
+                    "block_count": result.conversion.block_count,
+                    "plaintext_locked": result.conversion.plaintext_locked,
+                    "destination_namespace": result.conversion.destination_namespace,
+                    "recipients": result.conversion.recipients,
+                    "capability": result.capability,
+                    "egress_receipt": result.receipt,
+                })
+                .to_string(),
+            )
+        }
+        Err(error) => mutation_error(&error),
+    }
+}
+
+pub(super) fn parse_body(body: &str) -> Result<serde_json::Value, Response> {
+    serde_json::from_str(body).map_err(|_| Response::bad_request("invalid JSON body"))
+}
+
+pub(super) fn body_str<'a>(value: &'a serde_json::Value, key: &str) -> Result<&'a str, Response> {
+    value
+        .get(key)
+        .and_then(|item| item.as_str())
+        .filter(|item| !item.is_empty())
+        .ok_or_else(|| Response::bad_request("missing required field"))
+}
+
+/// Directory names skipped when ingesting a folder/repo: build output and VCS
+/// internals, which are noise rather than content.
+const INGEST_SKIP_DIRS: &[&str] = &[
+    ".git",
+    "node_modules",
+    "target",
+    ".next",
+    "dist",
+    "build",
+    ".venv",
+    "__pycache__",
+    ".cache",
+];
+
+/// Accumulator for a file/folder ingest: the manifest entries plus tallies.
+#[derive(Default)]
+struct PathIngest {
+    files: usize,
+    bytes: u64,
+    ignored: usize,
+    ignored_examples: Vec<String>,
+    entries: Vec<serde_json::Value>,
+}
+
+/// Extension → media type, covering the documents/images/video/audio the user
+/// is likely to ingest. Unknown types fall back to `application/octet-stream`.
+fn guess_media_type_path(path: &str) -> &'static str {
+    let ext = std::path::Path::new(path)
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    match ext.as_str() {
+        "txt" | "md" | "markdown" | "rs" | "toml" | "json" | "jsonl" | "ndjson" | "js" | "mjs"
+        | "ts" | "tsx" | "jsx" | "py" | "go" | "c" | "h" | "cc" | "cpp" | "hpp" | "java" | "kt"
+        | "rb" | "sh" | "bash" | "zsh" | "yml" | "yaml" | "html" | "htm" | "css" | "scss"
+        | "csv" | "tsv" | "log" | "xml" | "ini" | "cfg" | "conf" | "sql" | "lock" | "gitignore" => {
+            "text/plain"
+        }
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "svg" => "image/svg+xml",
+        "bmp" => "image/bmp",
+        "ico" => "image/x-icon",
+        "heic" => "image/heic",
+        "tiff" | "tif" => "image/tiff",
+        "pdf" => "application/pdf",
+        "mp4" | "m4v" => "video/mp4",
+        "mov" => "video/quicktime",
+        "webm" => "video/webm",
+        "mkv" => "video/x-matroska",
+        "avi" => "video/x-msvideo",
+        "mp3" => "audio/mpeg",
+        "wav" => "audio/wav",
+        "m4a" => "audio/mp4",
+        "ogg" | "oga" => "audio/ogg",
+        "flac" => "audio/flac",
+        "zip" => "application/zip",
+        "gz" | "tgz" => "application/gzip",
+        "tar" => "application/x-tar",
+        _ => "application/octet-stream",
+    }
+}
+
+/// Store one file as a `blob` + `file_ref`, returning the `file_ref` CID. There
+/// is no size cap — any file is ingested whole. Unreadable files (or
+/// directories/special files that `read` rejects) are tallied as ignored and
+/// return `None`. Note blobs are stored as JSON byte arrays (~4× on disk), so
+/// very large files amplify on-disk storage accordingly.
+fn ingest_one_file(
+    mem: &MemCli,
+    abs: &std::path::Path,
+    rel: &str,
+    acc: &mut PathIngest,
+) -> CoreResult<Option<Cid>> {
+    let bytes = match std::fs::read(abs) {
+        Ok(bytes) => bytes,
+        Err(_) => {
+            acc.ignored += 1;
+            return Ok(None);
+        }
+    };
+    let media_type = guess_media_type_path(rel);
+    let blob = mem.put_blob(&bytes, media_type)?;
+    let fields = serde_json::json!({
+        "path": rel,
+        "size": bytes.len() as u64,
+        "media_type": media_type,
+        "content": cid_link(&blob)?,
+    });
+    let file_ref = mem.put_node(&Node {
+        kind: "file_ref".to_string(),
+        fields_json: fields.to_string(),
+    })?;
+    acc.entries
+        .push(serde_json::json!({ "path": rel, "file_ref": cid_link(&file_ref)? }));
+    acc.files += 1;
+    acc.bytes += bytes.len() as u64;
+    Ok(Some(file_ref))
+}
+
+/// Recursively store every regular file under `dir`, skipping symlinks and the
+/// `INGEST_SKIP_DIRS` denylist. Paths in the manifest are relative to `base`.
+fn walk_dir(
+    mem: &MemCli,
+    dir: &std::path::Path,
+    base: &std::path::Path,
+    acc: &mut PathIngest,
+) -> CoreResult<()> {
+    let read = match std::fs::read_dir(dir) {
+        Ok(read) => read,
+        Err(_) => return Ok(()),
+    };
+    let mut children: Vec<_> = read.filter_map(std::result::Result::ok).collect();
+    children.sort_by_key(std::fs::DirEntry::file_name);
+    for entry in children {
+        let file_type = match entry.file_type() {
+            Ok(file_type) => file_type,
+            Err(_) => continue,
+        };
+        if file_type.is_symlink() {
+            continue;
+        }
+        let path = entry.path();
+        let name = entry.file_name().to_string_lossy().to_string();
+        if file_type.is_dir() {
+            if INGEST_SKIP_DIRS.contains(&name.as_str()) {
+                continue;
+            }
+            walk_dir(mem, &path, base, acc)?;
+        } else if file_type.is_file() {
+            let rel = path
+                .strip_prefix(base)
+                .unwrap_or(&path)
+                .to_string_lossy()
+                .replace('\\', "/");
+            ingest_one_file(mem, &path, &rel, acc)?;
+        }
+    }
+    Ok(())
+}
+
+/// A stable, groupable binding name for an ingest: `import:<unix>-<basename>`.
+fn import_binding_name(path: &std::path::Path) -> String {
+    let base = path
+        .file_name()
+        .map(|name| name.to_string_lossy().to_string())
+        .unwrap_or_else(|| "import".to_string());
+    let safe: String = base
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || ch == '.' || ch == '-' || ch == '_' {
+                ch
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    format!("import:{ts}-{safe}")
+}
+
+/// Ingest a file or folder from a path on disk. The GUI is loopback-only on the
+/// user's own machine, so the server reads the path directly — this is what
+/// makes whole repos and large media practical (no browser upload). A single
+/// `.jsonl`/`.ndjson` file is treated as a harness session stream; anything else
+/// is stored as content-addressed blobs under a walkable `ingest_run` root.
+fn mutation_ingest_path(mem: &MemCli, body: &str) -> Response {
+    let value = match parse_body(body) {
+        Ok(value) => value,
+        Err(response) => return response,
+    };
+    let raw = match body_str(&value, "path") {
+        Ok(path) => path.trim(),
+        Err(response) => return response,
+    };
+    if raw.is_empty() {
+        return Response::bad_request("provide an absolute path to a file or folder");
+    }
+    let path = std::path::PathBuf::from(raw);
+    let meta = match std::fs::metadata(&path) {
+        Ok(meta) => meta,
+        Err(error) => return Response::bad_request(&format!("cannot access {raw}: {error}")),
+    };
+
+    if meta.is_dir() {
+        let mut acc = PathIngest::default();
+        if let Err(error) = walk_dir(mem, &path, &path, &mut acc) {
+            return mutation_error(&error);
+        }
+        if acc.entries.is_empty() {
+            return Response::bad_request(&format!(
+                "no ingestible files under {raw} ({} ignored)",
+                acc.ignored
+            ));
+        }
+        let manifest_fields = serde_json::json!({ "root_path": raw, "entries": acc.entries });
+        let manifest = match mem.put_node(&Node {
+            kind: "directory_manifest".to_string(),
+            fields_json: manifest_fields.to_string(),
+        }) {
+            Ok(cid) => cid,
+            Err(error) => return mutation_error(&error),
+        };
+        let manifest_link = match cid_link(&manifest) {
+            Ok(link) => link,
+            Err(error) => return mutation_error(&error),
+        };
+        let run_fields = serde_json::json!({
+            "source_path": raw,
+            "manifest": manifest_link,
+            "file_count": acc.files as u64,
+            "byte_count": acc.bytes,
+            "ignored_count": acc.ignored as u64,
+            "plugin_records": 0,
+            "plugin_failures": 0,
+            "per_file_plugin_records": {},
+            "per_file_plugin_failures": {},
+        });
+        let run = match mem.put_node(&Node {
+            kind: "ingest_run".to_string(),
+            fields_json: run_fields.to_string(),
+        }) {
+            Ok(cid) => cid,
+            Err(error) => return mutation_error(&error),
+        };
+        let name = import_binding_name(&path);
+        if let Err(error) = mem.bind(&name, &run) {
+            return mutation_error(&error);
+        }
+        return Response::json(
+            serde_json::json!({
+                "ok": true, "kind": "folder", "root": run.0, "name": name,
+                "files": acc.files, "bytes": acc.bytes,
+                "ignored": acc.ignored, "ignored_examples": acc.ignored_examples,
+            })
+            .to_string(),
+        );
+    }
+
+    // Single file. A JSONL/NDJSON file is a harness session stream.
+    let ext = path
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    if ext == "jsonl" || ext == "ndjson" {
+        let file = match std::fs::File::open(&path) {
+            Ok(file) => file,
+            Err(error) => return Response::bad_request(&format!("cannot open {raw}: {error}")),
+        };
+        let base_dir = path
+            .parent()
+            .map(std::path::Path::to_path_buf)
+            .unwrap_or_else(|| std::path::PathBuf::from("."));
+        let report = concierge_adapter_jsonl::ingest(std::io::BufReader::new(file), mem, &base_dir);
+        return Response::json(
+            serde_json::json!({
+                "ok": true, "kind": "session",
+                "events": report.events, "nodes_written": report.nodes_written,
+                "names_bound": report.names_bound, "checkpoints": report.checkpoints,
+                "skipped": report.skipped.len(),
+            })
+            .to_string(),
+        );
+    }
+
+    let rel = path
+        .file_name()
+        .map(|name| name.to_string_lossy().to_string())
+        .unwrap_or_else(|| raw.to_string());
+    let mut acc = PathIngest::default();
+    let file_ref = match ingest_one_file(mem, &path, &rel, &mut acc) {
+        Ok(Some(cid)) => cid,
+        Ok(None) => {
+            return Response::bad_request(&format!("skipped {raw}: unreadable"));
+        }
+        Err(error) => return mutation_error(&error),
+    };
+    let name = import_binding_name(&path);
+    if let Err(error) = mem.bind(&name, &file_ref) {
+        return mutation_error(&error);
+    }
+    Response::json(
+        serde_json::json!({
+            "ok": true, "kind": "file", "root": file_ref.0, "name": name,
+            "files": acc.files, "bytes": acc.bytes, "ignored": acc.ignored,
+        })
+        .to_string(),
+    )
+}
+
+/// Ingest an uploaded JSONL event stream into the store. The body is
+/// `{ "content": "<jsonl text>" }`. File paths inside `file_*` events resolve
+/// against the mounted store directory; missing files are skipped, never fatal.
+fn mutation_ingest(mem: &MemCli, options: &GuiOptions, body: &str) -> Response {
+    let value = match parse_body(body) {
+        Ok(value) => value,
+        Err(response) => return response,
+    };
+    let content = match body_str(&value, "content") {
+        Ok(content) => content,
+        Err(response) => return response,
+    };
+    let base_dir = std::path::PathBuf::from(&options.store_label);
+    let report = concierge_adapter_jsonl::ingest(
+        std::io::BufReader::new(content.as_bytes()),
+        mem,
+        &base_dir,
+    );
+    Response::json(
+        serde_json::json!({
+            "ok": true,
+            "lines": report.lines,
+            "events": report.events,
+            "nodes_written": report.nodes_written,
+            "checkpoints": report.checkpoints,
+            "names_bound": report.names_bound,
+            "blobs_written": report.blobs_written.len(),
+            "skipped": report.skipped.len(),
+        })
+        .to_string(),
+    )
+}
+
+fn mutation_lock(mem: &MemCli, body: &str) -> Response {
+    let value = match parse_body(body) {
+        Ok(value) => value,
+        Err(response) => return response,
+    };
+    let label = value
+        .get("label")
+        .and_then(|item| item.as_str())
+        .unwrap_or("");
+
+    // Bulk path: `{ "session": "<id>" }` locks every named record in one session.
+    if let Some(session) = value
+        .get("session")
+        .and_then(|item| item.as_str())
+        .filter(|session| !session.is_empty())
+    {
+        match mem.password_is_set() {
+            Ok(true) => {}
+            Ok(false) => {
+                return Response::bad_request(
+                    "set and confirm a store password before creating the first GUI lock",
+                );
+            }
+            Err(error) => return mutation_error(&error),
+        }
+        let names = match mem.names() {
+            Ok(names) => names,
+            Err(error) => return mutation_error(&error),
+        };
+        let mut seen: BTreeSet<String> = BTreeSet::new();
+        let mut locked_count = 0usize;
+        for (name, cid) in names {
+            if session_of(&name).as_deref() != Some(session) {
+                continue;
+            }
+            if !seen.insert(cid.0.clone()) {
+                continue;
+            }
+            if mem.lock_subgraph(&cid, label).is_ok() {
+                locked_count += 1;
+            }
+        }
+        return Response::json(
+            serde_json::json!({
+                "locked": true,
+                "session": session,
+                "locked_count": locked_count,
+            })
+            .to_string(),
+        );
+    }
+
+    let target = match body_str(&value, "target") {
+        Ok(target) => target,
+        Err(response) => return response,
+    };
+    let root = match resolve_target_string(mem, target) {
+        Ok(root) => root,
+        Err(error) => return mutation_error(&error),
+    };
+    match mem.password_is_set() {
+        Ok(true) => {}
+        Ok(false) => {
+            return Response::bad_request(
+                "set and confirm a store password before creating the first GUI lock",
+            );
+        }
+        Err(error) => return mutation_error(&error),
+    }
+    let plan = match mem.build_egress_plan(&root, EgressOperation::PublicPublish) {
+        Ok(plan) => plan,
+        Err(error) => return mutation_error(&error),
+    };
+    match mem.lock_subgraph(&root, label) {
+        Ok(()) => Response::json(
+            serde_json::json!({
+                "locked": true,
+                "root": root.0,
+                "reachable_node_count": plan.block_count,
+                "file_count": plan.file_paths.len(),
+            })
+            .to_string(),
+        ),
+        Err(error) => mutation_error(&error),
+    }
+}
+
+/// Permanently lift a lock (the egress-unlock) after the store password — this is
+/// what allows a previously-locked subgraph to be published/shared/exported. The
+/// bulk `{ "session": "<id>" }` form lifts the lock on every record in the
+/// session; the single form takes a `{ "target": "<cid|name>" }`. Locks only ever
+/// guarded egress, never local viewing.
+fn mutation_unlock(mem: &MemCli, body: &str) -> Response {
+    let value = match parse_body(body) {
+        Ok(value) => value,
+        Err(response) => return response,
+    };
+    let password = match body_str(&value, "password") {
+        Ok(password) => password,
+        Err(response) => return response,
+    };
+
+    // Bulk path: unlock every locked record in one session.
+    if let Some(session) = value
+        .get("session")
+        .and_then(|item| item.as_str())
+        .filter(|session| !session.is_empty())
+    {
+        let names = match mem.names() {
+            Ok(names) => names,
+            Err(error) => return mutation_error(&error),
+        };
+        let mut seen: BTreeSet<String> = BTreeSet::new();
+        let mut unlocked_count = 0usize;
+        for (name, cid) in names {
+            if session_of(&name).as_deref() != Some(session) {
+                continue;
+            }
+            if !seen.insert(cid.0.clone()) {
+                continue;
+            }
+            // A bad/rate-limited password fails the whole batch; otherwise skip
+            // records that simply have no direct lock to remove.
+            match mem.unlock_subgraph(&cid, password) {
+                Ok(()) => unlocked_count += 1,
+                Err(
+                    error @ (Error::AuthenticationFailed | Error::AuthenticationRateLimited { .. }),
+                ) => {
+                    return mutation_error(&error);
+                }
+                Err(_) => {}
+            }
+        }
+        return Response::json(
+            serde_json::json!({
+                "unlocked": true,
+                "session": session,
+                "unlocked_count": unlocked_count,
+            })
+            .to_string(),
+        );
+    }
+
+    let target = match body_str(&value, "target") {
+        Ok(target) => target,
+        Err(response) => return response,
+    };
+    let root = match resolve_target_string(mem, target) {
+        Ok(root) => root,
+        Err(error) => return mutation_error(&error),
+    };
+    match mem.unlock_subgraph(&root, password) {
+        Ok(()) => {
+            Response::json(serde_json::json!({ "unlocked": true, "root": root.0 }).to_string())
+        }
+        Err(error) => mutation_error(&error),
+    }
+}
+
+/// Decision 0026: everything is fenced from egress by default. Clearing a root
+/// is the explicit, password-gated exception that lets it be published / shared /
+/// exported. Takes `{ "target": "<cid|name>", "password": "…", "label"?: "…" }`.
+/// The password is read straight into the core call and never echoed.
+fn mutation_clear_for_egress(mem: &MemCli, body: &str) -> Response {
+    let value = match parse_body(body) {
+        Ok(value) => value,
+        Err(response) => return response,
+    };
+    let target = match body_str(&value, "target") {
+        Ok(target) => target,
+        Err(response) => return response,
+    };
+    let password = match body_str(&value, "password") {
+        Ok(password) => password,
+        Err(response) => return response,
+    };
+    let label = value
+        .get("label")
+        .and_then(|item| item.as_str())
+        .unwrap_or("");
+    let root = match resolve_target_string(mem, target) {
+        Ok(root) => root,
+        Err(error) => return mutation_error(&error),
+    };
+    let plan = match mem.build_egress_plan(&root, EgressOperation::PublicPublish) {
+        Ok(plan) => plan,
+        Err(error) => return mutation_error(&error),
+    };
+    match mem.clear_for_egress(&root, label, password) {
+        Ok(()) => Response::json(
+            serde_json::json!({
+                "cleared": true,
+                "root": root.0,
+                "reachable_node_count": plan.block_count,
+                "file_count": plan.file_paths.len(),
+            })
+            .to_string(),
+        ),
+        Err(error) => mutation_error(&error),
+    }
+}
+
+/// Restore the default fence on a previously-cleared root (the safe direction —
+/// no password needed to make data *more* private). Takes `{ "target": "<cid|name>" }`.
+fn mutation_refence(mem: &MemCli, body: &str) -> Response {
+    let value = match parse_body(body) {
+        Ok(value) => value,
+        Err(response) => return response,
+    };
+    let target = match body_str(&value, "target") {
+        Ok(target) => target,
+        Err(response) => return response,
+    };
+    let root = match resolve_target_string(mem, target) {
+        Ok(root) => root,
+        Err(error) => return mutation_error(&error),
+    };
+    match mem.refence(&root) {
+        Ok(()) => {
+            Response::json(serde_json::json!({ "refenced": true, "root": root.0 }).to_string())
+        }
+        Err(error) => mutation_error(&error),
+    }
+}
+
+fn mutation_set_password(mem: &MemCli, body: &str) -> Response {
+    let value = match parse_body(body) {
+        Ok(value) => value,
+        Err(response) => return response,
+    };
+    let password = match body_str(&value, "password") {
+        Ok(password) => password,
+        Err(response) => return response,
+    };
+    let confirm_password = match body_str(&value, "confirm_password") {
+        Ok(password) => password,
+        Err(response) => return response,
+    };
+    if password != confirm_password {
+        return Response::bad_request("password confirmation does not match");
+    }
+    match mem.set_password(password) {
+        Ok(()) => Response::json(serde_json::json!({ "ok": true }).to_string()),
+        Err(error) => mutation_error(&error),
+    }
+}
+
+/// Publish exactly the short-lived server-cached plan identified by the review
+/// drawer token. Locked plans mint and immediately consume a one-shot grant;
+/// clear plans still require the store password and the same exact-plan check.
+fn mutation_authorize_publish(mem: &MemCli, options: &GuiOptions, body: &str) -> Response {
+    let value = match parse_body(body) {
+        Ok(value) => value,
+        Err(response) => return response,
+    };
+    let password = match body_str(&value, "password") {
+        Ok(password) => password,
+        Err(response) => return response,
+    };
+    if value
+        .get("acknowledge_irreversible")
+        .and_then(|v| v.as_bool())
+        != Some(true)
+    {
+        return Response::bad_request("publication requires an irreversibility acknowledgement");
+    }
+    let review_token = match body_str(&value, "review_token") {
+        Ok(token) => token,
+        Err(response) => return response,
+    };
+    let plan = match options.reviewed_plan(review_token) {
+        Some(plan) => plan,
+        None => {
+            return Response::bad_request("review expired or was not created by this Data Platter")
+        }
+    };
+    if plan.operation != EgressOperation::PublicPublish {
+        return Response::bad_request("reviewed plan is not a public publication");
+    }
+    let authorization = if plan.is_blocked() {
+        mem.create_publish_grant(&plan, password).map(|_| ())
+    } else {
+        mem.verify_password(password)
+    };
+    if let Err(error) = authorization {
+        return mutation_error(&error);
+    }
+    match mem.publish_public(&plan) {
+        Ok(receipt) => {
+            options.discard_review(review_token);
+            Response::json(
+                serde_json::json!({
+                    "published": true,
+                    "root": receipt.root,
+                    "backend": receipt.backend,
+                    "gateway_url": receipt.gateway_url,
+                    "authorization_consumed": true,
+                })
+                .to_string(),
+            )
+        }
+        Err(error) => mutation_error(&error),
+    }
+}
+
+fn resolve_target_string(mem: &MemCli, target: &str) -> CoreResult<Cid> {
+    if target.parse::<cid::Cid>().is_ok() {
+        Ok(Cid(target.to_string()))
+    } else {
+        mem.resolve(target)
+    }
+}
+
+/// Map a core error to an HTTP status, never leaking secret material.
+fn mutation_error(error: &Error) -> Response {
+    let (status, message): (u16, String) = match error {
+        Error::AuthenticationFailed => (401, "store password authentication failed".to_string()),
+        Error::AuthenticationRateLimited { retry_after_secs } => (
+            429,
+            format!("authentication rate limited; retry in {retry_after_secs}s"),
+        ),
+        Error::PublicationBlocked { .. }
+        | Error::SensitiveContentBlocked { .. }
+        | Error::SecurityPolicy(_)
+        | Error::GrantIntegrity(_)
+        | Error::ExplicitPublicPublishRequired => (403, error.to_string()),
+        Error::EgressPlanChanged(_) => (409, error.to_string()),
+        // A closed/wrong-password vault surfaces as an encryption error; treat it
+        // as forbidden rather than a server fault.
+        Error::Encryption(_) => (403, error.to_string()),
+        Error::NameUnbound(_) | Error::CidNotFound(_) | Error::Tombstoned(_) => {
+            (404, error.to_string())
+        }
+        Error::BackendDown(_) => (502, error.to_string()),
+        Error::Unsupported { .. } => (400, error.to_string()),
+        _ => (500, error.to_string()),
+    };
+    Response::json_error(status, &message)
+}
