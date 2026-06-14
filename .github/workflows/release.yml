@@ -101,9 +101,51 @@ jobs:
           path: Universal-Concierge-macos.dmg
           if-no-files-found: error
 
+  windows-installer:
+    name: Windows installer (.exe)
+    needs: build
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: concierge-plugin-windows-x64
+          path: dl
+
+      - name: Build setup.exe (Inno Setup)
+        shell: pwsh
+        run: |
+          Expand-Archive -Path dl/concierge-plugin-windows-x64.zip -DestinationPath unpacked
+          $stage = "win-stage"
+          New-Item -ItemType Directory -Force -Path $stage | Out-Null
+          Copy-Item "unpacked/concierge-plugin-windows-x64/concierge-plugin.exe" "$stage/"
+          Copy-Item "packaging/windows/concierge.iss" "$stage/"
+          Copy-Item "packaging/windows/launch.vbs" "$stage/"
+
+          # Icon (.ico) from the logo via ImageMagick (pre-installed, else choco).
+          $magick = (Get-Command magick -ErrorAction SilentlyContinue).Source
+          if (-not $magick) {
+            choco install imagemagick -y --no-progress | Out-Null
+            $magick = (Get-ChildItem "C:\Program Files\ImageMagick*\magick.exe" -ErrorAction SilentlyContinue | Select-Object -First 1).FullName
+          }
+          & $magick "crates/gui/src/logo.png" -background none -define "icon:auto-resize=256,128,64,48,32,16" "$stage/icon.ico"
+
+          # Inno Setup.
+          $iscc = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { choco install innosetup -y --no-progress | Out-Null }
+          & $iscc "$stage/concierge.iss"
+          Copy-Item "$stage/Universal-Concierge-windows-setup.exe" .
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-installer
+          path: Universal-Concierge-windows-setup.exe
+          if-no-files-found: error
+
   release:
     name: publish release
-    needs: [build, macos-dmg]
+    needs: [build, macos-dmg, windows-installer]
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/')
     steps:
@@ -119,7 +161,7 @@ jobs:
         run: |
           cp install.sh install.ps1 dist/
           cd dist
-          sha256sum concierge-plugin-* Universal-Concierge-macos.dmg > SHASUMS256.txt
+          sha256sum concierge-plugin-* Universal-Concierge-macos.dmg Universal-Concierge-windows-setup.exe > SHASUMS256.txt
           cat SHASUMS256.txt
 
       - name: Publish GitHub Release
@@ -134,15 +176,17 @@ jobs:
             is optional (only for publishing/the Sidekick). The app captures and
             explores a harness's activity — it is inert without one.
 
-            ### 🖱️ macOS — click to install (recommended)
-            1. Download **`Universal-Concierge-macos.dmg`** below.
-            2. Open it and **drag Concierge → Applications**.
-            3. First launch: **right-click the app → Open** (one-time — the build is
-               unsigned, so macOS asks once). If macOS won't let you, go to **System
-               Settings → Privacy & Security → Open Anyway**.
+            ### 🖱️ Click to install (recommended)
+            **macOS** — download **`Universal-Concierge-macos.dmg`**, open it, drag
+            **Concierge → Applications**. First launch: **right-click → Open** (one
+            time — unsigned; or **System Settings → Privacy & Security → Open Anyway**).
 
-            Concierge is a launcher: clicking it starts the explorer and opens it in
-            your browser (Brave/Opera if installed).
+            **Windows** — download **`Universal-Concierge-windows-setup.exe`** and run
+            it (Start Menu + desktop icon). SmartScreen may warn (unsigned): click
+            **More info → Run anyway**.
+
+            Either way, clicking the **Concierge** icon starts the explorer and opens
+            it in your browser (Brave/Opera if installed).
 
             ### Command-line install (macOS / Linux)
             ```sh
