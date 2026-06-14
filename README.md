@@ -8,11 +8,6 @@ Built on **IPLD** and secured by **Private IPFS Swarms**, UCP turns transient ag
 
 ---
 
-![UCP UI Overview](https://raw.githubusercontent.com/YOUR_REPO/assets/main/ucp-overview.png)
-*(Note: Replace with actual screenshot links once hosted)*
-
----
-
 ## ⬇️ Install
 
 One self-contained binary — no separate `mem`, database, or cloud. Kubo/IPFS is
