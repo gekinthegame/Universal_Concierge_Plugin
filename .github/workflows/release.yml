@@ -71,9 +71,39 @@ jobs:
             ${{ matrix.asset }}.zip
           if-no-files-found: error
 
+  macos-dmg:
+    name: macOS .dmg (clickable installer)
+    needs: build
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: concierge-plugin-macos-*
+          path: dl
+          merge-multiple: true
+
+      - name: Build universal app + .dmg
+        shell: bash
+        run: |
+          tar -xzf dl/concierge-plugin-macos-arm64.tar.gz
+          tar -xzf dl/concierge-plugin-macos-x64.tar.gz
+          # One universal binary (Apple Silicon + Intel) inside one .app.
+          lipo -create -output concierge-plugin \
+            concierge-plugin-macos-arm64/concierge-plugin \
+            concierge-plugin-macos-x64/concierge-plugin
+          bash packaging/macos/build-dmg.sh concierge-plugin crates/gui/src/logo.png "Universal-Concierge-macos.dmg"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-dmg
+          path: Universal-Concierge-macos.dmg
+          if-no-files-found: error
+
   release:
     name: publish release
-    needs: build
+    needs: [build, macos-dmg]
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/')
     steps:
@@ -89,7 +119,7 @@ jobs:
         run: |
           cp install.sh install.ps1 dist/
           cd dist
-          sha256sum concierge-plugin-* > SHASUMS256.txt
+          sha256sum concierge-plugin-* Universal-Concierge-macos.dmg > SHASUMS256.txt
           cat SHASUMS256.txt
 
       - name: Publish GitHub Release
@@ -104,19 +134,26 @@ jobs:
             is optional (only for publishing/the Sidekick). The app captures and
             explores a harness's activity — it is inert without one.
 
-            ### Install (macOS / Linux)
+            ### 🖱️ macOS — click to install (recommended)
+            1. Download **`Universal-Concierge-macos.dmg`** below.
+            2. Open it and **drag Concierge → Applications**.
+            3. First launch: **right-click the app → Open** (one-time — the build is
+               unsigned, so macOS asks once). If macOS won't let you, go to **System
+               Settings → Privacy & Security → Open Anyway**.
+
+            Concierge is a launcher: clicking it starts the explorer and opens it in
+            your browser (Brave/Opera if installed).
+
+            ### Command-line install (macOS / Linux)
             ```sh
             curl -fsSL https://github.com/${{ github.repository }}/releases/latest/download/install.sh | sh
             ```
-            ### Install (Windows, PowerShell)
+            ### Windows (PowerShell)
             ```powershell
             irm https://github.com/${{ github.repository }}/releases/latest/download/install.ps1 | iex
             ```
-            Then run `concierge-plugin gui`.
 
-            > **Unsigned (first cut).** These builds are **not yet code-signed or
-            > notarized** — community review welcome. The install script downloads
-            > via `curl`, which does **not** set macOS quarantine, so Gatekeeper
-            > does not block it. If you instead download from the browser, clear the
-            > flag with `xattr -dr com.apple.quarantine <path>`. Signed installers
-            > (.dmg / .msi / AppImage) are a fast-follow.
+            > **Unsigned (first cut).** Not yet code-signed/notarized — hence the
+            > one-time right-click → Open on macOS. (The `curl` script avoids the
+            > prompt because curl doesn't set quarantine.) Signed `.dmg` / `.msi`
+            > installers are a fast-follow once a Developer ID is in place.

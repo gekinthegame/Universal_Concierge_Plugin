@@ -18,25 +18,26 @@ Built on **IPLD** and secured by **Private IPFS Swarms**, UCP turns transient ag
 One self-contained binary — no separate `mem`, database, or cloud. Kubo/IPFS is
 **optional** (only for publishing and the on-node Sidekick).
 
+### 🖱️ macOS — click to install
+From the [latest release](https://github.com/gekinthegame/Universal_Concierge_Plugin/releases/latest):
+download **`Universal-Concierge-macos.dmg`**, open it, and **drag Concierge → Applications**.
+First launch: **right-click the app → Open** (one time — unsigned build). Clicking the
+icon starts the explorer and opens it in your browser.
+
+### ⌨️ Command-line install
 **macOS / Linux**
 ```sh
 curl -fsSL https://github.com/gekinthegame/Universal_Concierge_Plugin/releases/latest/download/install.sh | sh
 ```
-
 **Windows (PowerShell)**
 ```powershell
 irm https://github.com/gekinthegame/Universal_Concierge_Plugin/releases/latest/download/install.ps1 | iex
 ```
+Then launch the explorer with `concierge-plugin gui` (the script auto-adds it to your PATH).
 
-Then launch the explorer:
-```sh
-concierge-plugin gui
-```
-
-> Builds are **not yet code-signed/notarized** (first cut — community review
-> welcome). Installing via the `curl | sh` one-liner avoids the macOS Gatekeeper
-> prompt because `curl` doesn't set the quarantine flag. Signed native installers
-> (`.dmg` / `.msi` / AppImage) are a fast-follow.
+> Builds are **not yet code-signed/notarized** (first cut) — hence the one-time
+> right-click → Open on macOS. The `curl | sh` path avoids the prompt (curl doesn't
+> set quarantine). Signed `.dmg` / `.msi` installers are a fast-follow.
 
 ---
 

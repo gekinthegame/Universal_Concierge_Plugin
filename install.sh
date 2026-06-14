@@ -109,12 +109,30 @@ fi
 echo "Installed → $PREFIX/$BIN"
 
 # ── next steps ──────────────────────────────────────────────────────────────
+echo
 case ":$PATH:" in
-  *":$PREFIX:"*) ;;
-  *) echo
-     echo "Add it to your PATH (then restart your shell):"
-     echo "    export PATH=\"$PREFIX:\$PATH\"" ;;
+  *":$PREFIX:"*)
+    echo "Done. Start it with:"
+    echo "    $BIN gui"
+    ;;
+  *)
+    # Add $PREFIX to the shell profile so the command works in new terminals.
+    rc=""
+    case "${SHELL:-}" in
+      */zsh)  rc="$HOME/.zshrc" ;;
+      */bash) rc="$HOME/.bashrc" ;;
+    esac
+    if [ -n "$rc" ] && ! grep -qsF "$PREFIX" "$rc" 2>/dev/null; then
+      printf '\n# Added by the Universal Concierge Plugin installer\nexport PATH="%s:$PATH"\n' "$PREFIX" >> "$rc"
+      echo "Added $PREFIX to your PATH in $rc (effective in new terminals)."
+    fi
+    echo
+    echo "Start it right now in THIS terminal:"
+    echo "    export PATH=\"$PREFIX:\$PATH\" && $BIN gui"
+    echo
+    echo "…or open a NEW terminal and just run:  $BIN gui"
+    ;;
 esac
 echo
-echo "Done. Start the explorer with:"
-echo "    $BIN gui"
+echo "It's a command-line tool — '$BIN gui' starts the explorer and opens it in"
+echo "your browser (Brave/Opera if installed). There is no separate app icon."
