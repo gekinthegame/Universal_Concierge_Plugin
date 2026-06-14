@@ -115,7 +115,8 @@ COMMANDS:
                          Relay hosting requires --host-relay --external-address A
     gui [--port N] [--model M] [--no-open]
                          Open the Data Platter privacy controls        [Phase 7/D]
-    mcp serve            Serve memory over MCP        [Phase 3 — DEFERRED]
+    mcp serve [--write]  Serve memory over MCP (stdio) for a host AI
+    setup                Connect the Concierge to Claude Code as an MCP server
     help                 Show this help
 ";
 
@@ -1244,6 +1245,91 @@ fn cmd_mcp(args: &[String]) -> ExitCode {
     }
 }
 
+/// `setup` — connect the Concierge to Claude Code as an MCP server so its tools
+/// (recall / retrieve / browse / write_site / scaffold_engine / design …) are
+/// available in any Claude Code session. Run by the installer and on first GUI
+/// launch; safe to run again.
+fn cmd_setup() -> ExitCode {
+    println!("{}", connect_claude_mcp());
+    ExitCode::SUCCESS
+}
+
+/// Register this binary as a Claude Code MCP server (`concierge`, write tools on).
+/// Idempotent, and **upgrades a stale registration** (wrong path / missing `--write`)
+/// so the Studio/canvas write tool is always available. Best-effort: a missing
+/// `claude` CLI is reported, not an error.
+fn connect_claude_mcp() -> String {
+    use std::process::Command;
+    let self_path = match std::env::current_exe() {
+        Ok(path) => path,
+        Err(_) => return "MCP auto-connect: could not resolve own path.".to_string(),
+    };
+    let want = self_path.to_string_lossy().into_owned();
+
+    // Probe: is the `claude` CLI present, and what's already registered?
+    let listed = match Command::new("claude")
+        .args(["mcp", "list"])
+        .stdin(Stdio::null())
+        .output()
+    {
+        Ok(out) => String::from_utf8_lossy(&out.stdout).into_owned(),
+        Err(_) => {
+            return "Claude Code (the `claude` CLI) was not found — skipped MCP auto-connect. \
+                Install Claude Code, then run:  concierge-plugin setup"
+                .to_string()
+        }
+    };
+
+    // Already correct (this binary + write tools)? Leave it.
+    if listed.lines().any(|line| {
+        line.trim_start().starts_with("concierge:") && line.contains(&want) && line.contains("--write")
+    }) {
+        return "Claude Code: the Concierge MCP server is already connected.".to_string();
+    }
+
+    // Otherwise (absent or stale): clear any old entry, then add the correct one.
+    for scope in ["user", "local"] {
+        let _ = Command::new("claude")
+            .args(["mcp", "remove", "concierge", "-s", scope])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+    }
+    let status = Command::new("claude")
+        .args([
+            "mcp", "add", "-s", "user", "concierge", "--", &want, "mcp", "serve", "--write",
+        ])
+        .stdin(Stdio::null())
+        .status();
+    match status {
+        Ok(s) if s.success() => "Claude Code: connected the Concierge as an MCP server \
+            ('concierge', write tools on). Restart Claude Code to use its tools."
+            .to_string(),
+        _ => "Claude Code found, but auto-registering failed. Run manually:\n  \
+            claude mcp add -s user concierge -- concierge-plugin mcp serve --write"
+            .to_string(),
+    }
+}
+
+/// Connect to Claude Code once per install (sentinel-gated), on GUI launch — covers
+/// the .dmg/.exe installs where no install script runs. Idempotent + non-fatal.
+fn maybe_connect_claude(mem: &MemCli) {
+    let sentinel = mem.store_dir().ok().map(|dir| dir.join(".mcp-connected"));
+    if let Some(path) = &sentinel {
+        if path.exists() {
+            return;
+        }
+    }
+    println!("{}", connect_claude_mcp());
+    if let Some(path) = &sentinel {
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let _ = std::fs::write(path, b"1");
+    }
+}
+
 fn cmd_gui(args: &[String]) -> ExitCode {
     let preferred = args
         .iter()
@@ -1260,6 +1346,9 @@ fn cmd_gui(args: &[String]) -> ExitCode {
         .and_then(|i| args.get(i + 1))
         .and_then(|p| p.parse::<u32>().ok());
     let mem = MemCli::new(workdir());
+
+    // First launch (any install path): connect to Claude Code as an MCP server.
+    maybe_connect_claude(&mem);
 
     // Idempotent mount: if a Data Platter is already serving this store, reuse it
     // (open the browser to it) instead of spawning a duplicate. This is what lets
@@ -1342,6 +1431,7 @@ fn main() -> ExitCode {
         Some("room") => cmd_room(&args),
         Some("gui") => cmd_gui(&args),
         Some("mcp") => cmd_mcp(&args),
+        Some("setup") => cmd_setup(),
         Some("help") | Some("--help") | Some("-h") | None => {
             print!("{HELP}");
             ExitCode::SUCCESS

@@ -108,6 +108,10 @@ if install -m 0755 "$src" "$PREFIX/$BIN" 2>/dev/null; then :; else
 fi
 echo "Installed → $PREFIX/$BIN"
 
+# ── connect to Claude Code as an MCP server (best-effort) ────────────────────
+echo
+"$PREFIX/$BIN" setup 2>&1 || true
+
 # ── next steps ──────────────────────────────────────────────────────────────
 echo
 case ":$PATH:" in

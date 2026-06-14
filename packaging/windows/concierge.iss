@@ -38,4 +38,6 @@ Name: "{autodesktop}\{#AppName}";  Filename: "{app}\launch.vbs"; IconFilename: "
 Name: "{group}\Uninstall {#AppName}"; Filename: "{uninstallexe}"
 
 [Run]
+; Connect to Claude Code as an MCP server (best-effort, hidden).
+Filename: "{app}\concierge-plugin.exe"; Parameters: "setup"; Flags: runhidden
 Filename: "{app}\launch.vbs"; Description: "Launch {#AppName} now"; Flags: shellexec nowait postinstall skipifsilent

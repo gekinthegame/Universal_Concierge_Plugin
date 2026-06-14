@@ -41,6 +41,15 @@ Then launch the explorer with `concierge-plugin gui` (the script auto-adds it to
 > right-click → Open on macOS. The `curl | sh` path avoids the prompt (curl doesn't
 > set quarantine). Signed `.dmg` / `.msi` installers are a fast-follow.
 
+### 🔌 Use it from Claude Code (automatic)
+If **Claude Code** is installed, every install path **auto-connects the Concierge as
+an MCP server** (`concierge`, write tools on) — so its tools (`concierge.retrieve`,
+`concierge.browse`, `concierge.write_site` into the Studio canvas, `concierge.design_*`,
+…) appear in Claude Code after a restart. To (re)connect manually anytime:
+```sh
+concierge-plugin setup
+```
+
 ---
 
 ## 🚀 Pillars of the Concierge

@@ -68,6 +68,10 @@ try {
   Copy-Item $exe (Join-Path $dest "concierge-plugin.exe") -Force
   Write-Host "Installed -> $dest\concierge-plugin.exe"
 
+  # Connect to Claude Code as an MCP server (best-effort).
+  Write-Host ""
+  try { & (Join-Path $dest "concierge-plugin.exe") setup } catch {}
+
   # Add to the user PATH if it isn't already there.
   $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
   if ($userPath -notlike "*$dest*") {
