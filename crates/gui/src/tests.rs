@@ -11,6 +11,12 @@ mod tests {
         (dir, mem)
     }
 
+    fn canvas_project(mem: &MemCli, name: &str) -> std::path::PathBuf {
+        let path = mem.store_dir().unwrap().join("canvas").join(name);
+        std::fs::create_dir_all(&path).expect("canvas project dir");
+        path
+    }
+
     fn body(response: &Response) -> String {
         String::from_utf8_lossy(&response.body).into_owned()
     }
@@ -509,21 +515,25 @@ mod tests {
     fn canvas_preview_is_opaque_origin_and_frameable() {
         let (_dir, mem) = store();
         let options = GuiOptions::default();
-        let site = tempfile::tempdir().expect("site tempdir");
+        let site = canvas_project(&mem, "preview");
         std::fs::write(
-            site.path().join("index.html"),
+            site.join("index.html"),
             "<script>document.body.textContent='ok'</script>",
         )
         .expect("write preview");
-        let token = preview_token(site.path());
+        let token = preview_token(&site.canonicalize().expect("canonical site"));
         options.preview_dirs.lock().expect("preview lock").insert(
             token.clone(),
-            site.path().canonicalize().expect("canonical site"),
+            site.canonicalize().expect("canonical site"),
         );
 
-        let preview = canvas_preview_serve(&options, &format!("{token}/index.html"));
+        let preview = canvas_preview_serve(&mem, &options, &format!("{token}/index.html"));
         assert_eq!(preview.status, 200);
         assert!(preview.embeddable);
+        assert!(preview
+            .csp
+            .expect("preview csp")
+            .contains("sandbox allow-scripts"));
 
         let page = body(&handle(&mem, "/", ""));
         assert!(page.contains(r#"sandbox="allow-scripts""#));
@@ -535,13 +545,13 @@ mod tests {
     #[test]
     fn canvas_write_saves_into_the_open_folder_and_reads_back() {
         let (_dir, mem) = store();
-        let _ = mem;
         let options = GuiOptions::default();
-        let site = tempfile::tempdir().expect("site tempdir");
-        let folder = site.path().to_string_lossy().to_string();
+        let site = canvas_project(&mem, "write");
+        let folder = site.to_string_lossy().to_string();
 
         // Open the folder → token (the unified writeable canvas registers it for preview).
         let open = body(&mutation_canvas_open(
+            &mem,
             &options,
             &serde_json::json!({ "folder": folder }).to_string(),
         ));
@@ -550,16 +560,18 @@ mod tests {
 
         // Write index.html through the editor seam, then read it straight back.
         let write = mutation_canvas_write(
+            &mem,
             &options,
             &serde_json::json!({ "token": token, "path": "index.html", "content": "<h1>hi</h1>" })
                 .to_string(),
         );
         assert_eq!(write.status, 200);
         assert_eq!(
-            std::fs::read_to_string(site.path().join("index.html")).expect("read index"),
+            std::fs::read_to_string(site.join("index.html")).expect("read index"),
             "<h1>hi</h1>"
         );
         let file = body(&canvas_file_get(
+            &mem,
             &options,
             &format!("token={token}&path=index.html"),
         ));
@@ -568,26 +580,66 @@ mod tests {
 
         // A nested path creates its parent inside the folder.
         let nested = mutation_canvas_write(
+            &mem,
             &options,
             &serde_json::json!({ "token": token, "path": "css/site.css", "content": "body{}" })
                 .to_string(),
         );
         assert_eq!(nested.status, 200);
-        assert!(site.path().join("css").join("site.css").is_file());
+        assert!(site.join("css").join("site.css").is_file());
+    }
+
+    #[test]
+    fn canvas_write_streams_binary_chunks_at_offsets() {
+        let (_dir, mem) = store();
+        let options = GuiOptions::default();
+        let site = canvas_project(&mem, "stream");
+        let folder = site.to_string_lossy().to_string();
+        let open = body(&mutation_canvas_open(
+            &mem,
+            &options,
+            &serde_json::json!({ "folder": folder }).to_string(),
+        ));
+        let token = serde_json::from_str::<serde_json::Value>(&open).unwrap()["token"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        // Stream two base64 chunks at offsets 0 and 3 ("ABC"=QUJD, "DEF"=REVG) → "ABCDEF".
+        for (b64, pos) in [("QUJD", 0u64), ("REVG", 3)] {
+            let w = mutation_canvas_write(
+                &mem,
+                &options,
+                &serde_json::json!({ "token": token, "path": "v.bin", "content": b64, "base64": true, "pos": pos })
+                    .to_string(),
+            );
+            assert_eq!(w.status, 200);
+        }
+        assert_eq!(std::fs::read(site.join("v.bin")).unwrap(), b"ABCDEF");
+        // A fresh pos:0 chunk truncates first (a new render starts clean): "X"=WA==.
+        let w = mutation_canvas_write(
+            &mem,
+            &options,
+            &serde_json::json!({ "token": token, "path": "v.bin", "content": "WA==", "base64": true, "pos": 0 })
+                .to_string(),
+        );
+        assert_eq!(w.status, 200);
+        assert_eq!(std::fs::read(site.join("v.bin")).unwrap(), b"X");
     }
 
     #[test]
     fn canvas_pwa_makes_the_project_installable() {
+        let (_dir, mem) = store();
         let options = GuiOptions::default();
-        let site = tempfile::tempdir().expect("site tempdir");
-        let folder = site.path().to_string_lossy().to_string();
+        let site = canvas_project(&mem, "pwa");
+        let folder = site.to_string_lossy().to_string();
         std::fs::write(
-            site.path().join("index.html"),
+            site.join("index.html"),
             "<!doctype html><html><head><title>My Game</title></head><body><h1>hi</h1></body></html>",
         )
         .unwrap();
 
         let open = body(&mutation_canvas_open(
+            &mem,
             &options,
             &serde_json::json!({ "folder": folder }).to_string(),
         ));
@@ -596,25 +648,26 @@ mod tests {
             .unwrap()
             .to_string();
 
-        let resp = mutation_canvas_pwa(&options, &serde_json::json!({ "token": token }).to_string());
+        let resp = mutation_canvas_pwa(&mem, &options, &serde_json::json!({ "token": token }).to_string());
         assert_eq!(resp.status, 200);
 
         // Manifest + service worker + (non-empty) icons are written.
-        let manifest = std::fs::read_to_string(site.path().join("manifest.json")).expect("manifest");
+        let manifest = std::fs::read_to_string(site.join("manifest.json")).expect("manifest");
         assert!(manifest.contains("\"My Game\""));
         assert!(manifest.contains("standalone"));
-        assert!(site.path().join("service-worker.js").is_file());
-        assert!(std::fs::metadata(site.path().join("icon-512.png")).unwrap().len() > 100);
-        assert!(std::fs::metadata(site.path().join("icon-192.png")).unwrap().len() > 100);
+        assert!(site.join("service-worker.js").is_file());
+        assert!(std::fs::metadata(site.join("icon-512.png")).unwrap().len() > 100);
+        assert!(std::fs::metadata(site.join("icon-192.png")).unwrap().len() > 100);
 
         // index.html now links the manifest, registers the worker, and has the iOS icon.
-        let html = std::fs::read_to_string(site.path().join("index.html")).unwrap();
+        let html = std::fs::read_to_string(site.join("index.html")).unwrap();
         assert!(html.contains("rel=\"manifest\""));
         assert!(html.contains("serviceWorker"));
         assert!(html.contains("apple-touch-icon"));
 
         // Idempotent: a second pass reports already-done and doesn't double-inject.
         let again = body(&mutation_canvas_pwa(
+            &mem,
             &options,
             &serde_json::json!({ "token": token }).to_string(),
         ));
@@ -622,7 +675,7 @@ mod tests {
             serde_json::from_str::<serde_json::Value>(&again).unwrap()["already"].as_bool(),
             Some(true)
         );
-        let html2 = std::fs::read_to_string(site.path().join("index.html")).unwrap();
+        let html2 = std::fs::read_to_string(site.join("index.html")).unwrap();
         assert_eq!(html2.matches("rel=\"manifest\"").count(), 1);
     }
 
@@ -668,9 +721,14 @@ mod tests {
         assert!(std::fs::metadata(movie_path.join("gsap.min.js")).unwrap().len() > 1000);
         assert!(std::fs::metadata(movie_path.join("lottie.min.js")).unwrap().len() > 1000);
         assert!(movie_path.join("animation.js").is_file());
+        assert!(movie_path.join("capture.js").is_file());
+        assert!(std::fs::metadata(movie_path.join("webm-muxer.js")).unwrap().len() > 1000);
         assert!(movie_path.join("README.md").is_file());
+        let ajs = std::fs::read_to_string(movie_path.join("animation.js")).unwrap();
+        // Deterministic, seekable, full-length rendering (not a fixed-time clip).
+        assert!(ajs.contains("__duration") && ajs.contains("__seek"));
         let mhtml = std::fs::read_to_string(movie_path.join("index.html")).unwrap();
-        assert!(mhtml.contains("gsap.min.js") && mhtml.contains("Record"));
+        assert!(mhtml.contains("<canvas id=\"stage\"") && mhtml.contains("webm-muxer.js"));
 
         // A duplicate name is refused (no silent overwrite).
         let dup = mutation_canvas_new(
@@ -678,15 +736,27 @@ mod tests {
             &serde_json::json!({ "name": "My Site", "kind": "website" }).to_string(),
         );
         assert_eq!(dup.status, 400);
+
+        // Delete removes the project folder; traversal/escape names are refused.
+        let escape = mutation_canvas_delete(
+            &mem,
+            &serde_json::json!({ "name": "../secret" }).to_string(),
+        );
+        assert_eq!(escape.status, 400);
+        assert!(web_path.is_dir());
+        let del = mutation_canvas_delete(&mem, &serde_json::json!({ "name": "My-Site" }).to_string());
+        assert_eq!(del.status, 200);
+        assert!(!web_path.exists());
     }
 
     #[test]
     fn canvas_write_refuses_to_escape_the_folder() {
-        let (_dir, _mem) = store();
+        let (_dir, mem) = store();
         let options = GuiOptions::default();
-        let site = tempfile::tempdir().expect("site tempdir");
-        let folder = site.path().to_string_lossy().to_string();
+        let site = canvas_project(&mem, "escape");
+        let folder = site.to_string_lossy().to_string();
         let open = body(&mutation_canvas_open(
+            &mem,
             &options,
             &serde_json::json!({ "folder": folder }).to_string(),
         ));
@@ -695,20 +765,76 @@ mod tests {
 
         // A traversal path is rejected and nothing is written above the folder.
         let escape = mutation_canvas_write(
+            &mem,
             &options,
             &serde_json::json!({ "token": token, "path": "../escape.html", "content": "x" })
                 .to_string(),
         );
         assert!(escape.status >= 400);
-        assert!(!site.path().parent().unwrap().join("escape.html").exists());
+        assert!(!site.parent().unwrap().join("escape.html").exists());
 
         // An unknown token is rejected outright.
         let bogus = mutation_canvas_write(
+            &mem,
             &options,
             &serde_json::json!({ "token": "deadbeef", "path": "index.html", "content": "x" })
                 .to_string(),
         );
         assert!(bogus.status >= 400);
+    }
+
+    #[test]
+    fn canvas_open_refuses_folders_outside_the_canvas_root() {
+        let (_dir, mem) = store();
+        let options = GuiOptions::default();
+        let outside = tempfile::tempdir().expect("outside tempdir");
+        std::fs::write(outside.path().join("index.html"), "<h1>outside</h1>").unwrap();
+
+        let response = mutation_canvas_open(
+            &mem,
+            &options,
+            &serde_json::json!({ "folder": outside.path().to_string_lossy() }).to_string(),
+        );
+
+        assert_eq!(response.status, 403);
+        assert!(options.preview_dirs.lock().unwrap().is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn canvas_write_and_pwa_refuse_final_symlink_targets() {
+        use std::os::unix::fs::symlink;
+
+        let (_dir, mem) = store();
+        let options = GuiOptions::default();
+        let site = canvas_project(&mem, "symlink-write");
+        let outside = tempfile::tempdir().expect("outside tempdir");
+        let outside_index = outside.path().join("outside-index.html");
+        std::fs::write(&outside_index, "original").unwrap();
+        symlink(&outside_index, site.join("index.html")).unwrap();
+
+        let open = body(&mutation_canvas_open(
+            &mem,
+            &options,
+            &serde_json::json!({ "folder": site.to_string_lossy() }).to_string(),
+        ));
+        let token = serde_json::from_str::<serde_json::Value>(&open).unwrap()["token"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        let write = mutation_canvas_write(
+            &mem,
+            &options,
+            &serde_json::json!({ "token": token, "path": "index.html", "content": "changed" })
+                .to_string(),
+        );
+        assert_eq!(write.status, 403);
+        assert_eq!(std::fs::read_to_string(&outside_index).unwrap(), "original");
+
+        let pwa = mutation_canvas_pwa(&mem, &options, &serde_json::json!({ "token": token }).to_string());
+        assert!(pwa.status >= 400);
+        assert_eq!(std::fs::read_to_string(&outside_index).unwrap(), "original");
     }
 
     #[test]
@@ -829,9 +955,10 @@ mod tests {
         std::fs::write(draft.join("index.html"), "<h1>ai</h1>").expect("write draft");
         let staged = body(&canvas_draft_get(&mem));
         let staged: serde_json::Value = serde_json::from_str(&staged).expect("draft json");
+        let canonical_draft = draft.canonicalize().expect("canonical draft");
         assert_eq!(
             staged["folder"].as_str(),
-            Some(draft.to_string_lossy().as_ref())
+            Some(canonical_draft.to_string_lossy().as_ref())
         );
         assert_eq!(staged["html"].as_str(), Some("<h1>ai</h1>"));
     }

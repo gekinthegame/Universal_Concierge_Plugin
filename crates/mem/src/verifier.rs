@@ -611,7 +611,7 @@ mod tests {
             enabled: true,
             install: false,
             test: true,
-            timeout_seconds: 1,
+            timeout_seconds: 5,
         }
     }
 

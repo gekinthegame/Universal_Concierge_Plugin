@@ -39,8 +39,8 @@ use canvas::preview_token;
 use canvas::{
     approved_agent_matches_peer, approved_contact_card_author, canvas_draft_get, canvas_file_get,
     canvas_files_get, canvas_mtime_get, canvas_preview_serve, canvas_projects_get,
-    canvas_signal_get, mutation_canvas_new, mutation_canvas_open, mutation_canvas_pwa,
-    mutation_canvas_signal, mutation_canvas_snapshot, mutation_canvas_write,
+    canvas_signal_get, mutation_canvas_delete, mutation_canvas_new, mutation_canvas_open,
+    mutation_canvas_pwa, mutation_canvas_signal, mutation_canvas_snapshot, mutation_canvas_write,
     mutation_save_checkpoint, parse_canvas_signal, parse_contact_card, queue_canvas_signal,
     record_site_checkpoint, site_checkpoint_response, site_checkpoints_json,
 };
@@ -495,6 +495,8 @@ pub struct Response {
     pub content_type: &'static str,
     /// Overrides `content_type` when set (for dynamic media types on blob assets).
     pub content_type_owned: Option<String>,
+    /// Overrides the default GUI CSP when a route needs a narrower browser sandbox.
+    pub csp: Option<&'static str>,
     pub headers: Vec<(String, String)>,
     pub body: Vec<u8>,
     /// When true, the response may be framed same-origin (so a PDF blob can
@@ -537,6 +539,10 @@ impl Response {
         Self::json_error(403, "forbidden")
     }
 
+    fn forbidden_with_message(message: String) -> Self {
+        Self::json_error(403, &message)
+    }
+
     fn header_too_large() -> Self {
         Self::json_error(431, "request headers too large")
     }
@@ -564,6 +570,7 @@ impl Response {
             status,
             content_type,
             content_type_owned: None,
+            csp: None,
             headers: Vec::new(),
             body,
             embeddable: false,
@@ -614,7 +621,7 @@ pub fn handle_with_options(
     // Live-builder preview: serve a registered site folder's files so a multi-file
     // site renders with correct relative paths.
     if let Some(rest) = path.strip_prefix("/canvas-preview/") {
-        return canvas_preview_serve(options, rest);
+        return canvas_preview_serve(mem, options, rest);
     }
     match path {
         "/" => Response::html(INDEX_HTML),
@@ -651,10 +658,10 @@ pub fn handle_with_options(
         "/api/site/checkpoints" => to_response(site_checkpoints_json(mem)),
         "/api/site/checkpoint" => site_checkpoint_response(mem, query),
         "/api/mcp/status" => to_response(mcp_status_json(mem)),
-        "/api/canvas/files" => canvas_files_get(options, query),
-        "/api/canvas/file" => canvas_file_get(options, query),
+        "/api/canvas/files" => canvas_files_get(mem, options, query),
+        "/api/canvas/file" => canvas_file_get(mem, options, query),
         "/api/canvas/projects" => canvas_projects_get(mem),
-        "/api/canvas/mtime" => canvas_mtime_get(options, query),
+        "/api/canvas/mtime" => canvas_mtime_get(mem, options, query),
         "/api/canvas/draft" => canvas_draft_get(mem),
         "/api/canvas/signal" => canvas_signal_get(options, query),
         "/api/requests" => to_response(requests_json(mem)),

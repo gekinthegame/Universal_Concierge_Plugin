@@ -19,7 +19,7 @@ use serde_json::{json, Value};
 
 // ── Bundled, self-contained media toolkit (Decision: build on proven work) ──
 // Impeccable design knowledge (Apache-2.0, © 2025-2026 Paul Bakaus) — see
-// `guides/IMPECCABLE-LICENSE.txt` / `IMPECCABLE-NOTICE.md` and CREDITS.md.
+// `guides/IMPECCABLE-LICENSE.txt` and `guides/IMPECCABLE-NOTICE.md`.
 const GUIDE_OVERVIEW: &str = include_str!("guides/overview.md");
 const GUIDE_TYPOGRAPHY: &str = include_str!("guides/typography.md");
 const GUIDE_COLOR: &str = include_str!("guides/color.md");
@@ -36,13 +36,109 @@ const ENGINE_PHASER: &[u8] = include_bytes!("engines/phaser.min.js");
 // license); Lottie © Airbnb (MIT).
 const ENGINE_GSAP: &[u8] = include_bytes!("engines/gsap.min.js");
 const ENGINE_LOTTIE: &[u8] = include_bytes!("engines/lottie.min.js");
-const MOTION_SNIPPET: &str = r#"<script src="./gsap.min.js"></script>
+// webm-muxer (© Vanilla, MIT) — turns WebCodecs frames into a real .webm in the browser.
+const ENGINE_WEBM_MUXER: &[u8] = include_bytes!("engines/webm-muxer.js");
+const MOTION_SNIPPET: &str = r#"Draw to a <canvas> from a SEEKABLE timeline; the Concierge renders every frame to video on Save/Publish (any length, no ffmpeg). index.html:
+<canvas id="stage"></canvas>
+<script src="./gsap.min.js"></script>
 <script src="./lottie.min.js"></script>
+<script src="./webm-muxer.js"></script>
+<script src="./capture.js"></script>   <!-- deterministic renderer, written for you -->
 <script>
-  const tl = gsap.timeline({repeat:-1, yoyo:true});
-  tl.from('#el', {y:40, opacity:0, duration:1, ease:'power3.out'});
-  // Lottie (After-Effects vector motion): lottie.loadAnimation({container, renderer:'svg', path:'anim.json', loop:true, autoplay:true});
+  const c = document.getElementById('stage'), ctx = c.getContext('2d');
+  const state = { opacity: 0 };
+  const tl = gsap.timeline({ paused: true }).to(state, {opacity:1, duration:1});   // extend this; its length = the movie length
+  function draw(){ ctx.fillStyle='#0a0b1a'; ctx.fillRect(0,0,c.width,c.height); /* draw using state… */ }
+  window.__fps = 30;
+  window.__duration = tl.duration();             // seconds — set to 30, 900, 1800… for longer movies
+  window.__seek = (t) => { tl.time(Math.min(t, tl.duration())); draw(); };   // MUST be deterministic (no random/clock)
+  // Lottie to canvas: const a = lottie.loadAnimation({container:c, renderer:'canvas'}); window.__seek = t => { a.goToAndStop(t*1000, false); };
 </script>"#;
+// The deterministic renderer — identical to the GUI's Movie scaffold so AI-built motion
+// projects also render full-length video on Save/Publish.
+const MOTION_CAPTURE: &str = r#"// Concierge deterministic STREAMING renderer. On Save/Publish the Studio asks this frame
+// to render the FULL animation (window.__duration seconds) to a real video, frame-by-frame,
+// offline. WebCodecs + the bundled WebM muxer in streaming mode emit encoded chunks as
+// they're produced; each is streamed to disk (bounded memory, no whole-file buffer) — so a
+// 30-minute movie has no time or size limit. No ffmpeg, no Record button. Falls back to a
+// short real-time capture if WebCodecs is unavailable.
+(function () {
+  function send(extra, transfer) { try { parent.postMessage(Object.assign({ concierge: 'capture' }, extra), '*', transfer || []); } catch (e) {} }
+  var ackResolve = null;
+  window.addEventListener('message', function (e) {
+    if (e.data && e.data.concierge === 'chunk-ack' && ackResolve) { var r = ackResolve; ackResolve = null; r(); }
+  });
+  function pushChunk(buf, position) {
+    var ack = new Promise(function (r) { ackResolve = r; });
+    send({ phase: 'chunk', position: position, buf: buf }, [buf]);
+    return ack;   // backpressure: wait until the Studio has written this chunk to disk
+  }
+
+  async function renderStreaming(canvas, durationSec, fps) {
+    if (typeof VideoEncoder === 'undefined' || !window.WebMMuxer) return false;
+    var w = canvas.width, h = canvas.height;
+    var queue = [];
+    var muxer = new WebMMuxer.Muxer({
+      target: new WebMMuxer.StreamTarget({
+        chunked: true,
+        chunkSize: 4 * 1024 * 1024,
+        onData: function (data, position) { queue.push({ buf: data.slice().buffer, position: position }); }
+      }),
+      video: { codec: 'V_VP9', width: w, height: h, frameRate: fps },
+      streaming: true
+    });
+    var encoder = new VideoEncoder({ output: function (c, m) { muxer.addVideoChunk(c, m); }, error: function (err) { console.error(err); } });
+    encoder.configure({ codec: 'vp09.00.10.08', width: w, height: h, framerate: fps, bitrate: 8000000 });
+    async function drain() { while (queue.length) { var c = queue.shift(); await pushChunk(c.buf, c.position); } }
+
+    if (typeof window.__beginRender === 'function') window.__beginRender();
+    var total = Math.max(1, Math.round(durationSec * fps));
+    for (var f = 0; f < total; f++) {
+      var t = f / fps;
+      if (typeof window.__seek === 'function') window.__seek(t);
+      var vf = new VideoFrame(canvas, { timestamp: Math.round(t * 1e6), duration: Math.round(1e6 / fps) });
+      encoder.encode(vf, { keyFrame: f % (fps * 2) === 0 });
+      vf.close();
+      if (encoder.encodeQueueSize > 8) await new Promise(function (r) { setTimeout(r, 0); });
+      if (queue.length) await drain();
+      if (f % fps === 0) send({ phase: 'render', frame: f, total: total });
+    }
+    await encoder.flush();
+    muxer.finalize();
+    await drain();
+    if (typeof window.__endRender === 'function') window.__endRender();
+    return true;
+  }
+
+  async function renderRealtime(canvas, durationSec) {
+    if (!canvas.captureStream || typeof MediaRecorder === 'undefined') return false;
+    var chunks = [];
+    var rec = new MediaRecorder(canvas.captureStream(30), { mimeType: 'video/webm' });
+    rec.ondataavailable = function (ev) { if (ev.data && ev.data.size) chunks.push(ev.data); };
+    var stopped = new Promise(function (r) { rec.onstop = r; });
+    rec.start();
+    await new Promise(function (r) { setTimeout(r, Math.min(durationSec, 120) * 1000); });
+    rec.stop();
+    await stopped;
+    var buf = await new Blob(chunks, { type: 'video/webm' }).arrayBuffer();
+    await pushChunk(buf, 0);
+    return true;
+  }
+
+  window.addEventListener('message', async function (e) {
+    var msg = e.data || {};
+    if (msg.concierge !== 'record') return;
+    var canvas = document.querySelector('canvas');
+    if (!canvas) { send({ phase: 'done', ok: false }); return; }
+    var fps = window.__fps || 30;
+    var dur = Math.max(0.2, window.__duration || (msg.ms ? msg.ms / 1000 : 4));
+    var ok = false;
+    try { ok = await renderStreaming(canvas, dur, fps); } catch (err) { console.error(err); }
+    if (!ok) { try { ok = await renderRealtime(canvas, dur); } catch (e2) {} }
+    send({ phase: 'done', ok: ok });
+  });
+})();
+"#;
 
 /// Marker kept for callers that probed the old deferred stub.
 pub const STATUS: &str = "implemented (JSON-RPC 2.0 / stdio, protocol 2025-11-25)";
@@ -528,10 +624,16 @@ fn tool_write_site(mem: &MemCli, args: &Value) -> Result<String, String> {
     } else {
         safe
     };
-    let store = mem.store_dir().map_err(|e| e.to_string())?;
-    let folder = store.join("canvas").join(&safe);
+    let root = canvas_root(mem)?;
+    let folder = root.join(&safe);
     std::fs::create_dir_all(&folder).map_err(|e| format!("create draft dir: {e}"))?;
-    std::fs::write(folder.join("index.html"), html).map_err(|e| format!("write draft: {e}"))?;
+    write_canvas_file(
+        &root,
+        &folder,
+        std::path::Path::new("index.html"),
+        html.as_bytes(),
+    )
+    .map_err(|e| format!("write draft: {e}"))?;
     Ok(format!(
         "Staged site '{safe}' ({} bytes) at {}. The Concierge Studio auto-prefills its site-folder \
 field with this path and opens it as the live writeable canvas. The user previews it and publishes \
@@ -559,8 +661,77 @@ fn safe_site(name: &str) -> String {
 
 /// Resolve `<store>/canvas/<site>/`, sanitizing the site name.
 fn site_dir(mem: &MemCli, site: &str) -> Result<std::path::PathBuf, String> {
-    let store = mem.store_dir().map_err(|e| e.to_string())?;
-    Ok(store.join("canvas").join(safe_site(site)))
+    Ok(canvas_root(mem)?.join(safe_site(site)))
+}
+
+fn canvas_root(mem: &MemCli) -> Result<std::path::PathBuf, String> {
+    let root = mem.store_dir().map_err(|e| e.to_string())?.join("canvas");
+    std::fs::create_dir_all(&root).map_err(|e| format!("create canvas root: {e}"))?;
+    let metadata = std::fs::symlink_metadata(&root)
+        .map_err(|e| format!("inspect canvas root {}: {e}", root.display()))?;
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        return Err(format!(
+            "canvas root is not a real directory: {}",
+            root.display()
+        ));
+    }
+    root.canonicalize()
+        .map_err(|e| format!("resolve canvas root {}: {e}", root.display()))
+}
+
+fn reject_symlink_components(root: &std::path::Path, path: &std::path::Path) -> Result<(), String> {
+    let rel = path
+        .strip_prefix(root)
+        .map_err(|_| "canvas path escaped the canvas root".to_string())?;
+    let mut cur = root.to_path_buf();
+    for component in rel.components() {
+        cur.push(component.as_os_str());
+        match std::fs::symlink_metadata(&cur) {
+            Ok(metadata) if metadata.file_type().is_symlink() => {
+                return Err(format!("refusing to follow symlink: {}", cur.display()));
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(format!("inspect {}: {error}", cur.display())),
+        }
+    }
+    Ok(())
+}
+
+fn prepare_canvas_write(
+    root: &std::path::Path,
+    folder: &std::path::Path,
+    rel: &std::path::Path,
+) -> Result<std::path::PathBuf, String> {
+    let target = folder.join(rel);
+    let parent = target
+        .parent()
+        .ok_or_else(|| "invalid canvas target".to_string())?;
+    std::fs::create_dir_all(parent).map_err(|e| format!("create dir: {e}"))?;
+    let parent_canon = parent
+        .canonicalize()
+        .map_err(|e| format!("resolve parent dir: {e}"))?;
+    if !parent_canon.starts_with(folder) || !parent_canon.starts_with(root) {
+        return Err("canvas path escaped the site folder".to_string());
+    }
+    reject_symlink_components(root, &target)?;
+    if let Ok(metadata) = std::fs::symlink_metadata(&target) {
+        if metadata.is_dir() {
+            return Err(format!("target is a directory: {}", target.display()));
+        }
+    }
+    Ok(target)
+}
+
+fn write_canvas_file(
+    root: &std::path::Path,
+    folder: &std::path::Path,
+    rel: &std::path::Path,
+    bytes: &[u8],
+) -> Result<std::path::PathBuf, String> {
+    let target = prepare_canvas_write(root, folder, rel)?;
+    std::fs::write(&target, bytes).map_err(|e| format!("write file: {e}"))?;
+    Ok(target)
 }
 
 /// Sanitize a relative file path: reject absolute / `..`, keep safe filename chars.
@@ -678,11 +849,9 @@ fn tool_write_asset(mem: &MemCli, args: &Value) -> Result<String, String> {
         content.as_bytes().to_vec()
     };
     let folder = site_dir(mem, site)?;
-    let dest = folder.join(&rel);
-    if let Some(parent) = dest.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| format!("create dir: {e}"))?;
-    }
-    std::fs::write(&dest, &bytes).map_err(|e| format!("write asset: {e}"))?;
+    let root = canvas_root(mem)?;
+    let dest =
+        write_canvas_file(&root, &folder, &rel, &bytes).map_err(|e| format!("write asset: {e}"))?;
     Ok(format!(
         "Staged '{}' ({} bytes) in site '{}' at {}. Open the folder {} in the Studio to preview live (the default 'draft' site auto-prefills the site-folder field); the user publishes it. Nothing has been published.",
         rel.display(), bytes.len(), safe_site(site), dest.display(), folder.display()
@@ -694,6 +863,7 @@ fn tool_scaffold_engine(mem: &MemCli, args: &Value) -> Result<String, String> {
     let engine = arg(args, "engine")?.to_lowercase();
     let site = args.get("site").and_then(Value::as_str).unwrap_or("draft");
     let folder = site_dir(mem, site)?;
+    let root = canvas_root(mem)?;
     std::fs::create_dir_all(&folder).map_err(|e| format!("create dir: {e}"))?;
 
     // Motion/animation skill — bundles GSAP + Lottie (two files). Browser-native video
@@ -702,12 +872,36 @@ fn tool_scaffold_engine(mem: &MemCli, args: &Value) -> Result<String, String> {
         engine.as_str(),
         "motion" | "animation" | "animate" | "gsap" | "lottie"
     ) {
-        std::fs::write(folder.join("gsap.min.js"), ENGINE_GSAP)
-            .map_err(|e| format!("write gsap: {e}"))?;
-        std::fs::write(folder.join("lottie.min.js"), ENGINE_LOTTIE)
-            .map_err(|e| format!("write lottie: {e}"))?;
+        write_canvas_file(
+            &root,
+            &folder,
+            std::path::Path::new("gsap.min.js"),
+            ENGINE_GSAP,
+        )
+        .map_err(|e| format!("write gsap: {e}"))?;
+        write_canvas_file(
+            &root,
+            &folder,
+            std::path::Path::new("lottie.min.js"),
+            ENGINE_LOTTIE,
+        )
+        .map_err(|e| format!("write lottie: {e}"))?;
+        write_canvas_file(
+            &root,
+            &folder,
+            std::path::Path::new("webm-muxer.js"),
+            ENGINE_WEBM_MUXER,
+        )
+        .map_err(|e| format!("write webm-muxer: {e}"))?;
+        write_canvas_file(
+            &root,
+            &folder,
+            std::path::Path::new("capture.js"),
+            MOTION_CAPTURE.as_bytes(),
+        )
+        .map_err(|e| format!("write capture.js: {e}"))?;
         return Ok(format!(
-            "Vendored GSAP ({} KB) + Lottie ({} KB) into site '{}' — self-contained (no CDN, works offline + on IPFS).\n\nUse them in index.html:\n{}\n\nFor motion guidance call concierge.design_guide(topic='motion'). Capture the result to a video file in the browser via MediaRecorder + getDisplayMedia — no ffmpeg. Stage your animation with concierge.write_asset, preview the folder ({}) live in the Studio, then publish. Nothing has been published.",
+            "Vendored GSAP ({} KB) + Lottie ({} KB) + webm-muxer + capture.js into site '{}' — self-contained (no CDN, works offline + on IPFS).\n\nUse them in index.html:\n{}\n\nFor motion guidance call concierge.design_guide(topic='motion'). The video is AUTOMATIC and FULL-LENGTH: on Save/Publish the Concierge renders every frame (window.__duration × window.__fps) to a real video with WebCodecs — any length, as fast as the machine allows, no Record button, no ffmpeg. Keep the timeline SEEKABLE (no random/clock). Stage with concierge.write_asset, preview ({}) live, then publish. Nothing has been published.",
             ENGINE_GSAP.len() / 1024,
             ENGINE_LOTTIE.len() / 1024,
             safe_site(site),
@@ -733,7 +927,8 @@ fn tool_scaffold_engine(mem: &MemCli, args: &Value) -> Result<String, String> {
         ),
         other => return Err(format!("unknown engine '{other}'. Use 'three' (3D), 'phaser' (2D), or 'motion' (GSAP + Lottie animation).")),
     };
-    std::fs::write(folder.join(file), bytes).map_err(|e| format!("write engine: {e}"))?;
+    write_canvas_file(&root, &folder, std::path::Path::new(file), bytes)
+        .map_err(|e| format!("write engine: {e}"))?;
     Ok(format!(
         "Vendored {} ({} KB) into site '{}' as {}. Self-contained — no CDN, works offline + on IPFS.\n\nUse it:\n{}\n\nThen stage your game code with concierge.write_asset, preview the folder ({}) live in the Studio, and publish. Nothing has been published.",
         if file.starts_with("three") { "Three.js" } else { "Phaser" },
@@ -894,6 +1089,31 @@ mod tests {
             }),
         );
         assert_eq!(traversal["result"]["isError"], true);
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::symlink;
+
+            let outside = tempfile::tempdir().unwrap();
+            let outside_file = outside.path().join("outside.txt");
+            std::fs::write(&outside_file, "original").unwrap();
+            symlink(
+                &outside_file,
+                mem.store_dir().unwrap().join("canvas/demo/linked.txt"),
+            )
+            .unwrap();
+            let symlink_write = call(
+                &mem,
+                true,
+                "tools/call",
+                json!({
+                    "name": "concierge.write_asset",
+                    "arguments": { "site": "demo", "path": "linked.txt", "content": "changed" }
+                }),
+            );
+            assert_eq!(symlink_write["result"]["isError"], true);
+            assert_eq!(std::fs::read_to_string(&outside_file).unwrap(), "original");
+        }
 
         let bad_base64 = call(
             &mem,

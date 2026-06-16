@@ -25,7 +25,15 @@ pub(super) fn mutation_save_checkpoint(mem: &MemCli, body: &str) -> Response {
             .filter(|s| !s.is_empty())
         {
             Some(folder) => {
-                match std::fs::read_to_string(std::path::Path::new(folder).join("index.html")) {
+                let root = match canvas_root(mem) {
+                    Ok(root) => root,
+                    Err(response) => return response,
+                };
+                let dir = match require_canvas_dir(mem, std::path::Path::new(folder)) {
+                    Ok(dir) => dir,
+                    Err(response) => return response,
+                };
+                match read_canvas_text(&root, &dir, std::path::Path::new("index.html")) {
                     Ok(html) => html,
                     Err(error) => {
                         return Response::error(format!("read folder index.html: {error}"))
@@ -43,10 +51,16 @@ pub(super) fn mutation_save_checkpoint(mem: &MemCli, body: &str) -> Response {
     };
     // Sidecar: stage the HTML so the ⏱ Checkpoints list can reopen this version.
     let mut warning: Option<String> = None;
-    if let Ok(store) = mem.store_dir() {
-        let folder = store.join("canvas").join(safe_site(&name));
+    if let Ok(root) = canvas_root(mem) {
+        let folder = root.join(safe_site(&name));
         if std::fs::create_dir_all(&folder).is_ok()
-            && std::fs::write(folder.join("index.html"), &html).is_ok()
+            && write_canvas_file(
+                &root,
+                &folder,
+                std::path::Path::new("index.html"),
+                html.as_bytes(),
+            )
+            .is_ok()
         {
             warning = record_site_checkpoint(mem, &name, &folder.to_string_lossy(), None, &cid, "")
                 .err()
@@ -350,9 +364,9 @@ pub(super) fn mutation_canvas_snapshot(mem: &MemCli, body: &str) -> Response {
     if html.is_empty() {
         return Response::bad_request("html is required");
     }
-    let store = match mem.store_dir() {
-        Ok(dir) => dir,
-        Err(error) => return Response::error(error.to_string()),
+    let root = match canvas_root(mem) {
+        Ok(root) => root,
+        Err(response) => return response,
     };
     let safe: String = session
         .chars()
@@ -364,11 +378,16 @@ pub(super) fn mutation_canvas_snapshot(mem: &MemCli, body: &str) -> Response {
     } else {
         safe
     };
-    let folder = store.join("canvas").join(&safe);
+    let folder = root.join(&safe);
     if let Err(error) = std::fs::create_dir_all(&folder) {
         return Response::error(format!("create snapshot dir: {error}"));
     }
-    if let Err(error) = std::fs::write(folder.join("index.html"), html) {
+    if let Err(error) = write_canvas_file(
+        &root,
+        &folder,
+        std::path::Path::new("index.html"),
+        html.as_bytes(),
+    ) {
         return Response::error(format!("write snapshot: {error}"));
     }
     Response::json(
@@ -426,6 +445,131 @@ pub(super) fn preview_token(dir: &std::path::Path) -> String {
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     dir.to_string_lossy().hash(&mut hasher);
     format!("{:016x}", hasher.finish())
+}
+
+const PREVIEW_CSP: &str = "sandbox allow-scripts; default-src 'self' data: blob:; style-src 'self' 'unsafe-inline' data: blob:; script-src 'self' 'unsafe-inline' data: blob:; img-src 'self' data: blob:; media-src 'self' data: blob:; font-src 'self' data:; connect-src 'self' blob:; frame-ancestors 'self'; object-src 'none'; base-uri 'none'; form-action 'none'";
+
+fn canvas_root(mem: &MemCli) -> Result<std::path::PathBuf, Response> {
+    let root = mem
+        .store_dir()
+        .map_err(|error| Response::error(error.to_string()))?
+        .join("canvas");
+    std::fs::create_dir_all(&root)
+        .map_err(|error| Response::error(format!("create canvas root: {error}")))?;
+    let metadata = std::fs::symlink_metadata(&root)
+        .map_err(|error| Response::error(format!("inspect canvas root: {error}")))?;
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        return Err(Response::forbidden());
+    }
+    root.canonicalize()
+        .map_err(|error| Response::error(format!("resolve canvas root: {error}")))
+}
+
+fn require_canvas_dir(
+    mem: &MemCli,
+    folder: &std::path::Path,
+) -> Result<std::path::PathBuf, Response> {
+    let root = canvas_root(mem)?;
+    let canon = folder
+        .canonicalize()
+        .map_err(|_| Response::error(format!("not a folder: {}", folder.display())))?;
+    if !canon.is_dir() {
+        return Err(Response::error(format!(
+            "not a folder: {}",
+            folder.display()
+        )));
+    }
+    if !canon.starts_with(&root) {
+        return Err(Response::forbidden());
+    }
+    Ok(canon)
+}
+
+fn registered_canvas_dir(
+    mem: &MemCli,
+    options: &GuiOptions,
+    token: &str,
+) -> Result<std::path::PathBuf, Response> {
+    let Some(dir) = options
+        .preview_dirs
+        .lock()
+        .ok()
+        .and_then(|dirs| dirs.get(token).cloned())
+    else {
+        return Err(Response::bad_request("unknown or missing preview token"));
+    };
+    require_canvas_dir(mem, &dir)
+}
+
+fn reject_symlink_components(root: &std::path::Path, path: &std::path::Path) -> Result<(), String> {
+    let rel = path
+        .strip_prefix(root)
+        .map_err(|_| "canvas path escaped the canvas root".to_string())?;
+    let mut cur = root.to_path_buf();
+    for component in rel.components() {
+        cur.push(component.as_os_str());
+        match std::fs::symlink_metadata(&cur) {
+            Ok(metadata) if metadata.file_type().is_symlink() => {
+                return Err(format!("refusing to follow symlink: {}", cur.display()));
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(format!("inspect {}: {error}", cur.display())),
+        }
+    }
+    Ok(())
+}
+
+fn prepare_canvas_write(
+    root: &std::path::Path,
+    dir: &std::path::Path,
+    rel: &std::path::Path,
+) -> Result<std::path::PathBuf, String> {
+    let target = dir.join(rel);
+    let parent = target
+        .parent()
+        .ok_or_else(|| "invalid canvas target".to_string())?;
+    std::fs::create_dir_all(parent).map_err(|error| format!("create dir: {error}"))?;
+    let parent_canon = parent
+        .canonicalize()
+        .map_err(|error| format!("resolve parent dir: {error}"))?;
+    if !parent_canon.starts_with(dir) || !parent_canon.starts_with(root) {
+        return Err("canvas path escaped the open project folder".to_string());
+    }
+    reject_symlink_components(root, &target)?;
+    if let Ok(metadata) = std::fs::symlink_metadata(&target) {
+        if metadata.is_dir() {
+            return Err(format!("target is a directory: {}", target.display()));
+        }
+    }
+    Ok(target)
+}
+
+fn write_canvas_file(
+    root: &std::path::Path,
+    dir: &std::path::Path,
+    rel: &std::path::Path,
+    bytes: &[u8],
+) -> Result<std::path::PathBuf, String> {
+    let target = prepare_canvas_write(root, dir, rel)?;
+    std::fs::write(&target, bytes).map_err(|error| format!("write file: {error}"))?;
+    Ok(target)
+}
+
+fn read_canvas_text(
+    root: &std::path::Path,
+    dir: &std::path::Path,
+    rel: &std::path::Path,
+) -> Result<String, String> {
+    let target = dir.join(rel);
+    reject_symlink_components(root, &target)?;
+    let canon = target
+        .canonicalize()
+        .map_err(|error| format!("read file: {error}"))?;
+    if !canon.starts_with(dir) || !canon.starts_with(root) || !canon.is_file() {
+        return Err("canvas file escaped the open project folder".to_string());
+    }
+    std::fs::read_to_string(&canon).map_err(|error| format!("read file: {error}"))
 }
 
 /// Minimal percent-decoder for a URL path segment (`%20` → space, …).
@@ -545,8 +689,15 @@ pub(super) fn canvas_draft_get(mem: &MemCli) -> Response {
     else {
         return none();
     };
-    let index = folder.join("index.html");
-    match std::fs::read_to_string(&index) {
+    let root = match canvas_root(mem) {
+        Ok(root) => root,
+        Err(_) => return none(),
+    };
+    let folder = match require_canvas_dir(mem, &folder) {
+        Ok(folder) => folder,
+        Err(_) => return none(),
+    };
+    match read_canvas_text(&root, &folder, std::path::Path::new("index.html")) {
         Ok(html) => Response::json(
             serde_json::json!({
                 "folder": folder.to_string_lossy(),
@@ -580,11 +731,17 @@ fn safe_rel_path(relpath: &str) -> Option<std::path::PathBuf> {
 /// `GET /api/canvas/file?token=&path=`: the text of one file in the registered folder
 /// (defaults to index.html), so the Studio editor can load a file to edit. Fenced to
 /// the folder (no traversal).
-pub(super) fn canvas_file_get(options: &GuiOptions, query: &str) -> Response {
-    let Some(dir) = canvas_dir(options, query) else {
-        return Response::bad_request("unknown or missing preview token");
-    };
+pub(super) fn canvas_file_get(mem: &MemCli, options: &GuiOptions, query: &str) -> Response {
     let params = parse_query(query);
+    let token = params.get("token").cloned().unwrap_or_default();
+    let dir = match registered_canvas_dir(mem, options, &token) {
+        Ok(dir) => dir,
+        Err(response) => return response,
+    };
+    let root = match canvas_root(mem) {
+        Ok(root) => root,
+        Err(response) => return response,
+    };
     let rel = params
         .get("path")
         .map(|p| percent_decode(p))
@@ -592,14 +749,7 @@ pub(super) fn canvas_file_get(options: &GuiOptions, query: &str) -> Response {
     let Some(rel) = safe_rel_path(&rel) else {
         return Response::bad_request("invalid path");
     };
-    let canon = match dir.join(&rel).canonicalize() {
-        Ok(canon) => canon,
-        Err(_) => return Response::error("file not found".to_string()),
-    };
-    if !canon.starts_with(&dir) || !canon.is_file() {
-        return Response::forbidden();
-    }
-    match std::fs::read_to_string(&canon) {
+    match read_canvas_text(&root, &dir, &rel) {
         Ok(content) => Response::json(
             serde_json::json!({
                 "path": rel.to_string_lossy().replace('\\', "/"),
@@ -615,7 +765,7 @@ pub(super) fn canvas_file_get(options: &GuiOptions, query: &str) -> Response {
 /// canvas folder (path defaults to index.html). This is the unified writeable-canvas
 /// seam — the Studio editor saves the file you are editing straight into the open
 /// folder, which the live preview then hot-reloads. Fenced to the folder (no traversal).
-pub(super) fn mutation_canvas_write(options: &GuiOptions, body: &str) -> Response {
+pub(super) fn mutation_canvas_write(mem: &MemCli, options: &GuiOptions, body: &str) -> Response {
     let value = match parse_body(body) {
         Ok(value) => value,
         Err(response) => return response,
@@ -624,13 +774,13 @@ pub(super) fn mutation_canvas_write(options: &GuiOptions, body: &str) -> Respons
         Ok(token) => token.trim().to_string(),
         Err(response) => return response,
     };
-    let Some(dir) = options
-        .preview_dirs
-        .lock()
-        .ok()
-        .and_then(|d| d.get(&token).cloned())
-    else {
-        return Response::bad_request("unknown or missing preview token");
+    let dir = match registered_canvas_dir(mem, options, &token) {
+        Ok(dir) => dir,
+        Err(response) => return response,
+    };
+    let root = match canvas_root(mem) {
+        Ok(root) => root,
+        Err(response) => return response,
     };
     let rel = value
         .get("path")
@@ -640,19 +790,52 @@ pub(super) fn mutation_canvas_write(options: &GuiOptions, body: &str) -> Respons
         return Response::bad_request("invalid path");
     };
     let content = value.get("content").and_then(|v| v.as_str()).unwrap_or("");
-    let target = dir.join(&rel);
-    if let Some(parent) = target.parent() {
-        if let Err(error) = std::fs::create_dir_all(parent) {
-            return Response::error(format!("create dir: {error}"));
+    // Binary assets (e.g. an auto-captured animation video) arrive base64-encoded.
+    let is_b64 = value
+        .get("base64")
+        .map(|v| v.as_bool() == Some(true) || v.as_str() == Some("true"))
+        .unwrap_or(false);
+    let bytes: Vec<u8> = if is_b64 {
+        match b64_decode(content) {
+            Some(bytes) => bytes,
+            None => return Response::bad_request("content is not valid base64"),
         }
-        // Defence-in-depth: the realised parent must still live inside the folder.
-        match parent.canonicalize() {
-            Ok(canon) if canon.starts_with(&dir) => {}
-            _ => return Response::forbidden(),
+    } else {
+        content.as_bytes().to_vec()
+    };
+    // Streaming write: `pos` is a byte offset, so a long animation video can be written to
+    // disk chunk-by-chunk (bounded memory, no whole-file buffer). pos == 0 starts fresh
+    // (truncate); later chunks seek + write in place.
+    if let Some(pos) = value.get("pos").and_then(|v| v.as_u64()) {
+        use std::io::{Seek, SeekFrom, Write};
+        let target = match prepare_canvas_write(&root, &dir, &rel) {
+            Ok(target) => target,
+            Err(error) => return Response::forbidden_with_message(error),
+        };
+        let open = if pos == 0 {
+            std::fs::OpenOptions::new()
+                .create(true)
+                .write(true)
+                .truncate(true)
+                .open(&target)
+        } else {
+            std::fs::OpenOptions::new()
+                .create(true)
+                .write(true)
+                .truncate(false)
+                .open(&target)
+        };
+        let result = open.and_then(|mut file| {
+            file.seek(SeekFrom::Start(pos))?;
+            file.write_all(&bytes)
+        });
+        if let Err(error) = result {
+            return Response::error(format!("write file: {error}"));
         }
+        return Response::json(serde_json::json!({ "ok": true }).to_string());
     }
-    if let Err(error) = std::fs::write(&target, content) {
-        return Response::error(format!("write file: {error}"));
+    if let Err(error) = write_canvas_file(&root, &dir, &rel, &bytes) {
+        return Response::forbidden_with_message(error);
     }
     Response::json(serde_json::json!({ "ok": true, "mtime": folder_mtime(&dir) }).to_string())
 }
@@ -662,7 +845,7 @@ pub(super) fn mutation_canvas_write(options: &GuiOptions, body: &str) -> Respons
 /// injects the PWA tags into `index.html`. After this, publishing the folder to *any*
 /// host yields a URL that installs to the phone home screen (no app store, no fees, no
 /// native build). Local file edits only — no egress, no code execution. Idempotent.
-pub(super) fn mutation_canvas_pwa(options: &GuiOptions, body: &str) -> Response {
+pub(super) fn mutation_canvas_pwa(mem: &MemCli, options: &GuiOptions, body: &str) -> Response {
     let value = match parse_body(body) {
         Ok(value) => value,
         Err(response) => return response,
@@ -671,15 +854,20 @@ pub(super) fn mutation_canvas_pwa(options: &GuiOptions, body: &str) -> Response 
         Ok(token) => token.trim().to_string(),
         Err(response) => return response,
     };
-    let Some(dir) = options
-        .preview_dirs
-        .lock()
-        .ok()
-        .and_then(|d| d.get(&token).cloned())
-    else {
-        return Response::bad_request("unknown or missing preview token — open the project first");
+    let dir = match registered_canvas_dir(mem, options, &token) {
+        Ok(dir) => dir,
+        Err(response) if response.status == 400 => {
+            return Response::bad_request(
+                "unknown or missing preview token — open the project first",
+            )
+        }
+        Err(response) => return response,
     };
-    match apply_pwa(&dir) {
+    let root = match canvas_root(mem) {
+        Ok(root) => root,
+        Err(response) => return response,
+    };
+    match apply_pwa(&root, &dir) {
         Ok((name, injected)) => Response::json(
             serde_json::json!({
                 "ok": true,
@@ -697,9 +885,9 @@ pub(super) fn mutation_canvas_pwa(options: &GuiOptions, body: &str) -> Response 
 /// Make a folder an installable PWA: write the manifest, service worker, and icons, and
 /// inject the PWA tags into its index.html. Returns the app name + whether anything was
 /// newly injected. Idempotent — reused by the "New → Mobile App/Game" scaffold.
-fn apply_pwa(dir: &std::path::Path) -> Result<(String, bool), String> {
-    let index_path = dir.join("index.html");
-    let mut html = std::fs::read_to_string(&index_path)
+fn apply_pwa(root: &std::path::Path, dir: &std::path::Path) -> Result<(String, bool), String> {
+    let index_rel = std::path::Path::new("index.html");
+    let mut html = read_canvas_text(root, dir, index_rel)
         .map_err(|_| "a PWA needs a web entry point — add an index.html first".to_string())?;
 
     let name = extract_title(&html)
@@ -714,10 +902,25 @@ fn apply_pwa(dir: &std::path::Path) -> Result<(String, bool), String> {
         .take(18)
         .collect();
 
-    std::fs::write(dir.join("icon-512.png"), pwa_png_icon(512))
-        .map_err(|e| format!("write icon: {e}"))?;
-    let _ = std::fs::write(dir.join("icon-192.png"), pwa_png_icon(192));
-    let _ = std::fs::write(dir.join("icon.svg"), PWA_ICON_SVG);
+    write_canvas_file(
+        root,
+        dir,
+        std::path::Path::new("icon-512.png"),
+        &pwa_png_icon(512),
+    )
+    .map_err(|e| format!("write icon: {e}"))?;
+    let _ = write_canvas_file(
+        root,
+        dir,
+        std::path::Path::new("icon-192.png"),
+        &pwa_png_icon(192),
+    );
+    let _ = write_canvas_file(
+        root,
+        dir,
+        std::path::Path::new("icon.svg"),
+        PWA_ICON_SVG.as_bytes(),
+    );
 
     let manifest = serde_json::json!({
         "name": name,
@@ -734,13 +937,20 @@ fn apply_pwa(dir: &std::path::Path) -> Result<(String, bool), String> {
             { "src": "icon.svg", "sizes": "any", "type": "image/svg+xml" }
         ]
     });
-    std::fs::write(
-        dir.join("manifest.json"),
-        serde_json::to_vec_pretty(&manifest).unwrap_or_default(),
+    write_canvas_file(
+        root,
+        dir,
+        std::path::Path::new("manifest.json"),
+        &serde_json::to_vec_pretty(&manifest).unwrap_or_default(),
     )
     .map_err(|e| format!("write manifest: {e}"))?;
-    std::fs::write(dir.join("service-worker.js"), PWA_SERVICE_WORKER)
-        .map_err(|e| format!("write service worker: {e}"))?;
+    write_canvas_file(
+        root,
+        dir,
+        std::path::Path::new("service-worker.js"),
+        PWA_SERVICE_WORKER.as_bytes(),
+    )
+    .map_err(|e| format!("write service worker: {e}"))?;
 
     let mut injected = false;
     if !html.contains("rel=\"manifest\"") {
@@ -762,7 +972,8 @@ fn apply_pwa(dir: &std::path::Path) -> Result<(String, bool), String> {
         html = inject_before(&html, "</body>", PWA_SW_REGISTER);
         injected = true;
     }
-    std::fs::write(&index_path, &html).map_err(|e| format!("update index.html: {e}"))?;
+    write_canvas_file(root, dir, index_rel, html.as_bytes())
+        .map_err(|e| format!("update index.html: {e}"))?;
     Ok((name, injected))
 }
 
@@ -787,12 +998,12 @@ pub(super) fn mutation_canvas_new(mem: &MemCli, body: &str) -> Response {
         .trim();
     let safe = sanitize_project_name(display);
 
-    let canvas = match mem.store_dir() {
-        Ok(dir) => dir.join("canvas"),
-        Err(error) => return Response::error(error.to_string()),
+    let canvas = match canvas_root(mem) {
+        Ok(root) => root,
+        Err(response) => return response,
     };
     let dir = canvas.join(&safe);
-    if dir.exists() {
+    if std::fs::symlink_metadata(&dir).is_ok() {
         return Response::bad_request(
             "a project with that name already exists — pick another name",
         );
@@ -811,14 +1022,29 @@ pub(super) fn mutation_canvas_new(mem: &MemCli, body: &str) -> Response {
         "movie" => movie_starter(&title),
         _ => website_starter(&title),
     };
-    if let Err(error) = std::fs::write(dir.join("index.html"), index) {
+    if let Err(error) = write_canvas_file(
+        &canvas,
+        &dir,
+        std::path::Path::new("index.html"),
+        index.as_bytes(),
+    ) {
         return Response::error(format!("write index.html: {error}"));
     }
-    let _ = std::fs::write(dir.join("style.css"), css);
+    let _ = write_canvas_file(
+        &canvas,
+        &dir,
+        std::path::Path::new("style.css"),
+        css.as_bytes(),
+    );
     match kind {
         "app" => {
-            let _ = std::fs::write(dir.join("app.js"), APP_JS_STARTER);
-            if let Err(error) = apply_pwa(&dir) {
+            let _ = write_canvas_file(
+                &canvas,
+                &dir,
+                std::path::Path::new("app.js"),
+                APP_JS_STARTER.as_bytes(),
+            );
+            if let Err(error) = apply_pwa(&canvas, &dir) {
                 return Response::error(error);
             }
         }
@@ -827,10 +1053,37 @@ pub(super) fn mutation_canvas_new(mem: &MemCli, body: &str) -> Response {
             // (no CDN, no installs — works offline + on IPFS). The AI builds the motion in
             // animation.js; it plays in the preview and records to video in the browser
             // (MediaRecorder — no ffmpeg). Blender stays an optional advanced-3D path.
-            let _ = std::fs::write(dir.join("gsap.min.js"), GSAP_JS);
-            let _ = std::fs::write(dir.join("lottie.min.js"), LOTTIE_JS);
-            let _ = std::fs::write(dir.join("animation.js"), MOVIE_ANIMATION_JS);
-            let _ = std::fs::write(dir.join("README.md"), movie_readme(&title));
+            let _ = write_canvas_file(&canvas, &dir, std::path::Path::new("gsap.min.js"), GSAP_JS);
+            let _ = write_canvas_file(
+                &canvas,
+                &dir,
+                std::path::Path::new("lottie.min.js"),
+                LOTTIE_JS,
+            );
+            let _ = write_canvas_file(
+                &canvas,
+                &dir,
+                std::path::Path::new("webm-muxer.js"),
+                WEBM_MUXER_JS,
+            );
+            let _ = write_canvas_file(
+                &canvas,
+                &dir,
+                std::path::Path::new("animation.js"),
+                MOVIE_ANIMATION_JS.as_bytes(),
+            );
+            let _ = write_canvas_file(
+                &canvas,
+                &dir,
+                std::path::Path::new("capture.js"),
+                MOVIE_CAPTURE_JS.as_bytes(),
+            );
+            let _ = write_canvas_file(
+                &canvas,
+                &dir,
+                std::path::Path::new("README.md"),
+                movie_readme(&title).as_bytes(),
+            );
         }
         _ => {}
     }
@@ -844,6 +1097,44 @@ pub(super) fn mutation_canvas_new(mem: &MemCli, body: &str) -> Response {
         })
         .to_string(),
     )
+}
+
+/// `POST /api/canvas/delete`: permanently remove a saved project folder under
+/// `<store>/canvas/<name>`. Path-guarded to a *direct child* of the canvas folder — never
+/// `.checkpoints`, never traversal. Local file delete only, irreversible.
+pub(super) fn mutation_canvas_delete(mem: &MemCli, body: &str) -> Response {
+    let value = match parse_body(body) {
+        Ok(value) => value,
+        Err(response) => return response,
+    };
+    let name = match body_str(&value, "name") {
+        Ok(name) => name.trim().to_string(),
+        Err(response) => return response,
+    };
+    if name.is_empty()
+        || name.starts_with('.')
+        || name.contains('/')
+        || name.contains('\\')
+        || name.contains("..")
+    {
+        return Response::bad_request("invalid project name");
+    }
+    let canvas = match canvas_root(mem) {
+        Ok(root) => root,
+        Err(response) => return response,
+    };
+    // The realised target must be an existing direct child of the canvas folder.
+    let canon_dir = match canvas.join(&name).canonicalize() {
+        Ok(dir) => dir,
+        _ => return Response::bad_request("no such project"),
+    };
+    if !canon_dir.is_dir() || canon_dir.parent() != Some(canvas.as_path()) {
+        return Response::forbidden();
+    }
+    if let Err(error) = std::fs::remove_dir_all(&canon_dir) {
+        return Response::error(format!("delete project: {error}"));
+    }
+    Response::json(serde_json::json!({ "ok": true }).to_string())
 }
 
 /// Folder-safe project slug: letters/digits/`-`/`_`, spaces → `-`, everything else dropped;
@@ -897,68 +1188,164 @@ p{color:var(--muted);font-size:18px}
 // Three.js/Phaser engines.) GSAP © GreenSock (no-charge license); Lottie © Airbnb, MIT.
 const GSAP_JS: &[u8] = include_bytes!("engines/gsap.min.js");
 const LOTTIE_JS: &[u8] = include_bytes!("engines/lottie.min.js");
+// webm-muxer (© Vanilla, MIT) — turns WebCodecs frames into a real .webm container in the
+// browser, so movies render frame-by-frame (any length) with no ffmpeg.
+const WEBM_MUXER_JS: &[u8] = include_bytes!("engines/webm-muxer.js");
 
-/// A Movie/Animation project is a self-contained browser animation (GSAP + Lottie). The
-/// motion lives in `animation.js`; it plays in the preview and records to video in-browser.
+/// A Movie/Animation project draws to a `<canvas>` from a **seekable** timeline. The
+/// Concierge renders it **frame-by-frame, offline** (any length) to a real video on
+/// Save/Publish — no Record button, no screen capture, no time limit. `capture.js` is
+/// the deterministic renderer (WebCodecs + the bundled WebM muxer); `animation.js` is
+/// the motion (it declares `window.__duration`).
 fn movie_starter(title: &str) -> (String, String) {
     let html = format!(
-        "<!doctype html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n<title>{title}</title>\n<link rel=\"stylesheet\" href=\"style.css\">\n<script src=\"gsap.min.js\"></script>\n<script src=\"lottie.min.js\"></script>\n</head>\n<body>\n  <div id=\"stage\">\n    <h1 id=\"title\">{title}</h1>\n    <p id=\"sub\">A new animation — built with GSAP + Lottie, bundled (no installs). Ask the Concierge to build the motion; it plays here. Hit Record to save it as a video.</p>\n  </div>\n  <div class=\"bar\">\n    <button id=\"rec\">\u{23fa} Record video</button>\n    <span id=\"status\"></span>\n  </div>\n  <script src=\"animation.js\"></script>\n</body>\n</html>\n"
+        "<!doctype html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n<title>{title}</title>\n<link rel=\"stylesheet\" href=\"style.css\">\n<script src=\"gsap.min.js\"></script>\n<script src=\"lottie.min.js\"></script>\n<script src=\"webm-muxer.js\"></script>\n</head>\n<body>\n  <canvas id=\"stage\"></canvas>\n  <script src=\"animation.js\"></script>\n  <script src=\"capture.js\"></script>\n</body>\n</html>\n"
     );
     (html, STARTER_MOVIE_CSS.to_string())
 }
 
 fn movie_readme(title: &str) -> String {
     format!(
-        "# {title} — Movie / Animation\n\nA self-contained browser animation, built with **GSAP** and **Lottie** — both bundled into the project (no CDN, no npm, no installs). It works offline and on IPFS.\n\n## How it works\n- The motion lives in `animation.js` (a GSAP timeline to start). Ask the Concierge to build it — it writes the animation right here and it plays live in the preview.\n- **Lottie** is loaded too (global `lottie`) for After-Effects-style vector motion graphics from JSON.\n- **Record video** (bottom bar) captures the animation to a `.webm`/`.mp4` **in the browser** via `MediaRecorder` — no ffmpeg, no external tools.\n\n## Optional: advanced 3D with Blender\nFor heavy 3D, you can drive **Blender** instead (it must be installed). Run `concierge-plugin blender-setup`, install `addon.py` from `vendor/blender-mcp/` into Blender, and connect it — then ask the Concierge to model + render in Blender. The default GSAP/Lottie path needs none of that.\n"
+        "# {title} — Movie / Animation\n\nA self-contained browser animation, built with **GSAP** + **Lottie** and rendered to real video **frame-by-frame, offline** — all bundled, no CDN, no npm, no ffmpeg, no installs. Works offline and on IPFS.\n\n## How it works\n- The animation draws to a `<canvas id=\"stage\">` from a **paused, seekable GSAP timeline**. `animation.js` exposes three things the renderer uses:\n  - `window.__duration` — the movie length in **seconds** (defaults to the timeline length; set it to anything — 30, 900, 1800…).\n  - `window.__fps` — frames per second (default 30).\n  - `window.__seek(t)` — deterministically draws the frame at time `t`.\n- **Video is automatic and full-length.** On **Save** or **Publish**, the Concierge renders every frame (`__duration × __fps`) with **WebCodecs** + the bundled WebM muxer and writes `animation.webm` into the folder. It renders **as fast as your machine allows** — not in real time — so a 15- or 30-minute movie is just more frames, not a 30-minute wait while a tab records.\n- Because it's deterministic, build with a **seekable** timeline (no `Math.random()` / wall-clock); seeking to time `t` must always draw the same frame. Lottie works too: `renderer:'canvas'` + `anim.goToAndStop(t*1000, false)`.\n\n## Optional: advanced 3D with Blender\nFor heavy 3D, drive **Blender** instead (must be installed): `concierge-plugin blender-setup`, install `vendor/blender-mcp/addon.py`, connect it.\n"
     )
 }
 
-const STARTER_MOVIE_CSS: &str = r#":root{--bg:#0a0b1a;--ink:#e0e6ff;--muted:#8a90b8;--grad:linear-gradient(120deg,#f085fa,#d122e3 40%,#00e5ff)}
-*{box-sizing:border-box}
-html,body{height:100%;margin:0;overflow:hidden}
-body{background:var(--bg);color:var(--ink);font:16px/1.5 -apple-system,system-ui,sans-serif;display:flex;flex-direction:column}
-#stage{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;text-align:center;padding:24px;overflow:hidden}
-h1{font-size:clamp(34px,9vw,72px);margin:0;background:var(--grad);-webkit-background-clip:text;background-clip:text;color:transparent}
-p{color:var(--muted);max-width:560px;margin:0}
-.bar{flex:0 0 auto;display:flex;align-items:center;gap:12px;padding:12px 16px;border-top:1px solid rgba(209,34,227,.25);background:rgba(0,0,0,.3)}
-#rec{padding:9px 18px;border:0;border-radius:10px;background:var(--grad);color:#0a0b1a;font:700 13px system-ui;cursor:pointer}
-#status{color:var(--muted);font:12px ui-monospace,monospace}
+const STARTER_MOVIE_CSS: &str = r#"html,body{height:100%;margin:0;overflow:hidden;background:#0a0b1a}
+#stage{display:block;width:100vw;height:100vh}
 "#;
 
-const MOVIE_ANIMATION_JS: &str = r#"// Starter animation — a GSAP timeline. Build on this; Lottie is also loaded as `lottie`
-// (e.g. lottie.loadAnimation({container, renderer:'svg', path:'anim.json', loop:true, autoplay:true})).
-const tl = gsap.timeline({ repeat: -1, yoyo: true });
-tl.from('#title', { y: 50, opacity: 0, duration: 1, ease: 'power3.out' })
-  .from('#sub', { opacity: 0, duration: 0.8 }, '-=0.4')
-  .to('#title', { scale: 1.06, duration: 1.4, ease: 'sine.inOut' });
+const MOVIE_ANIMATION_JS: &str = r#"// Build your movie by EXTENDING this timeline — its length sets the video length, and the
+// Concierge renders every frame deterministically on Save/Publish (seconds or 30 minutes).
+// Keep it seekable: no Math.random() or Date.now() — seeking to time t must always draw
+// the same frame. Lottie also works (renderer:'canvas' + goToAndStop).
+const canvas = document.getElementById('stage');
+const ctx = canvas.getContext('2d');
+const DPR = Math.min(window.devicePixelRatio || 1, 2);
+function fit() { canvas.width = innerWidth * DPR; canvas.height = innerHeight * DPR; }
+fit();
+addEventListener('resize', fit);
 
-// Record the animation to a video file — browser-native (MediaRecorder), no ffmpeg.
-const rec = document.getElementById('rec');
-const statusEl = document.getElementById('status');
-let recorder, chunks;
-rec.addEventListener('click', async () => {
-  if (recorder && recorder.state === 'recording') { recorder.stop(); return; }
-  try {
-    const stream = await navigator.mediaDevices.getDisplayMedia({ video: { frameRate: 60 }, audio: false });
-    const mime = MediaRecorder.isTypeSupported('video/mp4') ? 'video/mp4' : 'video/webm';
-    chunks = [];
-    recorder = new MediaRecorder(stream, { mimeType: mime });
-    recorder.ondataavailable = e => { if (e.data && e.data.size) chunks.push(e.data); };
-    recorder.onstop = () => {
-      stream.getTracks().forEach(t => t.stop());
-      const blob = new Blob(chunks, { type: mime });
-      const a = document.createElement('a');
-      a.href = URL.createObjectURL(blob);
-      a.download = mime === 'video/mp4' ? 'animation.mp4' : 'animation.webm';
-      a.click();
-      rec.textContent = '⏺ Record video';
-      statusEl.textContent = 'saved ' + a.download;
-    };
-    recorder.start();
-    rec.textContent = '⏹ Stop';
-    statusEl.textContent = 'recording… choose THIS tab to capture';
-  } catch (e) { statusEl.textContent = 'recording cancelled'; }
-});
+const state = { y: 60, opacity: 0, scale: 1 };
+function draw() {
+  const w = canvas.width, h = canvas.height;
+  ctx.fillStyle = '#0a0b1a';
+  ctx.fillRect(0, 0, w, h);
+  ctx.save();
+  ctx.translate(w / 2, h / 2 + state.y * DPR);
+  ctx.scale(state.scale, state.scale);
+  ctx.globalAlpha = Math.max(0, Math.min(1, state.opacity));
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.font = '700 ' + Math.min(w / 8, 120 * DPR) + 'px -apple-system, system-ui, sans-serif';
+  const g = ctx.createLinearGradient(-w / 3, 0, w / 3, 0);
+  g.addColorStop(0, '#f085fa'); g.addColorStop(0.5, '#d122e3'); g.addColorStop(1, '#00e5ff');
+  ctx.fillStyle = g;
+  ctx.fillText(document.title || 'Animation', 0, 0);
+  ctx.restore();
+}
+
+// A PAUSED, seekable timeline — the renderer seeks to each frame and draws it.
+const tl = gsap.timeline({ paused: true });
+tl.to(state, { y: 0, opacity: 1, duration: 1, ease: 'power3.out' })
+  .to(state, { scale: 1.08, duration: 1.4, ease: 'sine.inOut' })
+  .to(state, { scale: 1, duration: 1, ease: 'sine.inOut' });
+
+window.__fps = 30;
+window.__duration = tl.duration();          // ← set this to make a longer movie
+window.__seek = function (t) { tl.time(Math.max(0, Math.min(t, tl.duration()))); draw(); };
+
+// Live preview: loop the timeline so the canvas shows motion while you edit (the renderer
+// pauses + seeks during capture, so this never affects the output).
+let preview = true;
+window.__beginRender = function () { preview = false; };
+window.__endRender = function () { preview = true; tl.play(0); requestAnimationFrame(loop); };
+function loop() { if (!preview) return; draw(); requestAnimationFrame(loop); }
+tl.repeat(-1).yoyo(true).play(0);
+requestAnimationFrame(loop);
+"#;
+
+const MOVIE_CAPTURE_JS: &str = r#"// Concierge deterministic STREAMING renderer. On Save/Publish the Studio asks this frame
+// to render the FULL animation (window.__duration seconds) to a real video, frame-by-frame,
+// offline. WebCodecs + the bundled WebM muxer in streaming mode emit encoded chunks as
+// they're produced; each is streamed to disk (bounded memory, no whole-file buffer) — so a
+// 30-minute movie has no time or size limit. No ffmpeg, no Record button. Falls back to a
+// short real-time capture if WebCodecs is unavailable.
+(function () {
+  function send(extra, transfer) { try { parent.postMessage(Object.assign({ concierge: 'capture' }, extra), '*', transfer || []); } catch (e) {} }
+  var ackResolve = null;
+  window.addEventListener('message', function (e) {
+    if (e.data && e.data.concierge === 'chunk-ack' && ackResolve) { var r = ackResolve; ackResolve = null; r(); }
+  });
+  function pushChunk(buf, position) {
+    var ack = new Promise(function (r) { ackResolve = r; });
+    send({ phase: 'chunk', position: position, buf: buf }, [buf]);
+    return ack;   // backpressure: wait until the Studio has written this chunk to disk
+  }
+
+  async function renderStreaming(canvas, durationSec, fps) {
+    if (typeof VideoEncoder === 'undefined' || !window.WebMMuxer) return false;
+    var w = canvas.width, h = canvas.height;
+    var queue = [];
+    var muxer = new WebMMuxer.Muxer({
+      target: new WebMMuxer.StreamTarget({
+        chunked: true,
+        chunkSize: 4 * 1024 * 1024,
+        onData: function (data, position) { queue.push({ buf: data.slice().buffer, position: position }); }
+      }),
+      video: { codec: 'V_VP9', width: w, height: h, frameRate: fps },
+      streaming: true
+    });
+    var encoder = new VideoEncoder({ output: function (c, m) { muxer.addVideoChunk(c, m); }, error: function (err) { console.error(err); } });
+    encoder.configure({ codec: 'vp09.00.10.08', width: w, height: h, framerate: fps, bitrate: 8000000 });
+    async function drain() { while (queue.length) { var c = queue.shift(); await pushChunk(c.buf, c.position); } }
+
+    if (typeof window.__beginRender === 'function') window.__beginRender();
+    var total = Math.max(1, Math.round(durationSec * fps));
+    for (var f = 0; f < total; f++) {
+      var t = f / fps;
+      if (typeof window.__seek === 'function') window.__seek(t);
+      var vf = new VideoFrame(canvas, { timestamp: Math.round(t * 1e6), duration: Math.round(1e6 / fps) });
+      encoder.encode(vf, { keyFrame: f % (fps * 2) === 0 });
+      vf.close();
+      if (encoder.encodeQueueSize > 8) await new Promise(function (r) { setTimeout(r, 0); });
+      if (queue.length) await drain();
+      if (f % fps === 0) send({ phase: 'render', frame: f, total: total });
+    }
+    await encoder.flush();
+    muxer.finalize();
+    await drain();
+    if (typeof window.__endRender === 'function') window.__endRender();
+    return true;
+  }
+
+  async function renderRealtime(canvas, durationSec) {
+    if (!canvas.captureStream || typeof MediaRecorder === 'undefined') return false;
+    var chunks = [];
+    var rec = new MediaRecorder(canvas.captureStream(30), { mimeType: 'video/webm' });
+    rec.ondataavailable = function (ev) { if (ev.data && ev.data.size) chunks.push(ev.data); };
+    var stopped = new Promise(function (r) { rec.onstop = r; });
+    rec.start();
+    await new Promise(function (r) { setTimeout(r, Math.min(durationSec, 120) * 1000); });
+    rec.stop();
+    await stopped;
+    var buf = await new Blob(chunks, { type: 'video/webm' }).arrayBuffer();
+    await pushChunk(buf, 0);
+    return true;
+  }
+
+  window.addEventListener('message', async function (e) {
+    var msg = e.data || {};
+    if (msg.concierge !== 'record') return;
+    var canvas = document.querySelector('canvas');
+    if (!canvas) { send({ phase: 'done', ok: false }); return; }
+    var fps = window.__fps || 30;
+    var dur = Math.max(0.2, window.__duration || (msg.ms ? msg.ms / 1000 : 4));
+    var ok = false;
+    try { ok = await renderStreaming(canvas, dur, fps); } catch (err) { console.error(err); }
+    if (!ok) { try { ok = await renderRealtime(canvas, dur); } catch (e2) {} }
+    send({ phase: 'done', ok: ok });
+  });
+})();
 "#;
 
 const STARTER_APP_CSS: &str = r#":root{--bg:#0a0b1a;--ink:#e0e6ff;--muted:#8a90b8;--grad:linear-gradient(120deg,#f085fa,#d122e3 40%,#00e5ff)}
@@ -977,6 +1364,37 @@ if (start) start.addEventListener('click', () => {
   start.textContent = 'Building… ask the Concierge to make this real.';
 });
 "#;
+
+/// Minimal standard-alphabet base64 decoder (no padding required) so binary assets
+/// (e.g. an auto-captured animation video) can be staged without pulling in a crate.
+fn b64_decode(s: &str) -> Option<Vec<u8>> {
+    fn val(c: u8) -> Option<u32> {
+        match c {
+            b'A'..=b'Z' => Some((c - b'A') as u32),
+            b'a'..=b'z' => Some((c - b'a' + 26) as u32),
+            b'0'..=b'9' => Some((c - b'0' + 52) as u32),
+            b'+' => Some(62),
+            b'/' => Some(63),
+            _ => None,
+        }
+    }
+    let mut bits = 0u32;
+    let mut nbits = 0;
+    let mut out = Vec::new();
+    for &c in s.as_bytes() {
+        if c == b'=' || c.is_ascii_whitespace() {
+            continue;
+        }
+        let v = val(c)?;
+        bits = (bits << 6) | v;
+        nbits += 6;
+        if nbits >= 8 {
+            nbits -= 8;
+            out.push((bits >> nbits) as u8);
+        }
+    }
+    Some(out)
+}
 
 /// Pull the text of the first `<title>…</title>` from an HTML document.
 fn extract_title(html: &str) -> Option<String> {
@@ -1071,14 +1489,18 @@ const PWA_SW_REGISTER: &str = r#"<script>if('serviceWorker' in navigator){window
 /// dotfolders) are skipped; newest-modified first.
 pub(super) fn canvas_projects_get(mem: &MemCli) -> Response {
     let empty = || serde_json::json!({ "root": "", "projects": [] }).to_string();
-    let Some(canvas) = mem.store_dir().ok().map(|dir| dir.join("canvas")) else {
-        return Response::json(empty());
+    let canvas = match canvas_root(mem) {
+        Ok(canvas) => canvas,
+        Err(_) => return Response::json(empty()),
     };
     let mut projects: Vec<serde_json::Value> = Vec::new();
     if let Ok(entries) = std::fs::read_dir(&canvas) {
         for entry in entries.flatten() {
             let path = entry.path();
-            if !path.is_dir() {
+            let Ok(metadata) = std::fs::symlink_metadata(&path) else {
+                continue;
+            };
+            if metadata.file_type().is_symlink() || !metadata.is_dir() {
                 continue;
             }
             let name = entry.file_name().to_string_lossy().to_string();
@@ -1109,14 +1531,9 @@ pub(super) fn canvas_projects_get(mem: &MemCli) -> Response {
     )
 }
 
-fn canvas_dir(options: &GuiOptions, query: &str) -> Option<std::path::PathBuf> {
-    let token = parse_query(query).get("token").cloned()?;
-    options.preview_dirs.lock().ok()?.get(&token).cloned()
-}
-
 /// `POST /api/canvas/open`: register a site source folder for live preview. Returns
 /// a token (used in `/canvas-preview/<token>/…`), the file list, and the mtime.
-pub(super) fn mutation_canvas_open(options: &GuiOptions, body: &str) -> Response {
+pub(super) fn mutation_canvas_open(mem: &MemCli, options: &GuiOptions, body: &str) -> Response {
     let value = match parse_body(body) {
         Ok(value) => value,
         Err(response) => return response,
@@ -1128,9 +1545,9 @@ pub(super) fn mutation_canvas_open(options: &GuiOptions, body: &str) -> Response
     if folder.is_empty() {
         return Response::bad_request("a folder path is required");
     }
-    let canon = match std::path::Path::new(folder).canonicalize() {
-        Ok(canon) if canon.is_dir() => canon,
-        _ => return Response::error(format!("not a folder: {folder}")),
+    let canon = match require_canvas_dir(mem, std::path::Path::new(folder)) {
+        Ok(canon) => canon,
+        Err(response) => return response,
     };
     let token = preview_token(&canon);
     if let Ok(mut dirs) = options.preview_dirs.lock() {
@@ -1153,9 +1570,10 @@ pub(super) fn mutation_canvas_open(options: &GuiOptions, body: &str) -> Response
 
 /// `GET /api/canvas/files?token=`: the folder's file list + mtime + whether it has
 /// an index.html (so the builder can show the AI's files and a publish-readiness hint).
-pub(super) fn canvas_files_get(options: &GuiOptions, query: &str) -> Response {
-    match canvas_dir(options, query) {
-        Some(dir) => Response::json(
+pub(super) fn canvas_files_get(mem: &MemCli, options: &GuiOptions, query: &str) -> Response {
+    let token = parse_query(query).get("token").cloned().unwrap_or_default();
+    match registered_canvas_dir(mem, options, &token) {
+        Ok(dir) => Response::json(
             serde_json::json!({
                 "files": folder_files(&dir),
                 "mtime": folder_mtime(&dir),
@@ -1163,22 +1581,23 @@ pub(super) fn canvas_files_get(options: &GuiOptions, query: &str) -> Response {
             })
             .to_string(),
         ),
-        None => Response::bad_request("unknown or missing preview token"),
+        Err(response) => response,
     }
 }
 
 /// `GET /api/canvas/mtime?token=`: the folder's newest mtime, for hot-reload polling.
-pub(super) fn canvas_mtime_get(options: &GuiOptions, query: &str) -> Response {
-    match canvas_dir(options, query) {
-        Some(dir) => Response::json(serde_json::json!({ "mtime": folder_mtime(&dir) }).to_string()),
-        None => Response::bad_request("unknown or missing preview token"),
+pub(super) fn canvas_mtime_get(mem: &MemCli, options: &GuiOptions, query: &str) -> Response {
+    let token = parse_query(query).get("token").cloned().unwrap_or_default();
+    match registered_canvas_dir(mem, options, &token) {
+        Ok(dir) => Response::json(serde_json::json!({ "mtime": folder_mtime(&dir) }).to_string()),
+        Err(response) => response,
     }
 }
 
 /// Serve `/canvas-preview/<token>/<relpath>` from the registered folder, read-only
 /// and fenced to that folder (no path traversal). This is what the preview iframe
 /// loads, so a multi-file site renders with correct relative links.
-pub(super) fn canvas_preview_serve(options: &GuiOptions, rest: &str) -> Response {
+pub(super) fn canvas_preview_serve(mem: &MemCli, options: &GuiOptions, rest: &str) -> Response {
     let (token, relpath) = rest.split_once('/').unwrap_or((rest, ""));
     let relpath = percent_decode(relpath);
     let relpath = if relpath.trim_matches('/').is_empty() {
@@ -1186,7 +1605,10 @@ pub(super) fn canvas_preview_serve(options: &GuiOptions, rest: &str) -> Response
     } else {
         relpath
     };
-    let Some(dir) = options
+    let Some(relpath) = safe_rel_path(&relpath) else {
+        return Response::forbidden();
+    };
+    let Some(registered) = options
         .preview_dirs
         .lock()
         .ok()
@@ -1194,7 +1616,23 @@ pub(super) fn canvas_preview_serve(options: &GuiOptions, rest: &str) -> Response
     else {
         return Response::not_found();
     };
+    let dir = match require_canvas_dir(mem, &registered) {
+        Ok(dir) => dir,
+        Err(response) if response.status == 400 => return Response::not_found(),
+        Err(response) => return response,
+    };
     let candidate = dir.join(&relpath);
+    if reject_symlink_components(
+        &match canvas_root(mem) {
+            Ok(root) => root,
+            Err(response) => return response,
+        },
+        &candidate,
+    )
+    .is_err()
+    {
+        return Response::forbidden();
+    }
     let canon = match candidate.canonicalize() {
         Ok(canon) => canon,
         Err(_) => return Response::not_found(),
@@ -1209,6 +1647,7 @@ pub(super) fn canvas_preview_serve(options: &GuiOptions, rest: &str) -> Response
         Ok(bytes) => {
             let mut response = Response::new(200, site_media_type(&canon.to_string_lossy()), bytes);
             response.embeddable = true;
+            response.csp = Some(PREVIEW_CSP);
             response
         }
         Err(_) => Response::not_found(),

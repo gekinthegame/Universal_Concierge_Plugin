@@ -10,7 +10,6 @@
 <body>
 <header>
   <div class="brand-area">
-    <img src="/api/logo.png" alt="Concierge Plugin" style="height: 64px; width: auto; object-fit: contain;">
     <select id="store" class="store-select" aria-label="Mounted store" style="display: none;"></select>
   </div>
   <div class="mounted">
@@ -229,9 +228,9 @@
       <div id="network-map"></div>
     </div></div>
     <div id="canvas-view" class="view active"><div class="content" style="display:flex;flex-direction:column;height:100%;box-sizing:border-box;">
-      <div class="cv-title"><button id="cv-new" class="tool-button cv-new" title="Start a fresh project — website or mobile app/game">+ New</button><span class="dot"></span><b>Concierge Studio Canvas</b><span>any project, app or site → writeable canvas → live preview · press F to expand</span></div>
+      <div class="cv-title"><button id="cv-new" class="tool-button cv-new" title="Start a fresh project — website or mobile app/game">+ New</button><span class="dot"></span><b>Concierge Studio Canvas</b><span>saved app or site → writeable canvas → live preview · press F to expand</span></div>
       <div class="cv-split">
-        <div id="cv-files" class="cv-files"><div class="empty">Open any project folder above — its file tree appears here. Click a file to edit it; what you write saves to the folder and the preview renders the live app.</div></div>
+        <div id="cv-files" class="cv-files"><div class="empty">Open a saved canvas project above — its file tree appears here. Click a file to edit it; what you write saves to the folder and the preview renders the live app.</div></div>
         <textarea id="cv-src" class="cv-src" spellcheck="false" placeholder="<!doctype html>
 <html><body>
   <h1>Build your app or site here — it saves to the folder and runs live →</h1>
@@ -240,7 +239,7 @@
       </div>
       <div id="cv-domain" class="cv-domain"></div>
       <div class="messenger-tools cv-toolbar">
-        <input id="cv-folder" class="input" placeholder="site folder path — any folder in your project" autocomplete="off" style="flex:1 1 140px;min-width:120px;">
+        <input id="cv-folder" class="input" placeholder="canvas project path under your Concierge canvas folder" autocomplete="off" style="flex:1 1 140px;min-width:120px;">
         <button id="cv-open" class="tool-button" title="Browse your saved projects">📁 Open ▾</button>
         <button id="cv-mcp" class="tool-button" title="Let your host AI write into the Concierge over MCP (write tools: put_node / bind / write_site). Off by default — read-only.">AI writes: off</button>
         <input id="cv-name" type="text" class="input" placeholder="site name" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" data-1p-ignore data-lpignore="true" style="max-width:150px;">

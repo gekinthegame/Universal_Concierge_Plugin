@@ -2,7 +2,8 @@
 // Open a site folder; it renders live (multi-file) at /canvas-preview/<token>/ and
 // hot-reloads as files change (you or your AI write them). Publish the folder to a
 // stable IPNS site. "Share live" broadcasts the page to viewers for example displays.
-// One unified writeable canvas: pick ANY project folder, edit its files in the editor
+// One unified writeable canvas: pick a project under the Concierge canvas folder, edit
+// its files in the editor
 // (saves straight to disk), and the preview always renders the live website. No more
 // separate Write vs Folder modes — writing IS editing the open folder.
 const cv = { token: null, folder: null, mtime: 0, poll: null, viewing: false, file: "index.html", collapsed: new Set(), lastFiles: [], lastHasIndex: false };
@@ -22,7 +23,7 @@ function cvShowLive() {
 // Before any folder is open, the preview is a gentle placeholder.
 function cvIdlePreview() {
   byId("cv-preview").removeAttribute("src");
-  byId("cv-preview").srcdoc = "<!doctype html><meta charset=utf-8><body style='font:14px system-ui;color:#888;display:grid;place-items:center;height:100vh;margin:0;text-align:center;padding:24px'><div>Open any project folder, or just start building —<br>your app or site saves to that folder and runs here, live.</div></body>";
+  byId("cv-preview").srcdoc = "<!doctype html><meta charset=utf-8><body style='font:14px system-ui;color:#888;display:grid;place-items:center;height:100vh;margin:0;text-align:center;padding:24px'><div>Open a saved canvas project, or just start building —<br>your app or site saves to the Concierge canvas folder and runs here, live.</div></body>";
 }
 
 // Editing the textarea saves the open file to disk (debounced); the preview then
@@ -96,7 +97,7 @@ function cvRenderBranch(box, branch, depth) {
 function cvRenderFiles(files, hasIndex) {
   cv.lastFiles = files || []; cv.lastHasIndex = hasIndex;
   const box = byId("cv-files"); clear(box);
-  if (!cv.token) { box.append(node("div", "empty", "Open any project folder above — its file tree appears here. Click a file to edit it; what you write saves to the folder and the preview renders the live app.")); return; }
+  if (!cv.token) { box.append(node("div", "empty", "Open a saved canvas project above — its file tree appears here. Click a file to edit it; what you write saves to the folder and the preview renders the live app.")); return; }
   if (!files || !files.length) { box.append(node("div", "empty", "Folder is empty — start typing to create index.html.")); return; }
   if (!hasIndex) box.append(node("div", "empty", "⚠ no index.html — the live preview renders a web entry point; add one to see the app run."));
   cvRenderBranch(box, cvBuildTree(files), 0);
@@ -166,6 +167,7 @@ async function cvPublish(platform = "ipfs") {
     await cvEnsureFolder(html);   // create + open a draft folder seeded with the editor's HTML
   }
   const folder = cv.folder;
+  await cvCaptureAnimationIfNeeded();   // animation projects get a video baked in before publish
   // Only websites publish: the folder needs an index.html web entry point. Check live so
   // non-web projects (a CLI, a service, raw source) get a clear message, not a publish.
   let hasIndex = cv.lastHasIndex;
@@ -401,6 +403,49 @@ async function cvRestoreCheckpoint(site, ts, overlay) {
 // Save a checkpoint of the current draft at any time (no publish). Content-addresses
 // the HTML so the snapshot has a real CID in Records, and lists it under ⏱ Checkpoints
 // to reopen later.
+// For an animation project (one with capture.js), silently render the <canvas> to a video
+// and drop it in the folder before Save/Publish — so a video is produced automatically,
+// no Record button, no screen picker. Other projects are untouched.
+async function cvCaptureAnimationIfNeeded() {
+  if (!cv.token) return;
+  const isAnim = (cv.lastFiles || []).some(f => String(f).split("/").pop() === "capture.js");
+  if (!isAnim) return;
+  const iframe = byId("cv-preview");
+  if (!iframe || !iframe.contentWindow) return;
+  cvStatus("rendering animation to video…");
+  // The renderer streams chunks ({phase:'chunk', position, buf}) as it encodes; we write
+  // each to disk at its offset and ack so the next is sent (bounded memory). Progress
+  // ({phase:'render'}) updates the status; {phase:'done'} finishes. No fixed length.
+  const abToB64 = (ab) => { const b = new Uint8Array(ab), CH = 0x8000, s = []; for (let i = 0; i < b.length; i += CH) s.push(String.fromCharCode.apply(null, b.subarray(i, i + CH))); return btoa(s.join("")); };
+  const ok = await new Promise(resolve => {
+    let settled = false, watchdog, writing = Promise.resolve();
+    const finish = (v) => { if (!settled) { settled = true; clearTimeout(watchdog); window.removeEventListener("message", onMsg); resolve(v); } };
+    const arm = (ms) => { clearTimeout(watchdog); watchdog = setTimeout(() => finish(false), ms); };
+    function onMsg(e) {
+      const d = e.data || {};
+      if (d.concierge !== "capture") return;
+      if (d.phase === "render") { arm(60000); cvStatus("rendering video · frame " + d.frame + " / " + d.total); }
+      else if (d.phase === "chunk") {
+        arm(60000);
+        const buf = d.buf, pos = d.position;
+        writing = writing
+          .then(() => postJson("/api/canvas/write", { token: cv.token, path: "animation.webm", content: abToB64(buf), base64: true, pos: pos }))
+          .catch(() => {})
+          .then(() => { try { iframe.contentWindow.postMessage({ concierge: "chunk-ack" }, "*"); } catch (e) {} });
+      } else if (d.phase === "done") { writing.then(() => finish(!!d.ok)); }
+    }
+    window.addEventListener("message", onMsg);
+    arm(30000); // 30s to start, then 60s between pings/chunks
+    try { iframe.contentWindow.postMessage({ concierge: "record" }, "*"); } catch (e) { finish(false); }
+  });
+  if (ok) {
+    cvStatus("animation saved · animation.webm");
+    logSystem("studio · streamed full animation → animation.webm", "ok");
+  } else {
+    cvStatus("animation render skipped");
+  }
+}
+
 async function cvSaveCheckpoint() {
   const name = byId("cv-name").value.trim();
   if (!name) { byId("cv-name").focus(); notice("Give your site a name first."); return; }
@@ -409,6 +454,7 @@ async function cvSaveCheckpoint() {
     if (!html.trim()) { notice("Open a folder or write your site first."); return; }
     await cvEnsureFolder(html);   // create + open a draft folder seeded with the editor's HTML
   }
+  await cvCaptureAnimationIfNeeded();   // animation projects get a video, automatically
   const res = await postJson("/api/site/checkpoint/save", { name, folder: cv.folder });
   notice("Checkpoint saved" + (res.cid ? " · " + String(res.cid).slice(0, 14) + "…" : "") + " — in ⏱ Checkpoints and Records.");
   logSystem("studio · saved checkpoint “" + name + "”", "ok");
@@ -447,7 +493,7 @@ async function cvOpenPicker() {
   card.append(node("div", "review", "Saved projects in " + (data.root || "your canvas folder") + " — click one to open it as the live canvas."));
   const projects = data.projects || [];
   if (!projects.length) {
-    card.append(node("div", "review", "No projects here yet. Paste any folder path below, or just start writing to create one."));
+    card.append(node("div", "review", "No projects here yet. Start writing or create a new project to stage one here."));
   } else {
     const list = node("div", "ckpt-list");
     projects.forEach(p => {
@@ -458,13 +504,30 @@ async function cvOpenPicker() {
       const open = node("button", "pbtn ckpt-load", "Open");
       const go = () => safely(async () => { overlay.remove(); await cvOpenFolder(p.path); });
       open.addEventListener("click", e => { e.stopPropagation(); go(); });
+      const del = node("button", "pbtn ckpt-del", "🗑 Delete");
+      del.title = "Permanently delete this project folder and its files";
+      del.addEventListener("click", e => {
+        e.stopPropagation();
+        safely(async () => {
+          if (!window.confirm("Delete project “" + p.name + "”? This permanently removes its folder and all its files — this cannot be undone.")) return;
+          await postJson("/api/canvas/delete", { name: p.name });
+          notice("Deleted “" + p.name + "”.");
+          logSystem("studio · deleted project " + p.name, "wn");
+          // If the deleted project was the one open in the canvas, clear it.
+          if (cv.folder && (cv.folder === p.path || String(cv.folder).replace(/\/+$/, "").endsWith("/" + p.name))) {
+            cv.token = null; cv.folder = null; byId("cv-folder").value = "";
+          }
+          overlay.remove();
+          safely(cvOpenPicker);   // reopen with the refreshed list
+        });
+      });
       row.addEventListener("click", go);
-      row.append(meta, open); list.append(row);
+      row.append(meta, open, del); list.append(row);
     });
     card.append(list);
   }
   const actions = node("div", "modal-actions");
-  const manual = node("input", "input"); manual.placeholder = "…or paste any folder path + Enter"; manual.style.flex = "1";
+  const manual = node("input", "input"); manual.placeholder = "…or paste a path under this canvas folder + Enter"; manual.style.flex = "1";
   manual.addEventListener("keydown", e => { if (e.key === "Enter" && manual.value.trim()) safely(async () => { overlay.remove(); await cvOpenFolder(manual.value.trim()); }); });
   const close = node("button", "pbtn", "Close"); close.type = "button";
   close.addEventListener("click", () => overlay.remove());

@@ -608,14 +608,19 @@ fn write_response(stream: &mut TcpStream, response: Response) -> std::io::Result
         .content_type_owned
         .as_deref()
         .unwrap_or(response.content_type);
+    let csp = response.csp.map(str::to_string).unwrap_or_else(|| {
+        format!(
+            "default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; connect-src 'self'; frame-ancestors {frame_ancestors}; object-src 'none'; base-uri 'none'; form-action 'self'"
+        )
+    });
     let mut header = format!(
-        "HTTP/1.1 {} {}\r\nContent-Type: {}\r\nContent-Length: {}\r\nConnection: close\r\nCache-Control: no-store\r\nReferrer-Policy: no-referrer\r\nX-Content-Type-Options: nosniff\r\nX-Frame-Options: {}\r\nContent-Security-Policy: default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; connect-src 'self'; frame-ancestors {}; object-src 'none'; base-uri 'none'; form-action 'self'\r\n",
+        "HTTP/1.1 {} {}\r\nContent-Type: {}\r\nContent-Length: {}\r\nConnection: close\r\nCache-Control: no-store\r\nReferrer-Policy: no-referrer\r\nX-Content-Type-Options: nosniff\r\nX-Frame-Options: {}\r\nContent-Security-Policy: {}\r\n",
         response.status,
         reason_phrase(response.status),
         content_type,
         response.body.len(),
         frame_options,
-        frame_ancestors,
+        csp,
     );
     for (name, value) in response.headers {
         header.push_str(&format!("{name}: {value}\r\n"));

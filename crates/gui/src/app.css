@@ -14,9 +14,9 @@
     linear-gradient(135deg, #070715, var(--black) 58%); font: 13px/1.45 var(--body); }
   button, input, select { font: inherit; }
   button { cursor: pointer; }
-  header { min-height: 68px; display: flex; align-items: stretch;
+  header { min-height: 68px; flex: 0 0 auto; position: relative; z-index: 10; display: flex; align-items: stretch;
     background: rgba(8,9,7,.92); border-bottom: 1px solid var(--line); }
-  .brand-area { border-right: 1px solid var(--line); padding: 2px 20px; display: flex; flex-direction: column; justify-content: center; flex: 0 0 auto; }
+  .brand-area { display: none; }
   /* Mounted-model block now also holds the Kubo-sidekick toggle + Claude capture control. */
   .mounted { border-right: 1px solid var(--line); padding: 2px 18px; display: flex; flex-direction: row; align-items: center; gap: 16px; flex: 0 0 auto; }
   .mounted-info { display: flex; flex-direction: column; justify-content: center; flex: 0 0 auto; }
@@ -42,7 +42,7 @@
   .control-bar .cc-attach, .control-bar .cc-detach { padding: 7px 13px; border-radius: 5px; font: 10px var(--mono); text-transform: uppercase; letter-spacing: .06em; cursor: pointer; }
   .control-bar .cc-attach { border: 1px solid var(--gold); background: var(--gold); color: var(--black); }
   .control-bar .cc-detach { border: 1px solid var(--line); background: transparent; color: var(--faint); }
-  main { flex: 1 1 auto; min-height: 0; display: grid; grid-template-columns: minmax(0,1fr); gap: 8px; padding: 8px; }
+  main { flex: 1 1 auto; min-height: 0; display: grid; grid-template-columns: minmax(0,1fr); grid-template-rows: minmax(0,1fr); gap: 8px; padding: 8px; }
   /* Studio tab maximizes: collapse the Store/DAG rail so the canvas takes the full width. */
   body.studio-max main { grid-template-columns: minmax(0,1fr); }
   body.studio-max aside.panel { display: none; }
@@ -75,7 +75,7 @@
     font: 9px var(--mono); letter-spacing: .08em; text-transform: uppercase; }
   .rail button:hover, .rail button.active { color: var(--black); background: var(--gold); border-color: var(--pale-gold); }
   .rail .rule { height: 1px; background: var(--line); margin: 3px 0; }
-  .center { display: grid; grid-template-rows: minmax(0,1fr) auto; min-width: 0; }
+  .center { display: grid; grid-template-rows: minmax(0,1fr) auto; min-width: 0; min-height: 0; }
   .chat-bar { display: flex; gap: 8px; align-items: center; padding: 8px 10px; border-top: 1px solid var(--line); background: rgba(0,0,0,.24); }
   .chat-incoming { flex: 1 1 0; display: flex; align-items: center; gap: 7px; min-width: 0; padding: 0 9px; height: 34px; border: 1px solid var(--line); border-left: 2px solid var(--patina); border-radius: 4px; background: rgba(0,229,255,.05); cursor: pointer; }
   .chat-incoming .ci-from { flex: 0 0 auto; color: var(--patina); font: 9px var(--mono); letter-spacing: .04em; }
@@ -269,6 +269,8 @@
   .ckpt-url .cv-link { font: 10px var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
   .ckpt-url .cv-copy { flex: 0 0 auto; }
   .ckpt-load { width: auto !important; flex: 0 0 auto; padding: 6px 12px; }
+  .ckpt-del { width: auto !important; flex: 0 0 auto; padding: 6px 12px; background: transparent; border-color: var(--line); color: var(--faint); }
+  .ckpt-del:hover { border-color: var(--vermilion); color: var(--vermilion); background: transparent; }
   .cv-title .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--gold); box-shadow: 0 0 8px var(--gold); flex: 0 0 auto; }
   .cv-title b { font: 12px var(--mono); letter-spacing: .18em; text-transform: uppercase; color: var(--pale-gold); font-weight: 600; }
   .cv-title span { margin-left: auto; font: 9px var(--mono); letter-spacing: .1em; text-transform: uppercase; color: var(--faint); }
@@ -597,9 +599,51 @@
     .brand-area, .mounted { border-right: 0; border-bottom: 1px solid var(--line); }
     .mounted { flex-wrap: wrap; }
     .header-right { border-bottom: 1px solid var(--line); padding: 8px 12px; }
-    main { height: auto; min-height: 800px; grid-template-columns: 1fr; }
+    main { height: auto; min-height: 800px; grid-template-columns: 1fr; grid-template-rows: auto; }
     .rail { flex-direction: row; overflow-x: auto; }
     .rail button { min-width: 78px; }
     .rail .rule { display: none; }
     .center { min-height: 720px; }
   }
+
+  /* ── Friendlier "mobile app" feel: rounder boxes + warmer type. Colours are
+     unchanged — this only relaxes the terminal-style uppercase/mono labels and
+     softens the corner radii. (Appended last so it wins on equal specificity.) ── */
+  body { -webkit-font-smoothing: antialiased; text-rendering: optimizeLegibility; }
+
+  /* Labels, section headers & descriptions → soft sans, sentence case. */
+  .eyebrow { font: 11px/1.5 var(--body); letter-spacing: 0; text-transform: none; }
+  .msg-section { font: 11px var(--body); letter-spacing: .01em; text-transform: none; }
+  h2 { font: 13px var(--body); font-weight: 600; letter-spacing: 0; text-transform: none; }
+  .panel-title { font: 11px var(--body); letter-spacing: .02em; text-transform: none; }
+
+  /* Buttons, tabs & badges → sentence case, soft sans, gentle spacing. */
+  .tool-button, .btn, .pbtn, .hdr-btn, .reset-btn, .reset-mini, .menu-item,
+  .rail-mini button, .node-toggle, .pin-mode-btn, .c-pet, .c-remove, .cc-attach,
+  .cc-detach, .request-card button, .cc-banner button, .chat-bar .chat-send,
+  .tab, .c-badge, .tab-badge {
+    text-transform: none;
+    letter-spacing: .005em;
+    font-family: var(--body);
+  }
+  .tab { font-size: 11px; }
+
+  /* Rounder everything. */
+  .panel, .rail { border-radius: 16px; }
+  .input, .tool-button, .btn, .hdr-btn, .reset-btn, .reset-mini, .pbtn,
+  .main-publish, .chat-bar .chat-send, .console-mini, .cv-files, .cv-src,
+  .canvas-preview, .system-console, .console-pop, .pform { border-radius: 12px; }
+  .message, .link, .name-row { border-radius: 16px; }
+  .contact-card, .ckpt-row, .request-card, .net-card, .site-card, .new-choice,
+  .chat-incoming { border-radius: 14px; }
+  .modal-card { border-radius: 18px; }
+  .menu-item { border-radius: 9px; }
+  .c-badge, .tab-badge, .trust-tier, .trust-follow, .trust-importance, .net-pill,
+  .mod-guardian, .mod-policy, .mod-count, .mod-muted, .mod-synth, .slogan-chip,
+  .chip, .pin-mode { border-radius: 999px; }
+  .input { padding: 9px 12px; }
+
+  /* Chat: friendlier meta + roomier, more readable bubble text. */
+  .message-head, .message-head button { font-family: var(--body); font-size: 10px; }
+  .message p { font: 14px/1.55 var(--body); }
+  .message { padding: 12px 14px; }

@@ -66,7 +66,7 @@ The Studio is where the AI transitions from "talking" to "building."
 
 ![The Studio — a writeable canvas with a live file tree, the code editor, and the site rendering beside it. A real, unretouched screenshot of the Concierge in action.](docs/screenshots/studio.jpg)
 
-*   **One Writeable Canvas:** Point it at any project folder — you and your AI edit its files together in a live **file-tree explorer**, and every change saves straight to disk. Tell the AI to build a site and its work lands right here, no copy-pasting.
+*   **One Writeable Canvas:** Create or open projects under your Concierge canvas folder — you and your AI edit those files together in a live **file-tree explorer**, and every change saves straight to disk. Tell the AI to build a site and its work lands right here, no copy-pasting.
 *   **Live App Preview:** Any web app, site, or game renders instantly beside the editor and hot-reloads as the files change — the same live loop, for whatever you build.
 *   **Multi-Platform Publishing:** Reviewed, password-gated deployment of a real website to **IPFS/IPNS**, **GitHub Pages**, **Netlify**, **Vercel**, **Cloudflare Pages**, and **Firebase Hosting** — with **one-click OAuth** for Cloudflare and Firebase (no tokens to paste). Plaintext FTP is intentionally unsupported.
 *   **Stays Online When You're Off:** Pin a published site to **Filebase**, **Pinata**, or **4everland** so it serves from always-on nodes even when your node is asleep.
@@ -112,13 +112,13 @@ UCP provides a robust set of tools for managing your decentralized memory:
 
 ---
 
-## 🏗️ The Architecture: Kubo as the Central Substrate
+## 🏗️ The Architecture: Local Store First, Optional Kubo Publishing
 
-UCP treats the **Kubo (IPFS) node** as the "hardware" or the "engine" of your personal cloud. The Concierge pulls everything together by orchestrating three core layers within a single, node-resident environment:
+UCP treats the local `~/.concierge` store as the default source of truth. Kubo/IPFS is optional: it powers IPFS/IPNS publishing and private-swarm serving when you enable those features, but the memory store, GUI, and Studio can run without a separate daemon.
 
-*   **The Storage Layer (IPLD):** Kubo provides the Merkle-DAG substrate where every interaction is stored as a permanent, content-addressed block.
-*   **The Network Layer (Swarm):** Kubo manages the **Private Swarm (PNET)**, ensuring your data moves securely between your trusted devices and only hits the public web when you authorize an egress.
-*   **The AI Layer (Sidekick):** The **on-node embedding model** runs directly alongside the Kubo daemon, allowing for "hot" semantic retrieval without your memory ever leaving your local environment.
+*   **The Storage Layer (IPLD):** Local content-addressed blocks keep every interaction durable and verifiable.
+*   **The Network Layer (Swarm):** Optional Kubo/private-swarm features move approved data between trusted devices and only publish through explicit egress gates.
+*   **The AI Layer (Sidekick):** Local retrieval and sidekick features keep semantic context close to the user's store.
 
 ---
 
@@ -128,12 +128,12 @@ UCP treats the **Kubo (IPFS) node** as the "hardware" or the "engine" of your pe
 *   **Network:** libp2p / **Private Swarms (PNET)**.
 *   **Naming:** IPNS / ENS / Blockchain Adapters.
 *   **Security:** **YARA-X** (Embedded malware scanning) + **Swarm Encryption**.
-*   **UI:** Vanilla HTML5/CSS3/JS (Single-file "Sovereign SPA").
+*   **UI:** Vanilla HTML5/CSS3/JS embedded in the GUI binary as split, syntax-checked assets.
 
 ---
 
 ## 🤝 Contributing
-We believe in **Egalitarian Human + AI Problem Solving.** Check out our `PLATFORM_VISION.md` to see how we’re building a decentralized public square for the future of work.
+We believe in **Egalitarian Human + AI Problem Solving.** Issues and pull requests should keep the local-first privacy model, explicit egress gates, and user-owned store boundaries intact.
 
 ---
 
@@ -141,7 +141,7 @@ We believe in **Egalitarian Human + AI Problem Solving.** Check out our `PLATFOR
 
 Licensed under the **[GNU Affero General Public License v3.0](LICENSE)** (`AGPL-3.0-only`). If you run a modified version of UCP as a network service, the AGPL requires you to offer your source to its users — the copyleft that keeps a sovereign, user-owned substrate sovereign.
 
-Incorporated third-party components keep their own permissive licenses (MIT / Apache-2.0 / BSD), which the AGPL allows — see [`CREDITS.md`](CREDITS.md).
+Incorporated third-party components keep their own permissive licenses (MIT / Apache-2.0 / BSD), which the AGPL allows. Bundled components keep license/notice files next to their source where required.
 
 ---
 *"The substrate, not the harness."*

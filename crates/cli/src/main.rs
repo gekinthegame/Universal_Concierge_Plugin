@@ -1,8 +1,7 @@
 //! Universal Concierge Plugin CLI.
 //!
-//! Phase 0 wires the command surface from the plan's "Minimum CLI" so the tool
-//! feels mountable, then dispatches each subcommand to a stub that names the
-//! phase implementing it. No command does real work yet.
+//! Command-line entry point for the local Concierge store, GUI, publishing,
+//! messaging, and host-integration workflows.
 
 use std::fs::File;
 use std::io::BufReader;
