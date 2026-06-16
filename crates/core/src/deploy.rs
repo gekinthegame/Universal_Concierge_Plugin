@@ -1770,6 +1770,11 @@ mod mock_tests {
     use super::*;
     use std::io::{Read, Write};
     use std::net::TcpListener;
+
+    /// Serialize the mock tests that mutate the process-global `CONCIERGE_DEPLOY_*_BASE`
+    /// env vars, so a parallel test never clobbers another's base URL mid-request (which
+    /// would send the request to the real api.github.com and fail with 401).
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
     use std::sync::{Arc, Mutex};
 
     type Seen = Arc<Mutex<Vec<(String, String)>>>; // (method, path)
@@ -1852,6 +1857,7 @@ mod mock_tests {
 
     #[test]
     fn mock_protocols() {
+        let _env = ENV_LOCK.lock().unwrap_or_else(|poison| poison.into_inner());
         // ── Netlify: look up existing site (none) → create → digest deploy → upload ──
         let (base, seen, h) = spawn_mock(4, |method, path, b| {
             if path.contains("/files/") {
@@ -2057,6 +2063,7 @@ wqpMeGWXht6yqjEaGCERenA=
 
     #[test]
     fn mock_firebase_protocol() {
+        let _env = ENV_LOCK.lock().unwrap_or_else(|poison| poison.into_inner());
         // token exchange → create version → populateFiles → upload → finalize → release.
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let base = format!("http://{}", listener.local_addr().unwrap());
@@ -2146,6 +2153,7 @@ wqpMeGWXht6yqjEaGCERenA=
 
     #[test]
     fn verify_github_reports_account_and_repo() {
+        let _env = ENV_LOCK.lock().unwrap_or_else(|poison| poison.into_inner());
         // The "Test connection" path: GET /user (account) + GET /repos/o/r (access).
         let (base, _seen, h) = spawn_mock(2, |_m, path, _b| {
             if path.ends_with("/user") {
