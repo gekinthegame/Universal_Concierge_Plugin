@@ -1,5 +1,33 @@
 use super::*;
 
+#[cfg(unix)]
+static SHUTDOWN_REQUESTED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// Async-signal-safe handler: just flag the request. A poller thread does the real
+/// (non-signal-safe) shutdown work — stopping the detached Kubo node, then exiting.
+#[cfg(unix)]
+extern "C" fn handle_term_signal(_sig: libc::c_int) {
+    SHUTDOWN_REQUESTED.store(true, std::sync::atomic::Ordering::SeqCst);
+}
+
+/// Stop background processes and exit. The single exit seam for **every** shutdown path —
+/// window-close (heartbeat watchdog), watched-PID death, and Ctrl-C/SIGTERM — so none of them
+/// can leak the **detached** private Kubo daemon (it outlives this process unless told to stop).
+/// `process::exit` tears down all in-process work (chat node, embedder, server threads).
+fn shutdown(mem: &MemCli) -> ! {
+    let _ = mem.stop_sidekick_node();
+    remove_gui_lock(mem);
+    std::process::exit(0);
+}
+
+/// Drop the reuse lock so a second mount doesn't try to reach this now-dead server.
+fn remove_gui_lock(mem: &MemCli) {
+    if let Some(path) = gui_lock_path(mem) {
+        let _ = std::fs::remove_file(path);
+    }
+}
+
 pub fn serve(mem: MemCli, addr: &str) -> CoreResult<()> {
     serve_with_options(mem, addr, GuiOptions::default())
 }
@@ -22,6 +50,7 @@ pub fn serve_with_options(mem: MemCli, addr: &str, options: GuiOptions) -> CoreR
     }
 
     if let Some(pid) = options.watch_pid {
+        let mem_watch = mem.clone();
         std::thread::spawn(move || loop {
             std::thread::sleep(std::time::Duration::from_secs(2));
             #[cfg(unix)]
@@ -32,7 +61,77 @@ pub fn serve_with_options(mem: MemCli, addr: &str, options: GuiOptions) -> CoreR
             #[cfg(not(unix))]
             let alive = true;
             if !alive {
-                std::process::exit(0);
+                shutdown(&mem_watch); // stop the detached Kubo node too, not just this process
+            }
+        });
+    }
+
+    // Hitting the GUI window's X must close the Concierge AND its background processes. Each
+    // window heartbeats `/api/heartbeat` while open and beacons `/api/closing` on unload; when
+    // the last window is gone (after at least one connected), shut the whole server down. Only
+    // the process that owns a window does this — a headless `--no-open` server is governed by
+    // watch_pid instead. A generous STALE tolerates background-tab timer throttling (the beacon
+    // catches real closes fast); GRACE outlives a page reload before deciding the window is gone.
+    if options.open_browser {
+        let mem_life = mem.clone();
+        let clients = options.clients.clone();
+        std::thread::spawn(move || {
+            const STALE: std::time::Duration = std::time::Duration::from_secs(75);
+            const GRACE: std::time::Duration = std::time::Duration::from_secs(6);
+            let mut empty_since: Option<std::time::Instant> = None;
+            loop {
+                std::thread::sleep(std::time::Duration::from_secs(2));
+                let (seen_any, empty) = {
+                    let Ok(mut presence) = clients.lock() else {
+                        continue;
+                    };
+                    let now = std::time::Instant::now();
+                    presence
+                        .last_seen
+                        .retain(|_, seen| now.duration_since(*seen) < STALE);
+                    (presence.seen_any, presence.last_seen.is_empty())
+                };
+                if !seen_any {
+                    continue; // no window has connected yet — don't exit during startup
+                }
+                if empty {
+                    match empty_since {
+                        Some(since) if since.elapsed() >= GRACE => shutdown(&mem_life),
+                        Some(_) => {}
+                        None => empty_since = Some(std::time::Instant::now()),
+                    }
+                } else {
+                    empty_since = None; // a window is back (e.g. a reload) — cancel shutdown
+                }
+            }
+        });
+    }
+
+    // Ctrl-C / SIGTERM in a terminal must also stop the detached Kubo node, not just this
+    // process. The handler only flags; this poller does the real shutdown work.
+    #[cfg(unix)]
+    {
+        let handler = handle_term_signal as *const () as libc::sighandler_t;
+        unsafe {
+            libc::signal(libc::SIGINT, handler);
+            libc::signal(libc::SIGTERM, handler);
+        }
+        let mem_sig = mem.clone();
+        std::thread::spawn(move || loop {
+            std::thread::sleep(std::time::Duration::from_millis(200));
+            if SHUTDOWN_REQUESTED.load(std::sync::atomic::Ordering::SeqCst) {
+                shutdown(&mem_sig);
+            }
+        });
+    }
+
+    // We stop the detached Kubo daemon on window-close, so if the Sidekick was left enabled,
+    // relaunch its node here (idempotent — `enable_sidekick` only launches if not running).
+    {
+        let mem_node = mem.clone();
+        std::thread::spawn(move || {
+            if mem_node.sidekick_status().enabled {
+                let _ = mem_node.enable_sidekick();
             }
         });
     }
@@ -493,18 +592,50 @@ pub(super) fn route_request(
     if let Some(rejection) = loopback_gate(request, &options.csrf_token) {
         return rejection;
     }
-    if request.method == "POST" && !options.allow_mutation() {
-        return Response::too_many_requests();
-    }
     let (path, query) = request
         .target
         .split_once('?')
         .unwrap_or((&request.target, ""));
+    // Window-lifecycle pings are CSRF-gated by loopback_gate above but are NOT privacy
+    // mutations — exempt them from the mutation rate limiter (the page pings every few seconds).
+    if request.method == "POST" && (path == "/api/heartbeat" || path == "/api/closing") {
+        return handle_lifecycle(options, path, &request.body);
+    }
+    if request.method == "POST" && !options.allow_mutation() {
+        return Response::too_many_requests();
+    }
     match request.method.as_str() {
         "GET" => handle_with_options(mem, options, path, query),
         "POST" => handle_mutation(mem, options, path, &request.body),
         _ => Response::method_not_allowed(),
     }
+}
+
+/// Record a window heartbeat (`/api/heartbeat`) or close beacon (`/api/closing`). The
+/// open-window watchdog reads this presence to decide when the last window has gone and the
+/// server should fully shut down. Body is `{"id":"<window-id>"}`.
+fn handle_lifecycle(options: &GuiOptions, path: &str, body: &str) -> Response {
+    let id = serde_json::from_str::<serde_json::Value>(body)
+        .ok()
+        .and_then(|value| {
+            value
+                .get("id")
+                .and_then(|id| id.as_str())
+                .map(str::to_string)
+        })
+        .unwrap_or_default();
+    if id.is_empty() {
+        return Response::bad_request("missing window id");
+    }
+    if let Ok(mut presence) = options.clients.lock() {
+        presence.seen_any = true;
+        if path == "/api/heartbeat" {
+            presence.last_seen.insert(id, std::time::Instant::now());
+        } else {
+            presence.last_seen.remove(&id);
+        }
+    }
+    Response::json("{\"ok\":true}".to_string())
 }
 
 /// The result of reading one request off the socket.

@@ -80,6 +80,33 @@ async function postJson(url, payload) {
   if (!response.ok || data.error) throw new Error(data.error || response.statusText);
   return data;
 }
+// Window lifecycle: tell the server this window is open so it can fully shut down — and stop
+// the private Kubo node — when the LAST window closes. Hitting the GUI's X then exits the
+// Concierge and its background processes instead of leaving them running. Best-effort and
+// privacy-neutral (a same-origin, CSRF-gated ping; no data). A fresh id per page load means a
+// reload looks like close+reopen, which the server's grace window tolerates.
+const lifecycleId = "w" + Math.random().toString(36).slice(2) + Date.now().toString(36);
+function lifecyclePing(path) {
+  if (!csrfToken) return; // before meta loads; the server won't shut down until it has seen us
+  try {
+    fetch(path, {
+      method: "POST",
+      keepalive: true, // let the 'closing' ping survive page unload
+      headers: { "Content-Type": "application/json", "X-CSRF-Token": csrfToken },
+      body: JSON.stringify({ id: lifecycleId }),
+    });
+  } catch (e) {}
+}
+let lifecycleStarted = false;
+function startLifecycle() {
+  if (lifecycleStarted) return;
+  lifecycleStarted = true;
+  lifecyclePing("/api/heartbeat");
+  window.setInterval(() => lifecyclePing("/api/heartbeat"), 3000);
+  const bye = () => lifecyclePing("/api/closing");
+  window.addEventListener("pagehide", bye);
+  window.addEventListener("beforeunload", bye);
+}
 // User-initiated work runs through `safely`: while anything is in flight the
 // blocking overlay is shown, so further clicks are swallowed instead of stacking
 // up concurrent requests. A counter keeps the overlay up across nested/overlapping

@@ -207,6 +207,22 @@ pub struct GuiOptions {
     /// The GUI polls `/api/activity?since=<seq>` and prints it so the user can see
     /// the plugin does what it says (no hidden network or model activity).
     activity: Arc<Mutex<ActivityLog>>,
+    /// Open GUI windows. Each window heartbeats `/api/heartbeat` while it's open and
+    /// beacons `/api/closing` on unload; the lifecycle watchdog (only when this process
+    /// opened a browser) shuts the whole server down — stopping the detached Kubo node —
+    /// once the last window closes, so hitting the GUI's X fully exits with no orphaned
+    /// background processes. Maps window-id → last seen; `seen_any` guards the startup race.
+    clients: Arc<Mutex<ClientPresence>>,
+}
+
+/// Window-presence tracker behind [`GuiOptions::clients`].
+#[derive(Debug, Default)]
+struct ClientPresence {
+    /// True once any window has heartbeated — until then the watchdog must not shut down
+    /// (the server is up before the first window has loaded).
+    seen_any: bool,
+    /// window-id → last heartbeat instant. Pruned by the watchdog; emptied → time to exit.
+    last_seen: HashMap<String, Instant>,
 }
 
 /// One line in the System Console feed.
@@ -362,6 +378,7 @@ impl Default for GuiOptions {
             canvas: Arc::new(Mutex::new(HashMap::new())),
             preview_dirs: Arc::new(Mutex::new(HashMap::new())),
             activity: Arc::new(Mutex::new(ActivityLog::default())),
+            clients: Arc::new(Mutex::new(ClientPresence::default())),
         }
     }
 }

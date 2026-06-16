@@ -797,6 +797,14 @@ impl MemCli {
         Ok(())
     }
 
+    /// Stop the Sidekick's private Kubo daemon **without** disabling the Sidekick. Used on
+    /// app shutdown: the daemon is spawned *detached* (it outlives the GUI process), so the
+    /// window closing must explicitly stop it or it leaks as a background process. The enable
+    /// flag is left intact, so the next launch brings the node back. No-op if not running.
+    pub fn stop_sidekick_node(&self) -> Result<()> {
+        stop_private_node(&self.store_dir()?)
+    }
+
     /// Disable the Sidekick and stop its dedicated private node.
     pub fn disable_sidekick(&self) -> Result<SidekickStatus> {
         stop_private_node(&self.store_dir()?)?;

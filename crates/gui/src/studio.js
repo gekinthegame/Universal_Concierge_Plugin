@@ -1411,6 +1411,7 @@ showView("canvas");
 safely(cvLoadSites);
 safely(async () => {
   await Promise.all([loadMeta(), loadNames(), loadRooms(), loadMe(), loadRequests(), loadContacts(), loadProfile()]);
+  startLifecycle(); // csrfToken is set now — begin heartbeating so closing the window exits cleanly
   await loadGraph();
   await refreshPrivacy();
 });
