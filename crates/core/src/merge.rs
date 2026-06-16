@@ -173,12 +173,15 @@ impl MemCli {
             "rationale": merge.merge_policy,
         });
         let parents: Vec<Cid> = merge.parents.iter().cloned().map(Cid).collect();
-        self.put_node_derived(
+        // Stamp the merge's own (deterministic, signed) timestamp, not the wall clock —
+        // so every device that applies this merge derives the identical head CID.
+        self.put_node_derived_at(
             &Node {
                 kind: "decision".to_string(),
                 fields_json: body.to_string(),
             },
             &parents,
+            merge.created_at,
         )
     }
 }

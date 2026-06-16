@@ -18,6 +18,24 @@ impl MemCli {
     /// `put_node` (which records `Source::User`), this attaches real, gravity-
     /// counted edges to the originating CIDs.
     pub fn put_node_derived(&self, node: &Node, from: &[Cid]) -> Result<Cid> {
+        self.put_node_derived_inner(node, from, None)
+    }
+
+    /// Like [`Self::put_node_derived`] but stamps an **explicit, deterministic**
+    /// `created_at` instead of the wall clock. A rebuildable derived node (e.g. a merge
+    /// head) must get the SAME CID on every device that derives it — `created_at` is part
+    /// of the content-addressed envelope, so a wall-clock stamp makes two devices diverge.
+    /// Callers pass a value both share (e.g. the merge checkpoint's own timestamp).
+    pub fn put_node_derived_at(&self, node: &Node, from: &[Cid], created_at: u64) -> Result<Cid> {
+        self.put_node_derived_inner(node, from, Some(created_at))
+    }
+
+    fn put_node_derived_inner(
+        &self,
+        node: &Node,
+        from: &[Cid],
+        created_at: Option<u64>,
+    ) -> Result<Cid> {
         let mut value: serde_json::Value = serde_json::from_str(&node.fields_json)
             .map_err(|e| Error::Io(format!("node fields_json is not valid JSON: {e}")))?;
         let obj = value
@@ -38,9 +56,12 @@ impl MemCli {
             links.push(parsed);
         }
         let store = self.open_store()?;
-        let cid = store
-            .put_node(typed, mem::node::Source::Derived { from: links })
-            .map_err(|e| Error::Io(format!("put derived node: {e}")))?;
+        let source = mem::node::Source::Derived { from: links };
+        let cid = match created_at {
+            Some(timestamp) => store.put_node_at(typed, source, timestamp),
+            None => store.put_node(typed, source),
+        }
+        .map_err(|e| Error::Io(format!("put derived node: {e}")))?;
         Ok(Cid(cid.to_string()))
     }
 
