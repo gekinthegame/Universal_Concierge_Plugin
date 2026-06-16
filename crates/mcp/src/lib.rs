@@ -77,6 +77,14 @@ const MOTION_CAPTURE: &str = r#"// Concierge deterministic STREAMING renderer. O
   async function renderStreaming(canvas, durationSec, fps) {
     if (typeof VideoEncoder === 'undefined' || !window.WebMMuxer) return false;
     var w = canvas.width, h = canvas.height;
+    // Blit each frame onto a 2D scratch canvas before encoding. A WebGL/Three.js canvas
+    // (without preserveDrawingBuffer) is cleared after compositing, so new VideoFrame(canvas)
+    // captures BLANK 3D. Drawing the source onto a 2D canvas synchronously — right after
+    // __seek renders, before the browser clears the buffer — captures it correctly for BOTH
+    // WebGL and 2D (the 2D-source case is just a cheap copy).
+    var scratch = document.createElement('canvas');
+    scratch.width = w; scratch.height = h;
+    var sctx = scratch.getContext('2d');
     var queue = [];
     var muxer = new WebMMuxer.Muxer({
       target: new WebMMuxer.StreamTarget({
@@ -96,7 +104,8 @@ const MOTION_CAPTURE: &str = r#"// Concierge deterministic STREAMING renderer. O
     for (var f = 0; f < total; f++) {
       var t = f / fps;
       if (typeof window.__seek === 'function') window.__seek(t);
-      var vf = new VideoFrame(canvas, { timestamp: Math.round(t * 1e6), duration: Math.round(1e6 / fps) });
+      sctx.drawImage(canvas, 0, 0, w, h);
+      var vf = new VideoFrame(scratch, { timestamp: Math.round(t * 1e6), duration: Math.round(1e6 / fps) });
       encoder.encode(vf, { keyFrame: f % (fps * 2) === 0 });
       vf.close();
       if (encoder.encodeQueueSize > 8) await new Promise(function (r) { setTimeout(r, 0); });
@@ -128,7 +137,9 @@ const MOTION_CAPTURE: &str = r#"// Concierge deterministic STREAMING renderer. O
   window.addEventListener('message', async function (e) {
     var msg = e.data || {};
     if (msg.concierge !== 'record') return;
-    var canvas = document.querySelector('canvas');
+    // Prefer an explicit author hint, then the scaffold's #stage, then any canvas — so a
+    // Three.js scene that renders into #stage is captured, not an empty 2D canvas.
+    var canvas = window.__canvas || document.querySelector('#stage') || document.querySelector('canvas');
     if (!canvas) { send({ phase: 'done', ok: false }); return; }
     var fps = window.__fps || 30;
     var dur = Math.max(0.2, window.__duration || (msg.ms ? msg.ms / 1000 : 4));
@@ -234,9 +245,12 @@ fn dispatch(
                 },
                 "instructions": "The Universal Concierge Plugin's memory + site-building tools. \
             Read tools recall stored memory (concierge.recall / concierge.resolve / concierge.get). \
-            When write is enabled, concierge.write_site stages a website the user previews live in the \
-            Studio and publishes themselves — publishing is never automatic. Never assume a tool published \
-            anything; report only what the result says.",
+            BEFORE building any site/game/video, call concierge.list_site — if the user already created a \
+            project in the Studio ('New'), its files are staged and waiting; build by EDITING them with \
+            concierge.write_asset (omit 'site' so it targets the open project), never by scaffolding a new \
+            folder. When write is enabled, concierge.write_site stages a website the user previews live in \
+            the Studio and publishes themselves — publishing is never automatic. Never assume a tool \
+            published anything; report only what the result says.",
             }),
         ),
         "ping" => result(id, json!({})),
@@ -319,7 +333,19 @@ checklist. Load the relevant topic BEFORE building UI/media.",
 gradient text, AI palette, side-tab borders, gray-on-color, flat type hierarchy, monotonous \
 spacing, bounce easing, marketing buzzwords, …). Advisory — run it on what you staged, then fix.",
             str_schema(
-                &[("site_name", "The staged site folder to audit (defaults to 'draft'); audits its index.html")],
+                &[("site_name", "The staged site folder to audit (defaults to the open project); audits its index.html")],
+                &[],
+            ),
+        ),
+        tool_def(
+            "concierge.list_site",
+            "List the files already staged in the Studio project the user currently has open (or a \
+named site). ALWAYS call this FIRST before building media. If files are already staged — e.g. a \
+Movie/animation scaffold (index.html + animation.js + capture.js + gsap.min.js + lottie.min.js + \
+webm-muxer.js) — then BUILD BY EDITING those files with concierge.write_asset. Do NOT call \
+scaffold_engine again and do NOT create parallel files; the renderer is already wired in.",
+            str_schema(
+                &[("site", "Optional site folder; defaults to the project the user has open")],
                 &[],
             ),
         ),
@@ -373,8 +399,10 @@ publish themselves. STAGING ONLY — this never publishes or makes anything publ
         tools.push(tool_def(
             "concierge.write_asset",
             "Stage any file (HTML, JS, CSS, SVG, image, glTF…) into a site folder so you can build \
-multi-file media/games. STAGING ONLY — never publishes. Combine with concierge.scaffold_engine \
-to drop in a vendored renderer; the user previews the folder in the Studio and publishes it.",
+multi-file media/games. STAGING ONLY — never publishes. Call concierge.list_site FIRST: if a \
+project is already staged (e.g. the user hit 'New' in the Studio), omit 'site' and EDIT the \
+existing files (it defaults to the open project) — don't create a parallel folder. Combine with \
+concierge.scaffold_engine to drop in a vendored renderer; the user previews and publishes.",
             json!({
                 "type": "object",
                 "properties": {
@@ -391,8 +419,9 @@ to drop in a vendored renderer; the user previews the folder in the Studio and p
             "Drop a proven, vendored web renderer into a site folder so a game/3D scene/animation \
 stays self-contained (no CDN, works offline + on IPFS): 'three' (Three.js, 3D), 'phaser' (Phaser, \
 2D), or 'motion' (GSAP + Lottie — animation/motion-graphics that record to video in-browser, no \
-ffmpeg). Returns the filenames + a ready-to-use snippet. Pair with design_guide(topic='motion'). \
-STAGING ONLY — never publishes.",
+ffmpeg). Returns the filenames + a ready-to-use snippet. Call concierge.list_site FIRST — if the \
+renderer is already staged (a 'New' Movie project already includes it), do NOT call this; just \
+EDIT animation.js. Pair with design_guide(topic='motion'). STAGING ONLY — never publishes.",
             json!({
                 "type": "object",
                 "properties": {
@@ -458,6 +487,7 @@ fn tools_call(mem: &MemCli, write_enabled: bool, params: Option<&Value>, id: &Va
         "concierge.retrieve" => tool_retrieve(mem, args),
         "concierge.design_guide" => tool_design_guide(args),
         "concierge.design_audit" => tool_design_audit(mem, args),
+        "concierge.list_site" => tool_list_site(mem, args),
         "concierge.write_asset" => tool_write_asset(mem, args),
         "concierge.scaffold_engine" => tool_scaffold_engine(mem, args),
         "concierge.put_node" => tool_put_node(mem, args),
@@ -613,7 +643,8 @@ fn tool_bind(mem: &MemCli, args: &Value) -> Result<String, String> {
 
 fn tool_write_site(mem: &MemCli, args: &Value) -> Result<String, String> {
     let html = arg(args, "html")?;
-    let name = args.get("name").and_then(Value::as_str).unwrap_or("draft");
+    let name_owned = resolve_site(args, mem, "name");
+    let name = name_owned.as_str();
     let safe: String = name
         .chars()
         .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_'))
@@ -662,6 +693,32 @@ fn safe_site(name: &str) -> String {
 /// Resolve `<store>/canvas/<site>/`, sanitizing the site name.
 fn site_dir(mem: &MemCli, site: &str) -> Result<std::path::PathBuf, String> {
     Ok(canvas_root(mem)?.join(safe_site(site)))
+}
+
+/// The project the Studio currently has open. The GUI writes its folder name to
+/// `<canvas>/.active` on New/Open (a cross-process bridge — the MCP server and the GUI are
+/// separate processes that only share the filesystem). Write/read tools default to it so the
+/// model edits the files the user is actually looking at instead of staging a stray "draft"
+/// folder the user never sees.
+fn active_site(mem: &MemCli) -> Option<String> {
+    let root = mem.store_dir().ok()?.join("canvas");
+    let name = std::fs::read_to_string(root.join(".active")).ok()?;
+    let trimmed = name.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(safe_site(trimmed))
+    }
+}
+
+/// Resolve the target site folder for a tool call: an explicit arg (`key`) wins, else the
+/// Studio's currently-open project, else "draft".
+fn resolve_site(args: &Value, mem: &MemCli, key: &str) -> String {
+    args.get(key)
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .or_else(|| active_site(mem))
+        .unwrap_or_else(|| "draft".to_string())
 }
 
 fn canvas_root(mem: &MemCli) -> Result<std::path::PathBuf, String> {
@@ -802,10 +859,8 @@ Then build, and run `concierge.design_audit` on what you staged.\n\n\
 
 /// Deterministic design-quality audit of a staged site's index.html.
 fn tool_design_audit(mem: &MemCli, args: &Value) -> Result<String, String> {
-    let site = args
-        .get("site_name")
-        .and_then(Value::as_str)
-        .unwrap_or("draft");
+    let site_owned = resolve_site(args, mem, "site_name");
+    let site = site_owned.as_str();
     let path = site_dir(mem, site)?.join("index.html");
     let html = std::fs::read_to_string(&path).map_err(|e| {
         format!(
@@ -833,11 +888,76 @@ fn tool_design_audit(mem: &MemCli, args: &Value) -> Result<String, String> {
     Ok(report)
 }
 
+/// List files already staged in a site folder so the model edits them instead of recreating
+/// them. Read-only; defaults to the project the Studio currently has open.
+fn tool_list_site(mem: &MemCli, args: &Value) -> Result<String, String> {
+    let site_owned = resolve_site(args, mem, "site");
+    let site = site_owned.as_str();
+    let folder = site_dir(mem, site)?;
+    if !folder.is_dir() {
+        return Ok(format!(
+            "Project '{}' has no staged files yet. Use concierge.write_asset (or scaffold_engine) to create them.",
+            safe_site(site)
+        ));
+    }
+    let mut entries: Vec<(String, u64)> = Vec::new();
+    let mut stack = vec![folder.clone()];
+    while let Some(dir) = stack.pop() {
+        let read = match std::fs::read_dir(&dir) {
+            Ok(read) => read,
+            Err(_) => continue,
+        };
+        for ent in read.flatten() {
+            let meta = match ent.metadata() {
+                Ok(meta) => meta,
+                Err(_) => continue,
+            };
+            let path = ent.path();
+            if meta.is_dir() {
+                stack.push(path);
+            } else if meta.is_file() {
+                if let Ok(rel) = path.strip_prefix(&folder) {
+                    entries.push((rel.display().to_string(), meta.len()));
+                }
+            }
+        }
+    }
+    if entries.is_empty() {
+        return Ok(format!(
+            "Project '{}' is staged but empty — stage files with concierge.write_asset.",
+            safe_site(site)
+        ));
+    }
+    entries.sort();
+    let list = entries
+        .iter()
+        .map(|(name, size)| format!("  {name} ({size} bytes)"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let is_movie = entries.iter().any(|(n, _)| n == "capture.js");
+    let hint = if is_movie {
+        "\n\nThis is a Movie/animation project — the renderer (capture.js) is already wired in. \
+BUILD THE MOVIE BY EDITING animation.js (concierge.write_asset, path='animation.js'). Do NOT \
+re-scaffold and do NOT add gsap/lottie/webm-muxer — they are already here. The video renders \
+automatically on Save/Publish."
+    } else {
+        "\n\nEDIT these existing files with concierge.write_asset — do not recreate the project."
+    };
+    Ok(format!(
+        "Project '{}' has {} staged file(s):\n{}{}",
+        safe_site(site),
+        entries.len(),
+        list,
+        hint
+    ))
+}
+
 /// Stage any file into a site folder (multi-file media/games).
 fn tool_write_asset(mem: &MemCli, args: &Value) -> Result<String, String> {
     let rel = safe_rel_path(arg(args, "path")?)?;
     let content = arg(args, "content")?;
-    let site = args.get("site").and_then(Value::as_str).unwrap_or("draft");
+    let site_owned = resolve_site(args, mem, "site");
+    let site = site_owned.as_str();
     let is_b64 = args
         .get("base64")
         .and_then(Value::as_str)
@@ -861,7 +981,8 @@ fn tool_write_asset(mem: &MemCli, args: &Value) -> Result<String, String> {
 /// Drop a vendored, self-contained renderer into a site folder.
 fn tool_scaffold_engine(mem: &MemCli, args: &Value) -> Result<String, String> {
     let engine = arg(args, "engine")?.to_lowercase();
-    let site = args.get("site").and_then(Value::as_str).unwrap_or("draft");
+    let site_owned = resolve_site(args, mem, "site");
+    let site = site_owned.as_str();
     let folder = site_dir(mem, site)?;
     let root = canvas_root(mem)?;
     std::fs::create_dir_all(&folder).map_err(|e| format!("create dir: {e}"))?;
@@ -914,9 +1035,28 @@ fn tool_scaffold_engine(mem: &MemCli, args: &Value) -> Result<String, String> {
         "three" | "threejs" | "three.js" => (
             "three.module.min.js",
             ENGINE_THREE,
-            "Three.js is ESM. In your index.html:\n\
+            "Three.js is ESM. To EXPORT VIDEO it must render into the SAME <canvas id=\"stage\"> \
+the Concierge captures, with preserveDrawingBuffer:true, and expose a SEEKABLE contract (deterministic — \
+no clock / Math.random; seeking to time t must always draw the same frame). In your index.html:\n\
+<canvas id=\"stage\" width=\"1280\" height=\"720\"></canvas>\n\
 <script type=\"importmap\">{\"imports\":{\"three\":\"./three.module.min.js\"}}</script>\n\
-<script type=\"module\">\n  import * as THREE from 'three';\n  // build your scene, renderer, camera, animate()…\n</script>".to_string(),
+<script type=\"module\">\n\
+  import * as THREE from 'three';\n\
+  const stage = document.getElementById('stage');\n\
+  const renderer = new THREE.WebGLRenderer({ canvas: stage, antialias: true, preserveDrawingBuffer: true });\n\
+  renderer.setSize(stage.width, stage.height, false);\n\
+  const scene = new THREE.Scene();\n\
+  const camera = new THREE.PerspectiveCamera(50, stage.width / stage.height, 0.1, 100); camera.position.z = 5;\n\
+  scene.add(new THREE.AmbientLight(0xffffff, 0.8));\n\
+  const dir = new THREE.DirectionalLight(0xffffff, 1); dir.position.set(3, 4, 5); scene.add(dir);\n\
+  const cube = new THREE.Mesh(new THREE.BoxGeometry(), new THREE.MeshStandardMaterial({ color: 0x66ccff }));\n\
+  scene.add(cube);\n\
+  window.__canvas = stage; window.__fps = 30; window.__duration = 6;\n\
+  // The Concierge calls __seek(t) for every frame on Save/Publish; it MUST render synchronously.\n\
+  window.__seek = (t) => { cube.rotation.y = t * 1.2; cube.rotation.x = t * 0.6; renderer.render(scene, camera); };\n\
+  // Live preview while you edit (loops the timeline):\n\
+  (function loop(){ window.__seek((performance.now() / 1000) % window.__duration); requestAnimationFrame(loop); })();\n\
+</script>".to_string(),
         ),
         "phaser" | "phaserjs" => (
             "phaser.min.js",
@@ -1128,6 +1268,83 @@ mod tests {
     }
 
     #[test]
+    fn write_tools_target_the_active_studio_project_not_draft() {
+        let (_dir, mem) = store();
+        // Simulate the GUI marking a freshly-created Studio project as active.
+        let canvas = mem.store_dir().unwrap().join("canvas");
+        std::fs::create_dir_all(&canvas).unwrap();
+        std::fs::write(canvas.join(".active"), b"my-movie").unwrap();
+
+        // write_asset with NO `site` arg must land in the active project, not "draft".
+        let staged = call(
+            &mem,
+            true,
+            "tools/call",
+            json!({
+                "name": "concierge.write_asset",
+                "arguments": { "path": "animation.js", "content": "// gsap timeline" }
+            }),
+        );
+        let text = staged["result"]["content"][0]["text"].as_str().unwrap();
+        assert!(
+            text.contains("my-movie"),
+            "asset should target the active project: {text}"
+        );
+        assert!(
+            mem.store_dir()
+                .unwrap()
+                .join("canvas/my-movie/animation.js")
+                .is_file(),
+            "file should be written into the active project folder"
+        );
+
+        // Stage capture.js so list_site recognizes a Movie project.
+        call(
+            &mem,
+            true,
+            "tools/call",
+            json!({
+                "name": "concierge.write_asset",
+                "arguments": { "path": "capture.js", "content": "// renderer" }
+            }),
+        );
+
+        // list_site (a read tool, no args) enumerates the staged files + the movie directive.
+        let listed = call(
+            &mem,
+            false,
+            "tools/call",
+            json!({ "name": "concierge.list_site", "arguments": {} }),
+        );
+        let lt = listed["result"]["content"][0]["text"].as_str().unwrap();
+        assert!(
+            lt.contains("animation.js") && lt.contains("capture.js"),
+            "list_site should enumerate staged files: {lt}"
+        );
+        assert!(
+            lt.contains("EDITING animation.js"),
+            "list_site should steer the model to edit, not re-scaffold: {lt}"
+        );
+
+        // With no `.active` marker, write tools fall back to the default "draft".
+        std::fs::remove_file(canvas.join(".active")).unwrap();
+        let fallback = call(
+            &mem,
+            true,
+            "tools/call",
+            json!({
+                "name": "concierge.write_asset",
+                "arguments": { "path": "index.html", "content": "<!doctype html>" }
+            }),
+        );
+        let ft = fallback["result"]["content"][0]["text"].as_str().unwrap();
+        assert!(
+            ft.contains("'draft'"),
+            "with no active project, should fall back to draft: {ft}"
+        );
+    }
+
+    #[test]
     fn resources_read_returns_bound_records_and_rejects_bad_uris() {
         let (_dir, mem) = store();
         let cid = mem
@@ -1180,5 +1397,52 @@ mod tests {
         );
         // STAGING ONLY — nothing published.
         assert!(mem.publish_receipts().unwrap().is_empty());
+
+        // The capture renderer must blit through a 2D scratch canvas (so WebGL/3D frames
+        // aren't captured blank) and select #stage / __canvas, not just the first canvas.
+        let capture = std::fs::read_to_string(folder.join("capture.js")).unwrap();
+        assert!(
+            capture.contains("sctx.drawImage(canvas") && capture.contains("new VideoFrame(scratch"),
+            "capture.js must encode a 2D blit, not the raw (possibly-WebGL) canvas"
+        );
+        assert!(
+            capture.contains("window.__canvas || document.querySelector('#stage')"),
+            "capture.js must prefer __canvas/#stage so a Three.js scene is the captured canvas"
+        );
+    }
+
+    #[test]
+    fn scaffold_engine_three_gives_a_capturable_seekable_3d_contract() {
+        let (_dir, mem) = store();
+        let res = call(
+            &mem,
+            true,
+            "tools/call",
+            json!({
+                "name": "concierge.scaffold_engine",
+                "arguments": { "engine": "three", "site": "scene" }
+            }),
+        );
+        assert_eq!(res["result"]["isError"], false);
+        let text = res["result"]["content"][0]["text"].as_str().unwrap();
+        // Without these, a Three.js scene renders live but exports a BLANK video.
+        assert!(
+            text.contains("preserveDrawingBuffer: true"),
+            "three snippet must keep the WebGL buffer so it can be captured: {text}"
+        );
+        assert!(
+            text.contains("window.__seek") && text.contains("renderer.render(scene, camera)"),
+            "three snippet must expose a seekable contract that renders per frame: {text}"
+        );
+        assert!(
+            std::fs::metadata(
+                mem.store_dir()
+                    .unwrap()
+                    .join("canvas/scene/three.module.min.js")
+            )
+            .unwrap()
+            .len()
+                > 1000
+        );
     }
 }

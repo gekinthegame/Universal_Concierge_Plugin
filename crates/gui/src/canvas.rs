@@ -1088,6 +1088,10 @@ pub(super) fn mutation_canvas_new(mem: &MemCli, body: &str) -> Response {
         _ => {}
     }
 
+    // Tell the MCP server (a separate process) which project the user is now in, so its
+    // write tools edit THESE staged files instead of defaulting to a stray "draft" folder.
+    set_active_project(mem, &safe);
+
     Response::json(
         serde_json::json!({
             "ok": true,
@@ -1097,6 +1101,16 @@ pub(super) fn mutation_canvas_new(mem: &MemCli, body: &str) -> Response {
         })
         .to_string(),
     )
+}
+
+/// Record the project the Studio currently has open in `<store>/canvas/.active` (one line, the
+/// bare folder name). The MCP server — a *separate process* that only shares the filesystem —
+/// reads this so its write/read tools default to the folder the user is looking at, instead of a
+/// stray "draft" the user never sees. Best-effort: a write failure here only loses the default.
+pub(super) fn set_active_project(mem: &MemCli, name: &str) {
+    if let Ok(root) = canvas_root(mem) {
+        let _ = std::fs::write(root.join(".active"), name.as_bytes());
+    }
 }
 
 /// `POST /api/canvas/delete`: permanently remove a saved project folder under
@@ -1147,7 +1161,9 @@ fn sanitize_project_name(name: &str) -> String {
         } else if c == ' ' && !out.ends_with('-') {
             out.push('-');
         }
-        if out.len() >= 64 {
+        // Cap at 48 to match the MCP server's safe_site(), so the `.active` folder name
+        // round-trips exactly and its write tools target the same folder.
+        if out.len() >= 48 {
             break;
         }
     }
@@ -1206,7 +1222,7 @@ fn movie_starter(title: &str) -> (String, String) {
 
 fn movie_readme(title: &str) -> String {
     format!(
-        "# {title} — Movie / Animation\n\nA self-contained browser animation, built with **GSAP** + **Lottie** and rendered to real video **frame-by-frame, offline** — all bundled, no CDN, no npm, no ffmpeg, no installs. Works offline and on IPFS.\n\n## How it works\n- The animation draws to a `<canvas id=\"stage\">` from a **paused, seekable GSAP timeline**. `animation.js` exposes three things the renderer uses:\n  - `window.__duration` — the movie length in **seconds** (defaults to the timeline length; set it to anything — 30, 900, 1800…).\n  - `window.__fps` — frames per second (default 30).\n  - `window.__seek(t)` — deterministically draws the frame at time `t`.\n- **Video is automatic and full-length.** On **Save** or **Publish**, the Concierge renders every frame (`__duration × __fps`) with **WebCodecs** + the bundled WebM muxer and writes `animation.webm` into the folder. It renders **as fast as your machine allows** — not in real time — so a 15- or 30-minute movie is just more frames, not a 30-minute wait while a tab records.\n- Because it's deterministic, build with a **seekable** timeline (no `Math.random()` / wall-clock); seeking to time `t` must always draw the same frame. Lottie works too: `renderer:'canvas'` + `anim.goToAndStop(t*1000, false)`.\n\n## Optional: advanced 3D with Blender\nFor heavy 3D, drive **Blender** instead (must be installed): `concierge-plugin blender-setup`, install `vendor/blender-mcp/addon.py`, connect it.\n"
+        "# {title} — Movie / Animation\n\nA self-contained browser animation, built with **GSAP** + **Lottie** and rendered to real video **frame-by-frame, offline** — all bundled, no CDN, no npm, no ffmpeg, no installs. Works offline and on IPFS.\n\n> **Building this with an AI assistant?** This project is **already staged** — `index.html`, `animation.js`, `capture.js`, `gsap.min.js`, `lottie.min.js`, `webm-muxer.js`, and `style.css` all exist. **Build the movie by EDITING `animation.js`.** Do NOT scaffold a new project, do NOT re-add the engine files, and do NOT create a parallel folder — the renderer (`capture.js`) is already wired in and produces the video automatically on Save. (Via MCP: call `concierge.list_site` to see these files, then `concierge.write_asset` with `path='animation.js'`.)\n\n## How it works\n- The animation draws to a `<canvas id=\"stage\">` from a **paused, seekable GSAP timeline**. `animation.js` exposes three things the renderer uses:\n  - `window.__duration` — the movie length in **seconds** (defaults to the timeline length; set it to anything — 30, 900, 1800…).\n  - `window.__fps` — frames per second (default 30).\n  - `window.__seek(t)` — deterministically draws the frame at time `t`.\n- **Video is automatic and full-length.** On **Save** or **Publish**, the Concierge renders every frame (`__duration × __fps`) with **WebCodecs** + the bundled WebM muxer and writes `animation.webm` into the folder. It renders **as fast as your machine allows** — not in real time — so a 15- or 30-minute movie is just more frames, not a 30-minute wait while a tab records.\n- Because it's deterministic, build with a **seekable** timeline (no `Math.random()` / wall-clock); seeking to time `t` must always draw the same frame. Lottie works too: `renderer:'canvas'` + `anim.goToAndStop(t*1000, false)`.\n\n## Optional: advanced 3D with Blender\nFor heavy 3D, drive **Blender** instead (must be installed): `concierge-plugin blender-setup`, install `vendor/blender-mcp/addon.py`, connect it.\n"
     )
 }
 
@@ -1285,6 +1301,14 @@ const MOVIE_CAPTURE_JS: &str = r#"// Concierge deterministic STREAMING renderer.
   async function renderStreaming(canvas, durationSec, fps) {
     if (typeof VideoEncoder === 'undefined' || !window.WebMMuxer) return false;
     var w = canvas.width, h = canvas.height;
+    // Blit each frame onto a 2D scratch canvas before encoding. A WebGL/Three.js canvas
+    // (without preserveDrawingBuffer) is cleared after compositing, so new VideoFrame(canvas)
+    // captures BLANK 3D. Drawing the source onto a 2D canvas synchronously — right after
+    // __seek renders, before the browser clears the buffer — captures it correctly for BOTH
+    // WebGL and 2D (the 2D-source case is just a cheap copy).
+    var scratch = document.createElement('canvas');
+    scratch.width = w; scratch.height = h;
+    var sctx = scratch.getContext('2d');
     var queue = [];
     var muxer = new WebMMuxer.Muxer({
       target: new WebMMuxer.StreamTarget({
@@ -1304,7 +1328,8 @@ const MOVIE_CAPTURE_JS: &str = r#"// Concierge deterministic STREAMING renderer.
     for (var f = 0; f < total; f++) {
       var t = f / fps;
       if (typeof window.__seek === 'function') window.__seek(t);
-      var vf = new VideoFrame(canvas, { timestamp: Math.round(t * 1e6), duration: Math.round(1e6 / fps) });
+      sctx.drawImage(canvas, 0, 0, w, h);
+      var vf = new VideoFrame(scratch, { timestamp: Math.round(t * 1e6), duration: Math.round(1e6 / fps) });
       encoder.encode(vf, { keyFrame: f % (fps * 2) === 0 });
       vf.close();
       if (encoder.encodeQueueSize > 8) await new Promise(function (r) { setTimeout(r, 0); });
@@ -1336,7 +1361,9 @@ const MOVIE_CAPTURE_JS: &str = r#"// Concierge deterministic STREAMING renderer.
   window.addEventListener('message', async function (e) {
     var msg = e.data || {};
     if (msg.concierge !== 'record') return;
-    var canvas = document.querySelector('canvas');
+    // Prefer an explicit author hint, then the scaffold's #stage, then any canvas — so a
+    // Three.js scene that renders into #stage is captured, not an empty 2D canvas.
+    var canvas = window.__canvas || document.querySelector('#stage') || document.querySelector('canvas');
     if (!canvas) { send({ phase: 'done', ok: false }); return; }
     var fps = window.__fps || 30;
     var dur = Math.max(0.2, window.__duration || (msg.ms ? msg.ms / 1000 : 4));
@@ -1555,6 +1582,10 @@ pub(super) fn mutation_canvas_open(mem: &MemCli, options: &GuiOptions, body: &st
             return Response::too_many_requests();
         }
         dirs.insert(token.clone(), canon.clone());
+    }
+    // Mark this as the active project so MCP write tools target it (see set_active_project).
+    if let Some(name) = canon.file_name().and_then(|n| n.to_str()) {
+        set_active_project(mem, name);
     }
     Response::json(
         serde_json::json!({
