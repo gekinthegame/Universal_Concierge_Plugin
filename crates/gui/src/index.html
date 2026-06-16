@@ -24,35 +24,36 @@
     </div>
   </div>
   <div class="header-right">
-    <nav class="rail-mini" aria-label="Concierge command rail">
-      <button data-command="Ingest">Ingest</button>
-      <button data-command="Put">Put</button>
-      <button data-command="Bind">Bind</button>
-      <button data-command="Resolve">Resolve</button>
-      <button data-view="names">Ls</button>
-      <button id="rail-export">Export-CAR</button>
-      <button data-command="Share">Share</button>
-      <button data-command="GC">GC</button>
-      <button data-command="Backends">Backends</button>
-      <button data-command="Init">Init</button>
-    </nav>
+    <div class="header-top-row">
+      <div id="console-mini" class="console-mini" title="System Console — click to expand" role="button" tabindex="0">
+        <span class="dot"></span>
+        <span id="console-mini-line" class="console-mini-line">System Console</span>
+        <span class="console-mini-caret">▾</span>
+        <div id="console-pop" class="console-pop" style="display:none;">
+          <div class="console-head"><span class="dot"></span><span class="lbl">System Console</span><span id="sys-embedder" class="dim" title="The on-node embedding model — the only model that runs on your node (never a generative LLM)"></span></div>
+          <div id="system-console" class="system-console" role="log" aria-live="polite"></div>
+        </div>
+      </div>
+      <nav class="rail-mini" aria-label="Concierge command rail">
+        <button data-command="Ingest">Ingest</button>
+      </nav>
+      <button id="privacy-open" class="hdr-btn" title="Privacy &amp; Publication — egress state of the selected root">🔒 Privacy</button>
+    </div>
+    <div class="header-tabs" role="tablist">
+      <button class="tab active" data-view="canvas">Studio</button>
+      <button class="tab" data-view="messenger">Messenger<span id="msg-badge" class="tab-badge" style="display:none">0</span></button>
+      <button class="tab" data-view="network">Network</button>
+      <button class="tab" data-view="graph">Graph</button>
+      <button class="tab" data-view="names">Records</button>
+      <button class="tab" data-view="wallet">Wallet</button>
+    </div>
   </div>
 </header>
 
 <main>
   <section class="panel center">
-    <div class="panel-head">
-      <span class="panel-title">The Data Platter <span id="root-note"></span></span>
-      <button id="reset-view" class="reset-btn" title="Center and fit the whole graph">Reset View</button>
-      <button class="tab active" data-view="graph">Graph</button>
-      <button class="tab" data-view="names">Records</button>
-      <button class="tab" data-view="search">Search</button>
-      <button class="tab" data-view="messenger">Messenger<span id="msg-badge" class="tab-badge" style="display:none">0</span></button>
-      <button class="tab" data-view="canvas">Studio</button>
-      <button class="tab" data-view="network">Network</button>
-      <button class="tab" data-view="wallet">Wallet</button>
-    </div>
-    <div id="graph-view" class="view active">
+    <div id="graph-view" class="view">
+      <button id="reset-view" class="reset-mini" title="Center and fit the whole graph">⤢ Reset view</button>
       <div class="swarm-badge"><img src="/api/swarm.png" alt="Swarm protocol"><span>Swarm protocol<br>protected node</span></div>
       <div class="yarax-badge"><img src="/api/yarax.png" alt="YARA-X"><span>Built-in</span></div>
       <div class="impeccable-badge"><span>Designed with</span><img src="/api/impeccable.png" alt="Impeccable"></div>
@@ -91,6 +92,7 @@
           <option value="netlify">Netlify</option>
           <option value="vercel">Vercel</option>
           <option value="cloudflare">Cloudflare Pages</option>
+          <option value="firebase">Firebase Hosting</option>
         </select>
         <div id="dep-guide" class="dep-guide"></div>
         <div id="dep-fields" class="profile-editor"></div>
@@ -102,26 +104,93 @@
         </div>
       </div>
     </div>
+    <div id="new-modal" class="modal-overlay record-modal" style="display:none;" role="dialog" aria-label="New project">
+      <div class="modal-card">
+        <div style="display:flex;align-items:center;justify-content:space-between;">
+          <div class="modal-title">✦ New project</div>
+          <button id="new-close" class="record-close" title="Close (Esc)" aria-label="Close">✕</button>
+        </div>
+        <div class="eyebrow">Name it, then pick what you're building — the Concierge stages the right starter files. A mobile app/game is set up as an installable PWA from the start.</div>
+        <input id="new-name" class="input" placeholder="project name (e.g. my-portfolio)" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false">
+        <div class="new-choices">
+          <button id="new-website" class="new-choice"><span class="nc-emoji">🌐</span><b>Website</b><small>a site or web app</small></button>
+          <button id="new-app" class="new-choice"><span class="nc-emoji">📱</span><b>Mobile App / Game</b><small>installable PWA · app-ready files</small></button>
+          <button id="new-movie" class="new-choice"><span class="nc-emoji">🎬</span><b>Movie / Animation</b><small>3D via Blender · AI-driven</small></button>
+        </div>
+        <div id="new-status" class="eyebrow"></div>
+      </div>
+    </div>
+    <div id="git-modal" class="modal-overlay record-modal" style="display:none;" role="dialog" aria-label="Commit project to GitHub">
+      <div class="modal-card">
+        <div style="display:flex;align-items:center;justify-content:space-between;">
+          <div class="modal-title">⬆ Commit project to GitHub</div>
+          <button id="git-close" class="record-close" title="Close (Esc)" aria-label="Close">✕</button>
+        </div>
+        <div class="eyebrow">Stages every file in the open project (<code>git add -A</code>, honouring .gitignore — the Concierge seeds one if your project has none), commits it, and pushes to a GitHub repo (created automatically if it doesn't exist). Uses your connected GitHub token. Pushing source is egress — password-gated.</div>
+        <div id="git-folder" class="cv-domain"></div>
+        <input id="git-repo" class="input" placeholder="repo name (defaults to the folder name)" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false">
+        <input id="git-message" class="input" placeholder="commit message" autocomplete="off">
+        <div class="pin-mode" id="git-vis" style="margin:2px 0;">
+          <button type="button" class="pin-mode-btn active" data-vis="private">🔒 Private repo</button>
+          <button type="button" class="pin-mode-btn" data-vis="public">🌐 Public repo</button>
+        </div>
+        <input id="git-password" class="input" type="password" placeholder="store password" autocomplete="current-password">
+        <div id="git-status" class="eyebrow"></div>
+        <div class="modal-actions">
+          <button id="git-go" class="tool-button main-publish" style="flex:1;">Commit &amp; push</button>
+        </div>
+      </div>
+    </div>
+    <div id="pin-modal" class="modal-overlay record-modal" style="display:none;" role="dialog" aria-label="Pinning settings">
+      <div class="modal-card">
+        <div style="display:flex;align-items:center;justify-content:space-between;">
+          <div class="modal-title">📌 Connect a pinning service</div>
+          <button id="pin-close" class="record-close" title="Close (Esc)" aria-label="Close">✕</button>
+        </div>
+        <div class="eyebrow">Pinning keeps your IPFS site online when this node is off — the service hosts the content on its always-on nodes. Tokens stay on this device only (0600 file) and go only to that service's API. All four speak the standard IPFS Pinning Services API.</div>
+        <select id="pin-service" class="input">
+          <option value="filebase">Filebase</option>
+          <option value="pinata">Pinata</option>
+          <option value="foureverland">4EVERLAND</option>
+          <option value="ipfs">IPFS pinning service (custom)</option>
+        </select>
+        <div id="pin-guide" class="dep-guide"></div>
+        <div id="pin-fields" class="profile-editor"></div>
+        <div id="pin-status" class="eyebrow"></div>
+        <div class="modal-actions">
+          <button id="pin-test" class="tool-button">Test connection</button>
+          <button id="pin-save" class="tool-button" style="flex:1;">Save on this device</button>
+          <button id="pin-clear" class="tool-button">Clear</button>
+        </div>
+      </div>
+    </div>
+    <div id="hot-modal" class="modal-overlay record-modal" style="display:none;" role="dialog" aria-label="Kept hot">
+      <div class="modal-card">
+        <div style="display:flex;align-items:center;justify-content:space-between;">
+          <div class="modal-title">🔥 Kept hot on your node</div>
+          <button id="hot-close" class="record-close" title="Close (Esc)" aria-label="Close">✕</button>
+        </div>
+        <div class="eyebrow">These records are encrypted and pinned on your private Kubo node, served to your paired devices over your private swarm while this node is up. Unpinning stops serving + frees them; the original record stays in your store.</div>
+        <div id="hot-list"></div>
+      </div>
+    </div>
     <div id="names-view" class="view"><div class="content">
       <div class="messenger-tools">
+        <form id="search-form" class="search-tools" style="flex:1;min-width:280px;">
+          <input id="search-q" class="input" placeholder="Search your memory (semantic + graph-gravity)…" autocomplete="off" style="flex:1;">
+          <select id="search-depth" class="input" style="max-width:120px;">
+            <option value="summary">Summary</option>
+            <option value="brief">Brief</option>
+            <option value="full">Full</option>
+          </select>
+          <label class="tool-button" style="display:flex;align-items:center;gap:6px;cursor:pointer;"><input id="search-related" type="checkbox"> + related</label>
+          <button id="search-go" class="tool-button" type="submit">Search</button>
+        </form>
         <button id="bookmarks-sync" class="tool-button" title="Pull your Brave/Opera bookmarks into memory (deduped). They become searchable records.">🔖 Sync browser bookmarks</button>
         <span id="bookmarks-status" class="eyebrow"></span>
       </div>
-      <div id="names" class="names-tree"></div>
-    </div></div>
-    <div id="search-view" class="view"><div class="content">
-      <form id="search-form" class="search-tools">
-        <input id="search-q" class="input" placeholder="Search your memory (semantic + graph-gravity)…" autocomplete="off">
-        <select id="search-depth" class="input" style="max-width:120px;">
-          <option value="summary">Summary</option>
-          <option value="brief">Brief</option>
-          <option value="full">Full</option>
-        </select>
-        <label class="tool-button" style="display:flex;align-items:center;gap:6px;cursor:pointer;"><input id="search-related" type="checkbox"> + related</label>
-        <button id="search-go" class="tool-button" type="submit">Search</button>
-      </form>
-      <div class="eyebrow">The Librarian ranks by meaning × graph importance (well-linked nodes outrank lexically-similar orphans), packed to a token budget. Click a hit to open it.</div>
       <div id="search-results"></div>
+      <div id="names" class="names-tree"></div>
     </div></div>
     <div id="messenger-view" class="view"><div class="content">
       <div class="messenger-tools">
@@ -143,7 +212,7 @@
     </div></div>
     <div id="network-view" class="view"><div class="content">
       <div class="msg-section">Network discovery map</div>
-      <div class="eyebrow">Your node at the center; the peers it finds on the libp2p network around it — mDNS on your LAN, the public DHT, and rendezvous points. Each brain is a node: a solid link is a live connection, a dashed link is discovered-but-not-connected. Opening this tab brings your node online so discovery runs.</div>
+      <div class="eyebrow">Your node and the peers it finds on the libp2p network are spread across a world map — mDNS on your LAN, the public DHT, and rendezvous points. Fellow Concierges appear as brains; every other network node is a small white star. Positions are approximate (by network region, not exact geo-IP). Opening this tab brings your node online so discovery runs.</div>
       <div class="discovery-wrap">
         <svg id="discovery-svg" viewBox="0 0 600 360" preserveAspectRatio="xMidYMid meet" role="img" aria-label="Network discovery map"></svg>
         <div id="discovery-stat" class="eyebrow discovery-stat"></div>
@@ -151,35 +220,31 @@
       <div class="messenger-tools">
         <input id="network-name" class="input" placeholder="New private network name">
         <button id="network-create" class="tool-button">Create network</button>
+        <button id="pair-share" class="tool-button" title="Share this node with your other computer — generate a pairing offer">📲 Pair a device</button>
+        <button id="pair-join" class="tool-button" title="Join a network from another computer with a pairing offer">🔗 Join a network</button>
+        <button id="hot-manage" class="tool-button" title="Manage the records this node is keeping hot on your private swarm">🔥 Kept hot</button>
       </div>
       <div class="eyebrow">Your private mesh. Each device keeps its own key — pairing never copies a secret. Private sync is capability-scoped and never authorizes public publication. Revoking advances the membership epoch; re-grant remaining devices.</div>
       <div id="network-identity" class="net-identity"></div>
       <div id="network-map"></div>
     </div></div>
-    <div id="canvas-view" class="view"><div class="content" style="display:flex;flex-direction:column;height:100%;box-sizing:border-box;">
-      <div class="cv-title"><span class="dot"></span><b>Concierge Studio Canvas</b><span>HTML window → live preview · press F to expand</span></div>
+    <div id="canvas-view" class="view active"><div class="content" style="display:flex;flex-direction:column;height:100%;box-sizing:border-box;">
+      <div class="cv-title"><button id="cv-new" class="tool-button cv-new" title="Start a fresh project — website or mobile app/game">+ New</button><span class="dot"></span><b>Concierge Studio Canvas</b><span>any project, app or site → writeable canvas → live preview · press F to expand</span></div>
       <div class="cv-split">
+        <div id="cv-files" class="cv-files"><div class="empty">Open any project folder above — its file tree appears here. Click a file to edit it; what you write saves to the folder and the preview renders the live app.</div></div>
         <textarea id="cv-src" class="cv-src" spellcheck="false" placeholder="<!doctype html>
 <html><body>
-  <h1>Write your site here — it renders live →</h1>
+  <h1>Build your app or site here — it saves to the folder and runs live →</h1>
 </body></html>"></textarea>
-        <div id="cv-files" class="cv-files" style="display:none;"><div class="empty">Open a folder to build a multi-file site — its files appear here as you/your AI build.</div></div>
         <iframe id="cv-preview" class="canvas-preview" sandbox="allow-scripts" title="Live preview"></iframe>
-      </div>
-      <div class="messenger-tools cv-toolbar">
-        <button id="cv-mode-write" class="tool-button on">✎ Write</button>
-        <button id="cv-mode-folder" class="tool-button">📁 Folder</button>
-        <input id="cv-folder" class="input cv-folder-only" placeholder="site folder path" autocomplete="off" style="flex:1;min-width:140px;display:none;">
-        <button id="cv-open" class="tool-button cv-folder-only" style="display:none;">Open</button>
-        <span id="cv-status" class="canvas-status">writing</span>
-        <button id="cv-mcp" class="tool-button" title="Let your host AI write into the Concierge over MCP (write tools: put_node / bind / write_site). Off by default — read-only.">AI writes: off</button>
-        <button id="cv-share" class="tool-button" style="margin-left:auto;">Share live</button>
-        <input id="cv-session" class="input" placeholder="watch: session + Enter" autocomplete="off" style="max-width:160px;">
       </div>
       <div id="cv-domain" class="cv-domain"></div>
       <div class="messenger-tools cv-toolbar">
-        <input id="cv-name" type="text" class="input" placeholder="site name (e.g. my-portfolio)" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" data-1p-ignore data-lpignore="true" style="max-width:200px;">
-        <input id="cv-password" class="input" type="password" placeholder="password" autocomplete="new-password" style="max-width:150px;">
+        <input id="cv-folder" class="input" placeholder="site folder path — any folder in your project" autocomplete="off" style="flex:1 1 140px;min-width:120px;">
+        <button id="cv-open" class="tool-button" title="Browse your saved projects">📁 Open ▾</button>
+        <button id="cv-mcp" class="tool-button" title="Let your host AI write into the Concierge over MCP (write tools: put_node / bind / write_site). Off by default — read-only.">AI writes: off</button>
+        <input id="cv-name" type="text" class="input" placeholder="site name" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" data-1p-ignore data-lpignore="true" style="max-width:150px;">
+        <input id="cv-password" class="input" type="password" placeholder="password" autocomplete="new-password" style="max-width:120px;">
         <div class="publish-group">
           <button id="cv-publish" class="tool-button main-publish">Publish ▸</button>
           <div class="publish-menu">
@@ -188,14 +253,25 @@
             <button id="cv-pub-netlify" class="menu-item">Netlify <span class="limit">free tier</span></button>
             <button id="cv-pub-vercel" class="menu-item">Vercel <span class="limit">free tier</span></button>
             <button id="cv-pub-cloudflare" class="menu-item">Cloudflare Pages <span class="limit">25 MB / file</span></button>
+            <button id="cv-pub-firebase" class="menu-item">Firebase Hosting <span class="limit">free tier · ~10 GB</span></button>
             <button id="cv-deploy-settings" class="menu-item" style="border-top:1px solid var(--line);color:var(--gold);">🔌 Connect accounts (tokens)</button>
           </div>
         </div>
-        <button id="cv-save-ckpt" class="tool-button" title="Snapshot the current draft now — a content-addressed checkpoint you can reopen later (no publish)">💾 Save checkpoint</button>
+        <div class="publish-group">
+          <button id="cv-pin" class="tool-button main-publish" title="Keep the site online even when this node is off, by pinning it to an always-on service">📌 Pin ▸</button>
+          <div class="publish-menu">
+            <button id="cv-pin-filebase" class="menu-item">Filebase <span class="limit">5 GB free</span></button>
+            <button id="cv-pin-pinata" class="menu-item">Pinata <span class="limit">1 GB free</span></button>
+            <button id="cv-pin-foureverland" class="menu-item">4EVERLAND <span class="limit">free tier</span></button>
+            <button id="cv-pin-ipfs" class="menu-item">IPFS pinning service <span class="limit">any PSA endpoint</span></button>
+            <button id="cv-pin-settings" class="menu-item" style="border-top:1px solid var(--line);color:var(--gold);">📌 Connect pinning accounts</button>
+          </div>
+        </div>
+        <button id="cv-commit" class="tool-button" title="Commit the whole project to a GitHub repo — git add + commit + push (creates the repo if needed)">⬆ Commit</button>
+        <button id="cv-save-ckpt" class="tool-button" title="Snapshot the current draft now — a content-addressed checkpoint you can reopen later (no publish)">💾 Save</button>
         <button id="cv-ckpts-btn" class="tool-button" title="Past published versions — reopen any to update (same IPNS address)">⏱ Checkpoints</button>
-        <select id="cv-view" class="input" style="max-width:220px;"><option value="">— view a published site —</option></select>
-        <button id="cv-open-native" class="tool-button" title="Open the published site through your own node's local gateway — works without any public gateway">⬈ Open published site</button>
-        <button id="cv-edit" class="tool-button" title="Back to live preview">Preview</button>
+        <button id="cv-share" class="tool-button">Share live</button>
+        <input id="cv-session" class="input" placeholder="watch: session" autocomplete="off" style="max-width:130px;">
         <button id="cv-expand" class="tool-button" title="Maximize the preview for testing (Esc to exit)">⛶ Expand</button>
       </div>
       <div id="cv-backdrop" class="cv-backdrop"></div>
@@ -261,28 +337,22 @@
         <span class="id-dot"></span><span id="chat-id-label">offline</span>
       </button>
       <input id="chat-to" class="input chat-to" list="room-list" placeholder="to: paste a username, or a room" autocomplete="off">
+      <div id="chat-incoming" class="chat-incoming" style="display:none;" title="Latest incoming message — click to open the conversation"></div>
       <input id="chat-msg" class="input chat-msg" placeholder="Direct private message…" autocomplete="off">
       <button id="chat-send" class="chat-send" type="submit">Send</button>
     </form>
   </section>
 
-  <aside class="panel">
-    <div class="panel-head"><span class="panel-title">Store / DAG</span></div>
-    <div class="stats">
-      <div id="stats" class="stat-grid"></div>
-      <button id="compact" class="export" title="Reclaim superseded blocks (GC). Safe — only removes versions no name references, and records a tombstone receipt for each.">Compact store ▸</button>
-      <div class="console-head"><span class="dot"></span><span class="lbl">System Console</span><span id="sys-embedder" class="dim" title="The on-node embedding model — the only model that runs on your node (never a generative LLM)"></span></div>
-      <div id="system-console" class="system-console" role="log" aria-live="polite"></div>
-      <h2>Backends + pin status</h2>
-      <div id="backends"></div>
-      <h2>Current root</h2>
-      <div id="car-note" class="cid">No root selected</div>
-      <button id="export" class="export">Export-CAR</button>
-      <h2>Privacy &amp; Publication</h2>
-      <div id="privacy" class="privacy"><div class="empty">Select a root to see its privacy state.</div></div>
-    </div>
-  </aside>
 </main>
+<div id="privacy-modal" class="modal-overlay record-modal" style="display:none;" role="dialog" aria-label="Privacy and Publication">
+  <div class="modal-card">
+    <div style="display:flex;align-items:center;justify-content:space-between;">
+      <div class="modal-title">🔒 Privacy &amp; Publication</div>
+      <button id="privacy-close" class="record-close" title="Close (Esc)" aria-label="Close">✕</button>
+    </div>
+    <div id="privacy" class="privacy"><div class="empty">Select a root in the graph to see its privacy &amp; publication state.</div></div>
+  </div>
+</div>
 <div id="notice" class="notice" role="status"></div>
 <div id="busy-overlay" class="busy-overlay" role="progressbar" aria-busy="true" aria-label="Working">
   <div class="busy-bar"></div>

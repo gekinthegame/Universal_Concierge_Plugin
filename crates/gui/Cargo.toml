@@ -14,8 +14,10 @@ concierge-adapter-jsonl = { path = "../adapter-jsonl" }
 concierge-adapter-claude-code = { path = "../adapter-claude-code" }
 tokio = { workspace = true }
 rand_core = { workspace = true }
+serde = { workspace = true }
 serde_json = { workspace = true }
 url = { workspace = true }
+png = "0.18"
 
 [dev-dependencies]
 tempfile = { workspace = true }

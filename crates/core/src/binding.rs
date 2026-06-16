@@ -27,8 +27,11 @@ use crate::social::SocialBook;
 mod deployment;
 mod identity_naming;
 mod messaging_binding;
+mod pinning;
 mod publication;
 mod wallet_binding;
+
+pub use pinning::{HotPin, PinReceipt, RecordPinReceipt};
 
 const MAX_CONTACT_CARD_BYTES: usize = 128 * 1024;
 const MAX_CONTACT_NAME_BYTES: usize = 128;

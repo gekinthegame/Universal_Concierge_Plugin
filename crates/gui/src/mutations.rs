@@ -28,6 +28,14 @@ pub(super) fn handle_mutation(
         "/api/site/checkpoint/save" => mutation_save_checkpoint(mem, body),
         "/api/deploy/credentials" => mutation_deploy_credentials(mem, body),
         "/api/deploy/test" => mutation_deploy_test(mem, body),
+        "/api/deploy/cloudflare/oauth-start" => mutation_cf_oauth_start(mem),
+        "/api/deploy/firebase/oauth-start" => mutation_fb_oauth_start(mem),
+        "/api/pin/credentials" => mutation_pin_credentials(mem, body),
+        "/api/pin/test" => mutation_pin_test(mem, body),
+        "/api/site/pin" => mutation_pin_site(mem, body),
+        "/api/record/pin" => mutation_pin_record(mem, body),
+        "/api/record/unpin" => mutation_unpin_record(mem, body),
+        "/api/git/commit" => mutation_git_commit(mem, body),
         "/api/bookmarks/sync" => mutation_bookmarks_sync(mem),
         "/api/wallet/setup" => mutation_wallet_setup(body),
         "/api/wallet/link" => mutation_wallet_link(mem, body),
@@ -36,6 +44,10 @@ pub(super) fn handle_mutation(
         "/api/wallet/proposals/resolve" => mutation_wallet_resolve(mem, body),
         "/api/mcp/write" => mutation_mcp_write(mem, body),
         "/api/canvas/open" => mutation_canvas_open(options, body),
+        "/api/canvas/write" => mutation_canvas_write(options, body),
+        "/api/canvas/pwa" => mutation_canvas_pwa(options, body),
+        "/api/canvas/new" => mutation_canvas_new(mem, body),
+        "/api/blender/connect" => mutation_blender_connect(),
         "/api/canvas/signal" => mutation_canvas_signal(mem, options, body),
         "/api/canvas/snapshot" => mutation_canvas_snapshot(mem, body),
         "/api/requests/accept" => mutation_request_decision(mem, body, true),
@@ -47,6 +59,11 @@ pub(super) fn handle_mutation(
         "/api/network/create" => mutation_network_create(mem, body),
         "/api/network/revoke" => mutation_network_revoke(mem, body),
         "/api/network/rotate" => mutation_network_rotate(mem, body),
+        "/api/network/pair/offer" => mutation_pair_offer(mem),
+        "/api/network/pair/respond" => mutation_pair_respond(mem, body),
+        "/api/network/pair/phrase" => mutation_pair_phrase(body),
+        "/api/network/pair/approve" => mutation_pair_approve(mem, body),
+        "/api/network/pair/accept" => mutation_pair_accept(mem, body),
         _ => Response::not_found(),
     };
     // Surface every action in the System Console so the user sees what the concierge
@@ -83,6 +100,14 @@ fn mutation_label(path: &str) -> Option<&'static str> {
         "/api/site/checkpoint/save" => "saved a Studio checkpoint",
         "/api/deploy/credentials" => "saved deploy credentials (0600, on-device)",
         "/api/deploy/test" => "tested a publishing connection",
+        "/api/deploy/cloudflare/oauth-start" => "started Cloudflare one-click login",
+        "/api/deploy/firebase/oauth-start" => "started Firebase one-click login",
+        "/api/pin/credentials" => "saved pinning-service credentials (0600, on-device)",
+        "/api/pin/test" => "tested a pinning-service connection",
+        "/api/site/pin" => "pinned a website to a pinning service",
+        "/api/record/pin" => "pinned a record to a pinning service",
+        "/api/record/unpin" => "stopped keeping a record hot on this node",
+        "/api/git/commit" => "committed a project to GitHub",
         "/api/bookmarks/sync" => "synced wallet-browser bookmarks into memory",
         "/api/wallet/setup" => "opened the browser's wallet setup",
         "/api/wallet/link" => "linked a wallet to your AgentID",
@@ -91,6 +116,9 @@ fn mutation_label(path: &str) -> Option<&'static str> {
         "/api/wallet/proposals/resolve" => "resolved an AI transaction proposal",
         "/api/mcp/write" => "toggled MCP write tools",
         "/api/canvas/snapshot" => "snapshotted the canvas",
+        "/api/canvas/pwa" => "made the project installable as a mobile app (PWA)",
+        "/api/canvas/new" => "started a fresh Studio project",
+        "/api/blender/connect" => "connected Blender (BlenderMCP) to the host AI",
         "/api/requests/accept" => "accepted a contact request",
         "/api/requests/decline" => "declined a contact request",
         "/api/contacts/remove" => "removed an approved peer",
@@ -99,6 +127,9 @@ fn mutation_label(path: &str) -> Option<&'static str> {
         "/api/network/create" => "created a network / certificate",
         "/api/network/revoke" => "revoked network access",
         "/api/network/rotate" => "rotated a capability key",
+        "/api/network/pair/offer" => "minted a device-pairing offer",
+        "/api/network/pair/approve" => "approved a device pairing (scoped grant)",
+        "/api/network/pair/accept" => "joined a network (pairing accepted)",
         // /api/message logs its own delivered/queued line; /api/canvas/* signalling is too noisy.
         _ => return None,
     })
@@ -298,6 +329,12 @@ pub(super) fn deploy_status_json(mem: &MemCli) -> CoreResult<String> {
     Ok(mem.deploy_status()?.to_string())
 }
 
+/// Non-secret pinning-service status (which services are configured + their endpoints).
+/// Tokens are NEVER serialized to the GUI.
+pub(super) fn pin_status_json(mem: &MemCli) -> CoreResult<String> {
+    Ok(mem.pin_status()?.to_string())
+}
+
 /// Store (or clear) the credentials for one external host. The token/password
 /// stays on-device (0600); only `{platform, fields}` comes in. Sending `fields:
 /// null` clears that platform.
@@ -342,6 +379,455 @@ fn mutation_deploy_test(mem: &MemCli, body: &str) -> Response {
         }
         Err(error) => Response::json(
             serde_json::json!({ "ok": false, "error": error.to_string() }).to_string(),
+        ),
+    }
+}
+
+// ── One-click OAuth (PKCE) for Cloudflare + Firebase ────────────────────────────
+// `oauth-start` opens a localhost callback listener + returns the authorize URL; the
+// GUI opens it, the user approves in their browser, and the listener captures the code,
+// exchanges it for a token, auto-detects the account/site, and saves it — no pasting.
+
+#[derive(Clone, Default)]
+struct OAuthProgress {
+    status: String, // "idle" | "pending" | "connected" | "error"
+    message: String,
+    account: String,
+}
+fn oauth_progress() -> &'static std::sync::Mutex<HashMap<String, OAuthProgress>> {
+    static PROGRESS: std::sync::OnceLock<std::sync::Mutex<HashMap<String, OAuthProgress>>> =
+        std::sync::OnceLock::new();
+    PROGRESS.get_or_init(|| std::sync::Mutex::new(HashMap::new()))
+}
+fn oauth_set(provider: &str, status: &str, message: &str, account: &str) {
+    if let Ok(mut map) = oauth_progress().lock() {
+        map.insert(
+            provider.to_string(),
+            OAuthProgress {
+                status: status.to_string(),
+                message: message.to_string(),
+                account: account.to_string(),
+            },
+        );
+    }
+}
+
+/// Non-secret OAuth progress for one provider, polled by the modal.
+pub(super) fn oauth_status_json(provider: &str) -> String {
+    let p = oauth_progress()
+        .lock()
+        .ok()
+        .and_then(|m| m.get(provider).cloned())
+        .unwrap_or_default();
+    serde_json::json!({ "status": p.status, "message": p.message, "account": p.account }).to_string()
+}
+
+/// Drive one provider's login: open the authorize URL (returned), then on the callback
+/// run `finish(code)` (provider-specific exchange + save) on a background thread.
+fn oauth_run(
+    provider: &str,
+    authorize_url: String,
+    listener: std::net::TcpListener,
+    expected_state: String,
+    finish: Box<dyn FnOnce(&str) -> Result<String, String> + Send>,
+) -> Response {
+    oauth_set(provider, "pending", "Waiting for you to approve in the browser…", "");
+    let provider = provider.to_string();
+    std::thread::spawn(move || oauth_listen(provider, listener, expected_state, finish));
+    Response::json(serde_json::json!({ "authorize_url": authorize_url }).to_string())
+}
+
+fn mutation_cf_oauth_start(mem: &MemCli) -> Response {
+    let start = concierge_core::deploy::cloudflare_oauth_start();
+    // Reserve the exact callback port Cloudflare registered for the Wrangler client.
+    let listener = match std::net::TcpListener::bind(concierge_core::deploy::CF_OAUTH_CALLBACK_ADDR)
+    {
+        Ok(listener) => listener,
+        Err(error) => {
+            return Response::error(format!(
+                "couldn't open the local login listener on {} — is `wrangler` already logging in? ({error})",
+                concierge_core::deploy::CF_OAUTH_CALLBACK_ADDR
+            ))
+        }
+    };
+    let mem = mem.clone();
+    let verifier = start.verifier.clone();
+    let finish = Box::new(move |code: &str| -> Result<String, String> {
+        let token = concierge_core::deploy::cloudflare_oauth_exchange(code, &verifier)?;
+        let account = concierge_core::deploy::cloudflare_list_account_id(&token.access_token)
+            .unwrap_or_default();
+        mem.save_cloudflare_oauth(
+            &token.access_token,
+            token.refresh_token.as_deref(),
+            token.expires_at,
+            &account,
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(account)
+    });
+    oauth_run("cloudflare", start.authorize_url, listener, start.state, finish)
+}
+
+fn mutation_fb_oauth_start(mem: &MemCli) -> Response {
+    // Google "Desktop" clients allow a loopback redirect on any port — bind an ephemeral one.
+    let listener = match std::net::TcpListener::bind("127.0.0.1:0") {
+        Ok(listener) => listener,
+        Err(error) => return Response::error(format!("couldn't open the local login listener: {error}")),
+    };
+    let port = listener.local_addr().map(|a| a.port()).unwrap_or(0);
+    let redirect = format!("http://127.0.0.1:{port}");
+    let start = concierge_core::deploy::firebase_oauth_start(&redirect);
+    let mem = mem.clone();
+    let verifier = start.verifier.clone();
+    let finish = Box::new(move |code: &str| -> Result<String, String> {
+        let token = concierge_core::deploy::firebase_oauth_exchange(code, &verifier, &redirect)?;
+        let site = concierge_core::deploy::firebase_default_site(&token.access_token)
+            .unwrap_or_default();
+        mem.save_firebase_oauth(
+            &token.access_token,
+            token.refresh_token.as_deref(),
+            token.expires_at,
+            &site,
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(if site.is_empty() {
+            "connected".to_string()
+        } else {
+            site
+        })
+    });
+    oauth_run("firebase", start.authorize_url, listener, start.state, finish)
+}
+
+/// Wait (up to 5 min) for the browser to redirect to the localhost callback, capture
+/// the code, run `finish` (exchange + persist), and report the outcome via the status.
+fn oauth_listen(
+    provider: String,
+    listener: std::net::TcpListener,
+    expected_state: String,
+    finish: Box<dyn FnOnce(&str) -> Result<String, String> + Send>,
+) {
+    use std::io::{Read, Write};
+    listener.set_nonblocking(true).ok();
+    let deadline = now_unix() + 300;
+    let mut stream = loop {
+        match listener.accept() {
+            Ok((stream, _)) => break stream,
+            Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                if now_unix() > deadline {
+                    oauth_set(&provider, "error", "Login timed out — try again.", "");
+                    return;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(200));
+            }
+            Err(error) => {
+                oauth_set(&provider, "error", &format!("login listener: {error}"), "");
+                return;
+            }
+        }
+    };
+    stream.set_nonblocking(false).ok();
+    stream
+        .set_read_timeout(Some(std::time::Duration::from_secs(10)))
+        .ok();
+    let mut buf = [0u8; 8192];
+    let read = stream.read(&mut buf).unwrap_or(0);
+    let request = String::from_utf8_lossy(&buf[..read]);
+    let query = request
+        .lines()
+        .next()
+        .and_then(|line| line.split_whitespace().nth(1))
+        .and_then(|target| target.split_once('?'))
+        .map(|(_, q)| q.to_string())
+        .unwrap_or_default();
+    let params = parse_query(&query);
+
+    let reply = |stream: &mut std::net::TcpStream, heading: &str, ok: bool| {
+        let color = if ok { "#00e5ff" } else { "#ff2a55" };
+        let body = format!(
+            "<!doctype html><meta charset=utf-8><body style='font:15px system-ui;background:#0a0b1a;color:#e0e6ff;display:grid;place-items:center;height:100vh;margin:0;text-align:center'><div><h2 style='color:{color}'>{heading}</h2><p style='color:#939abf'>You can close this tab and return to the Concierge.</p></div>"
+        );
+        let resp = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        let _ = stream.write_all(resp.as_bytes());
+    };
+
+    if let Some(error) = params.get("error") {
+        reply(&mut stream, "Login cancelled", false);
+        oauth_set(&provider, "error", &format!("login was declined: {error}"), "");
+        return;
+    }
+    let code = params.get("code").cloned().unwrap_or_default();
+    let state = params.get("state").cloned().unwrap_or_default();
+    if code.is_empty() || state != expected_state {
+        reply(&mut stream, "Login could not be verified", false);
+        oauth_set(&provider, "error", "Login response didn't validate (state mismatch).", "");
+        return;
+    }
+    reply(&mut stream, "✓ Connected — finishing up", true);
+    oauth_set(&provider, "pending", "Finishing sign-in…", "");
+    match finish(&code) {
+        Ok(account) => oauth_set(&provider, "connected", "Connected.", &account),
+        Err(error) => oauth_set(&provider, "error", &error, ""),
+    }
+}
+
+/// Save (or clear) one pinning service's `{endpoint, token}` on-device (0600).
+fn mutation_pin_credentials(mem: &MemCli, body: &str) -> Response {
+    let value = match parse_body(body) {
+        Ok(value) => value,
+        Err(response) => return response,
+    };
+    let service = match body_str(&value, "service") {
+        Ok(s) => s.trim(),
+        Err(response) => return response,
+    };
+    let fields = value
+        .get("fields")
+        .cloned()
+        .unwrap_or(serde_json::Value::Null);
+    match mem.set_pin_credentials(service, &fields.to_string()) {
+        Ok(()) => Response::json(serde_json::json!({ "ok": true }).to_string()),
+        Err(error) => Response::error(error.to_string()),
+    }
+}
+
+/// "Test connection" for a pinning service: list pins to verify the token. Always 200;
+/// the pass/fail + label/error is data the modal renders inline.
+fn mutation_pin_test(mem: &MemCli, body: &str) -> Response {
+    let value = match parse_body(body) {
+        Ok(value) => value,
+        Err(response) => return response,
+    };
+    let service = match body_str(&value, "service") {
+        Ok(s) => s.trim().to_string(),
+        Err(response) => return response,
+    };
+    let fields = value
+        .get("fields")
+        .filter(|v| !v.is_null())
+        .map(|v| v.to_string());
+    match mem.verify_pin_credentials(&service, fields.as_deref()) {
+        Ok(account) => {
+            Response::json(serde_json::json!({ "ok": true, "account": account }).to_string())
+        }
+        Err(error) => Response::json(
+            serde_json::json!({ "ok": false, "error": error.to_string() }).to_string(),
+        ),
+    }
+}
+
+/// `/api/site/pin`: publish the site to IPFS AND pin its root CID to an always-on
+/// pinning service, so the `/ipns/<k51>` link stays reachable even when this node is
+/// offline. Password-gated. Snapshots the result into Checkpoints with its live URL.
+fn mutation_pin_site(mem: &MemCli, body: &str) -> Response {
+    let value = match parse_body(body) {
+        Ok(value) => value,
+        Err(response) => return response,
+    };
+    let name = match body_str(&value, "name") {
+        Ok(n) => n.trim().to_string(),
+        Err(response) => return response,
+    };
+    if !valid_site_name(&name) {
+        return Response::bad_request("site name must be letters, digits, - _ . (max 64)");
+    }
+    let folder = match body_str(&value, "folder") {
+        Ok(f) => f.trim().to_string(),
+        Err(response) => return response,
+    };
+    let service = match body_str(&value, "service") {
+        Ok(s) => s.trim().to_string(),
+        Err(response) => return response,
+    };
+    let password = match body_str(&value, "password") {
+        Ok(p) => p.to_string(),
+        Err(response) => return response,
+    };
+    match mem.pin_site(&name, &folder, &service, &password) {
+        Ok(receipt) => {
+            let url = format!("https://ipfs.io/ipns/{}/", receipt.ipns_name);
+            // Snapshot in Checkpoints with the live URL (so it gets a copyable link too).
+            let _ = record_site_checkpoint(
+                mem,
+                &name,
+                &folder,
+                Some(receipt.ipns_name.as_str()),
+                &receipt.cid,
+                &url,
+            );
+            Response::json(
+                serde_json::json!({
+                    "ok": true,
+                    "service": receipt.service,
+                    "status": receipt.status,
+                    "cid": receipt.cid,
+                    "ipns": receipt.ipns_name,
+                    "url": url,
+                    "request_id": receipt.request_id,
+                })
+                .to_string(),
+            )
+        }
+        Err(error) => Response::error(error.to_string()),
+    }
+}
+
+/// `/api/record/pin`: pin a single record (by CID) to an always-on pinning service.
+/// `private=true` encrypts the subgraph first and blind-pins opaque ciphertext;
+/// `private=false` pins the plaintext (public — anyone with the CID can read it).
+/// Password-gated (pinning is egress).
+fn mutation_pin_record(mem: &MemCli, body: &str) -> Response {
+    let value = match parse_body(body) {
+        Ok(value) => value,
+        Err(response) => return response,
+    };
+    let cid = match body_str(&value, "cid") {
+        Ok(c) => c.trim().to_string(),
+        Err(response) => return response,
+    };
+    let service = match body_str(&value, "service") {
+        Ok(s) => s.trim().to_string(),
+        Err(response) => return response,
+    };
+    let password = match body_str(&value, "password") {
+        Ok(p) => p.to_string(),
+        Err(response) => return response,
+    };
+    let private = value
+        .get("private")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(true); // records default to private (encrypted blind-pin)
+    match mem.pin_record(&cid, &service, private, &password) {
+        Ok(receipt) => {
+            let url = if receipt.private || receipt.service == "node" {
+                serde_json::Value::Null
+            } else {
+                serde_json::Value::String(format!("https://ipfs.io/ipfs/{}", receipt.cid))
+            };
+            Response::json(
+                serde_json::json!({
+                    "ok": true,
+                    "service": receipt.service,
+                    "status": receipt.status,
+                    "cid": receipt.cid,
+                    "source_cid": receipt.source_cid,
+                    "private": receipt.private,
+                    "url": url,
+                    "request_id": receipt.request_id,
+                })
+                .to_string(),
+            )
+        }
+        Err(error) => Response::error(error.to_string()),
+    }
+}
+
+/// `/api/record/unpin`: stop keeping a record hot on this node (unpin from the private
+/// node + drop from the ledger). The original record is untouched.
+fn mutation_unpin_record(mem: &MemCli, body: &str) -> Response {
+    let value = match parse_body(body) {
+        Ok(value) => value,
+        Err(response) => return response,
+    };
+    let cid = match body_str(&value, "cid") {
+        Ok(c) => c.trim().to_string(),
+        Err(response) => return response,
+    };
+    match mem.unpin_hot(&cid) {
+        Ok(()) => Response::json(serde_json::json!({ "ok": true }).to_string()),
+        Err(error) => Response::error(error.to_string()),
+    }
+}
+
+/// `/api/git/commit`: stage + commit + push an entire Studio project folder to GitHub
+/// (creating the repo if needed). Password-gated (egress). `private` defaults to true.
+fn mutation_git_commit(mem: &MemCli, body: &str) -> Response {
+    let value = match parse_body(body) {
+        Ok(value) => value,
+        Err(response) => return response,
+    };
+    let folder = match body_str(&value, "folder") {
+        Ok(f) => f.trim().to_string(),
+        Err(response) => return response,
+    };
+    let password = match body_str(&value, "password") {
+        Ok(p) => p.to_string(),
+        Err(response) => return response,
+    };
+    let repo = value.get("repo").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let message = value
+        .get("message")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let private = value.get("private").and_then(|v| v.as_bool()).unwrap_or(true);
+    match mem.commit_project_github(&folder, &repo, &message, private, &password) {
+        Ok(receipt) => Response::json(
+            serde_json::json!({
+                "ok": true,
+                "repo_url": receipt.repo_url,
+                "branch": receipt.branch,
+                "committed": receipt.committed,
+                "created_repo": receipt.created_repo,
+                "private": receipt.private,
+            })
+            .to_string(),
+        ),
+        Err(error) => Response::error(error.to_string()),
+    }
+}
+
+/// `/api/blender/connect`: register **BlenderMCP** with the host AI (Claude Code) so it
+/// can drive Blender for Movie/Animation projects — `claude mcp add -s user blender --
+/// uvx blender-mcp`. Best-effort + idempotent; reports what's missing (Claude CLI / uv)
+/// and always returns the add-on install steps. Modifies only the host AI's MCP config.
+fn mutation_blender_connect() -> Response {
+    use std::process::Command;
+    const ADDON: &str = "Install the Blender add-on: in Blender → Edit → Preferences → Add-ons → Install… → choose addon.py (Concierge repo: vendor/blender-mcp/addon.py, or blendermcp.org). Enable “Interface: Blender MCP”, then in the 3D viewport press N → BlenderMCP → Connect to MCP server. Restart Claude Code.";
+    let reply = |connected: bool, message: &str| {
+        Response::json(
+            serde_json::json!({ "ok": true, "connected": connected, "message": message, "addon": ADDON })
+                .to_string(),
+        )
+    };
+
+    let listed = match Command::new("claude").args(["mcp", "list"]).output() {
+        Ok(out) => String::from_utf8_lossy(&out.stdout).into_owned(),
+        Err(_) => {
+            return reply(
+                false,
+                "Claude Code (the `claude` CLI) wasn't found. Install Claude Code, then run: concierge-plugin blender-setup",
+            )
+        }
+    };
+    if listed.lines().any(|l| l.trim_start().starts_with("blender:")) {
+        return reply(true, "Blender (BlenderMCP) is already connected to Claude Code.");
+    }
+    let has_uvx = Command::new("uvx")
+        .arg("--version")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+    if !has_uvx {
+        return reply(
+            false,
+            "Install uv (the Python runner BlenderMCP uses): https://docs.astral.sh/uv/ — then run: concierge-plugin blender-setup",
+        );
+    }
+    match Command::new("claude")
+        .args(["mcp", "add", "-s", "user", "blender", "--", "uvx", "blender-mcp"])
+        .output()
+    {
+        Ok(out) if out.status.success() => reply(
+            true,
+            "Connected Blender (BlenderMCP) to Claude Code. Restart Claude Code, then install the Blender add-on.",
+        ),
+        _ => reply(
+            false,
+            "Couldn't auto-register Blender. Run manually: claude mcp add -s user blender -- uvx blender-mcp",
         ),
     }
 }
@@ -500,6 +986,16 @@ fn site_deploy_fields(value: &serde_json::Value) -> Result<(&str, &str, &str, &s
     }
     if folder.is_empty() {
         return Err(Response::bad_request("a folder path is required"));
+    }
+    // Only websites publish: the folder must have an index.html web entry point at its
+    // root. Non-web projects (a CLI, a service, raw source) have no page to serve, so we
+    // refuse rather than push something that won't load as a site.
+    if !std::path::Path::new(folder).join("index.html").is_file() {
+        return Err(Response::bad_request(
+            "Only websites can be published. This folder has no index.html — the web entry \
+point that loads first. Add an index.html and try again; non-web projects (apps, services, \
+raw source) aren't publishable as sites.",
+        ));
     }
     Ok((name, folder, kind, platform))
 }
@@ -806,6 +1302,150 @@ fn mutation_network_create(mem: &MemCli, body: &str) -> Response {
     }
     match mem.create_network(name) {
         Ok(_) => to_response(network_json(mem)),
+        Err(error) => Response::error(error.to_string()),
+    }
+}
+
+// ── In-GUI pairing wizard ───────────────────────────────────────────────────────
+// A guided offer → response → grant handshake (copied between the two machines, with a
+// safety phrase to compare). Mirrors the `network pair/respond/approve/accept` CLI flow,
+// so it works regardless of whether the two devices can reach each other yet.
+
+/// Capabilities for a wizard scope preset over the whole store (`all` namespace).
+fn pair_scope_caps(
+    network_id: concierge_core::NetworkId,
+    scope: &str,
+) -> (concierge_core::Namespace, Vec<concierge_core::Operation>) {
+    let namespace =
+        concierge_core::Namespace::new(network_id, concierge_core::NamespaceScope::All);
+    let ops = if scope == "read" {
+        vec!["sync_read"]
+    } else {
+        vec!["sync_read", "sync_write"]
+    };
+    let operations = ops
+        .into_iter()
+        .filter_map(|tok| serde_json::from_value(serde_json::Value::String(tok.to_string())).ok())
+        .collect();
+    (namespace, operations)
+}
+
+/// Pull one of `offer` / `response` / `grant` out of the request body and deserialize it.
+fn pair_field<T: serde::de::DeserializeOwned>(value: &serde_json::Value, key: &str) -> Result<T, Response> {
+    match value.get(key) {
+        Some(v) => serde_json::from_value(v.clone())
+            .map_err(|e| Response::bad_request(&format!("invalid {key}: {e}"))),
+        None => Err(Response::bad_request(&format!("missing {key}"))),
+    }
+}
+
+/// Admin side, step 1: mint a one-use offer for this device's network (creating a
+/// default network if none exists). The offer carries no secrets.
+fn mutation_pair_offer(mem: &MemCli) -> Response {
+    let descriptor = match mem.networks() {
+        Ok(mut networks) if !networks.is_empty() => networks.remove(0),
+        Ok(_) => match mem.create_network("home") {
+            Ok(descriptor) => descriptor,
+            Err(error) => return Response::error(error.to_string()),
+        },
+        Err(error) => return Response::error(error.to_string()),
+    };
+    // The rendezvous is where the new device will later look to sync; a sensible default
+    // (the user supplies the actual peer address at sync time).
+    match mem.create_pairing_offer(&descriptor.network_id, "/ip4/127.0.0.1/tcp/4001") {
+        Ok(offer) => Response::json(
+            serde_json::json!({ "ok": true, "network": descriptor.name, "offer": offer }).to_string(),
+        ),
+        Err(error) => Response::error(error.to_string()),
+    }
+}
+
+/// New device, step 1: verify the offer, prove possession, return the response + phrase.
+fn mutation_pair_respond(mem: &MemCli, body: &str) -> Response {
+    let value = match parse_body(body) {
+        Ok(value) => value,
+        Err(response) => return response,
+    };
+    let offer: concierge_core::PairingOffer = match pair_field(&value, "offer") {
+        Ok(offer) => offer,
+        Err(response) => return response,
+    };
+    if let Err(error) = offer.verify() {
+        return Response::bad_request(&format!("offer rejected: {error}"));
+    }
+    let device = match mem.identity() {
+        Ok(device) => device,
+        Err(error) => return Response::error(error.to_string()),
+    };
+    let response = concierge_core::PairingResponse::create(&offer, &device);
+    let phrase = concierge_core::confirmation_phrase(&offer, &response);
+    Response::json(
+        serde_json::json!({ "ok": true, "response": response, "phrase": phrase }).to_string(),
+    )
+}
+
+/// Admin side, step 2: compute the safety phrase from the offer + the device's response
+/// (so the admin can compare it before approving). No side effects.
+fn mutation_pair_phrase(body: &str) -> Response {
+    let value = match parse_body(body) {
+        Ok(value) => value,
+        Err(response) => return response,
+    };
+    let offer: concierge_core::PairingOffer = match pair_field(&value, "offer") {
+        Ok(offer) => offer,
+        Err(response) => return response,
+    };
+    let response: concierge_core::PairingResponse = match pair_field(&value, "response") {
+        Ok(response) => response,
+        Err(response) => return response,
+    };
+    Response::json(
+        serde_json::json!({ "phrase": concierge_core::confirmation_phrase(&offer, &response) })
+            .to_string(),
+    )
+}
+
+/// Admin side, step 3: issue the scoped grant for the responding device.
+fn mutation_pair_approve(mem: &MemCli, body: &str) -> Response {
+    let value = match parse_body(body) {
+        Ok(value) => value,
+        Err(response) => return response,
+    };
+    let response: concierge_core::PairingResponse = match pair_field(&value, "response") {
+        Ok(response) => response,
+        Err(resp) => return resp,
+    };
+    let scope = value.get("scope").and_then(|s| s.as_str()).unwrap_or("full");
+    let Some(descriptor) = mem.networks().ok().and_then(|n| n.into_iter().next()) else {
+        return Response::bad_request("no network on this device");
+    };
+    let (namespace, ops) = pair_scope_caps(descriptor.network_id, scope);
+    match mem.complete_pairing(&response, &[(namespace, ops)], concierge_core::DEFAULT_CERT_TTL_SECS)
+    {
+        Ok(grant) => Response::json(serde_json::json!({ "ok": true, "grant": grant }).to_string()),
+        Err(error) => Response::error(error.to_string()),
+    }
+}
+
+/// New device, step 2: verify + persist the grant. The device is now a scoped member.
+fn mutation_pair_accept(mem: &MemCli, body: &str) -> Response {
+    let value = match parse_body(body) {
+        Ok(value) => value,
+        Err(response) => return response,
+    };
+    let grant: concierge_core::PairingGrant = match pair_field(&value, "grant") {
+        Ok(grant) => grant,
+        Err(response) => return response,
+    };
+    match mem.accept_pairing_grant(&grant) {
+        Ok(()) => Response::json(
+            serde_json::json!({
+                "ok": true,
+                "network": grant.descriptor.name,
+                "capabilities": grant.capabilities.len(),
+            })
+            .to_string(),
+        ),
         Err(error) => Response::error(error.to_string()),
     }
 }

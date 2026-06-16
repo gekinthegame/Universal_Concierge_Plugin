@@ -29,10 +29,25 @@ pub(super) fn peers_response(mem: &MemCli, options: &GuiOptions) -> Response {
     });
     let total = peers.len();
     let connected = peers.iter().filter(|p| p.status == "connected").count();
-    peers.truncate(48);
+    peers.truncate(200);
+    // Which peers are fellow Concierges (drawn as brains, vs generic network nodes drawn
+    // as stars): an approved contact, or a peer found via our concierge rendezvous
+    // namespace. Everything else is just an anonymous IPFS/libp2p node in the swarm.
+    let concierge_peers: std::collections::HashSet<String> = mem
+        .approved_contacts()
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|agent_id| peer_id_from_ed25519_hex(agent_id).map(|p| p.to_string()))
+        .collect();
     let peers_json: Vec<serde_json::Value> = peers
         .iter()
         .map(|p| {
+            let is_concierge = p.source == "rendezvous" || concierge_peers.contains(&p.peer_id);
+            // A concierge node's AgentID ("username") for DMs is recoverable from its
+            // Ed25519 PeerID — so clicking its brain can copy a sendable username.
+            let username = is_concierge
+                .then(|| p.peer_id.parse().ok().and_then(|peer| ed25519_hex_from_peer_id(&peer)))
+                .flatten();
             serde_json::json!({
                 "peer_id": p.peer_id,
                 "status": p.status,
@@ -40,6 +55,8 @@ pub(super) fn peers_response(mem: &MemCli, options: &GuiOptions) -> Response {
                 "relayed": p.relayed,
                 "addresses": p.addresses,
                 "last_seen": p.last_seen,
+                "is_concierge": is_concierge,
+                "username": username,
             })
         })
         .collect();

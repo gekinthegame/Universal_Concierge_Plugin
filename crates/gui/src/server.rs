@@ -41,6 +41,21 @@ pub fn serve_with_options(mem: MemCli, addr: &str, options: GuiOptions) -> CoreR
     // but only once the user has explicitly attached (consent-gated, opt-in).
     spawn_claude_code_capture(mem.clone());
 
+    // Maintenance: silently compact the store (GC superseded blocks) once a day — a
+    // first pass two minutes after launch (so startup isn't slowed), then every 24h.
+    // Safe by construction (only blocks no live name/checkpoint/Decision can reach),
+    // and invisible to the user — no button, no notice.
+    {
+        let compact_mem = mem.clone();
+        std::thread::spawn(move || loop {
+            std::thread::sleep(std::time::Duration::from_secs(120));
+            let _ = compact_mem.gc(&concierge_core::GcPolicy {
+                keep_checkpoints: None,
+            });
+            std::thread::sleep(std::time::Duration::from_secs(24 * 60 * 60 - 120));
+        });
+    }
+
     for stream in listener.incoming() {
         let Ok(stream) = stream else {
             continue;
@@ -543,7 +558,11 @@ fn read_request(stream: &mut TcpStream) -> std::io::Result<RequestOutcome> {
     // Read the body (if any). Ingest and Site operations get a larger budget.
     let path = target.split('?').next().unwrap_or("/");
     let body_limit =
-        if path == "/api/ingest" || path == "/api/canvas/snapshot" || path == "/api/site/publish" {
+        if path == "/api/ingest"
+            || path == "/api/canvas/snapshot"
+            || path == "/api/canvas/write"
+            || path == "/api/site/publish"
+        {
             MAX_LARGE_BODY_BYTES
         } else {
             MAX_BODY_BYTES

@@ -48,7 +48,7 @@ impl MemCli {
     }
 
     /// Wait (briefly) for the public publishing node's API to come up.
-    fn wait_for_public_node(&self) -> Result<()> {
+    pub(super) fn wait_for_public_node(&self) -> Result<()> {
         for _ in 0..40 {
             if crate::node::public_node_running() {
                 return Ok(());
@@ -104,6 +104,15 @@ impl MemCli {
                     )
                 })
                 .ok_or_else(|| Error::Io("no cloudflare credentials yet".to_string())),
+            "firebase" => credentials
+                .firebase
+                .map(|c| {
+                    format!(
+                        "https://firebasehosting.googleapis.com/v1beta1/sites/{}",
+                        c.site_id
+                    )
+                })
+                .ok_or_else(|| Error::Io("no firebase credentials yet".to_string())),
             "ftp" => Err(Error::SecurityPolicy(
                 "plaintext FTP deployment is disabled".to_string(),
             )),
@@ -192,6 +201,11 @@ impl MemCli {
                 let ipns = crate::node::ipns_key_gen(&repo, &reviewed.name)?;
                 let cid = crate::node::unixfs_add_dir(&repo, folder_path)?;
                 let published = crate::node::ipns_publish(&repo, &cid, &reviewed.name)?;
+                // Push a DHT provider record now so gateways can find this node — `ipfs
+                // add` only queues an async provide, which is why a fresh site otherwise
+                // reads as "no providers found." Best-effort: needs DHT peers a young
+                // node is still gathering, and the daemon keeps reproviding afterward.
+                let _ = crate::node::dht_provide(&repo, &cid);
                 let identity = self.identity()?;
                 let receipt = PublishReceipt {
                     root: cid.clone(),
@@ -227,7 +241,7 @@ impl MemCli {
                 })?;
                 Ok(receipt)
             }
-            "github" | "netlify" | "vercel" | "cloudflare" => {
+            "github" | "netlify" | "vercel" | "cloudflare" | "firebase" => {
                 self.publish_external(reviewed, &files)
             }
             "ftp" => Err(Error::SecurityPolicy(
@@ -265,6 +279,58 @@ impl MemCli {
         }
     }
 
+    /// Commit an entire Studio project folder to GitHub (the "upload my project" button):
+    /// stage every file via `git add -A` (honouring .gitignore — seeded if absent),
+    /// commit it, and push to a normal repo, creating that repo through the API if it
+    /// doesn't exist. Reuses the stored GitHub token + owner. Password-gated (pushing
+    /// source to GitHub is egress). `repo` defaults to the folder's name.
+    pub fn commit_project_github(
+        &self,
+        folder: &str,
+        repo: &str,
+        message: &str,
+        private: bool,
+        password: &str,
+    ) -> Result<crate::git_commit::CommitReceipt> {
+        let _policy_lock = self.policy_lock()?;
+        self.verify_password_unlocked(password)?;
+        let gh = self.deploy_credentials()?.github.ok_or_else(|| {
+            Error::Io(
+                "connect GitHub first (Studio → Publish ▸ → Connect accounts)".to_string(),
+            )
+        })?;
+        if gh.token.trim().is_empty() || gh.owner.trim().is_empty() {
+            return Err(Error::Io(
+                "stored GitHub credentials are missing a token or owner".to_string(),
+            ));
+        }
+        let folder_path = std::path::Path::new(folder.trim());
+        let derived = folder_path
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("project");
+        let repo = crate::git_commit::sanitize_repo(if repo.trim().is_empty() {
+            derived
+        } else {
+            repo
+        });
+        let message = if message.trim().is_empty() {
+            "Commit via Concierge".to_string()
+        } else {
+            message.trim().to_string()
+        };
+        crate::git_commit::commit_and_push(
+            &gh.token,
+            &gh.owner,
+            &repo,
+            "main",
+            &message,
+            private,
+            folder_path,
+        )
+        .map_err(Error::Io)
+    }
+
     /// Set (merge) the credentials for one platform from a JSON object, written
     /// 0600. `fields_json` is the platform's credential block (e.g. the GitHub
     /// `{token,owner,repo,branch?}`); an explicit JSON `null` clears it.
@@ -290,6 +356,7 @@ impl MemCli {
             "netlify" => merge!(netlify),
             "vercel" => merge!(vercel),
             "cloudflare" => merge!(cloudflare),
+            "firebase" => merge!(firebase),
             "ftp" => {
                 return Err(Error::SecurityPolicy(
                     "plaintext FTP credentials are not accepted".to_string(),
@@ -344,18 +411,49 @@ impl MemCli {
                 )?;
             }
             "cloudflare" if !cleared => {
+                // Only the token is required: account id auto-detects, and project falls
+                // back to the site name (both blank with one-click OAuth).
                 let c = creds
                     .cloudflare
                     .as_ref()
                     .expect("cloudflare credentials were just parsed");
                 required("cloudflare token", &c.token)?;
-                required("cloudflare account id", &c.account_id)?;
-                required("cloudflare project", &c.project)?;
                 if c.account_id.contains('/') || c.project.contains('/') {
                     return Err(Error::SecurityPolicy(
                         "cloudflare account or project contains an unsafe path component"
                             .to_string(),
                     ));
+                }
+            }
+            "firebase" if !cleared => {
+                let c = creds
+                    .firebase
+                    .as_ref()
+                    .expect("firebase credentials were just parsed");
+                // OAuth-connected creds carry an access token instead of a service
+                // account, and the site id auto-detects — so both are optional. The site
+                // id (when given) is a path segment and gets the strict check; the
+                // service account (when given) must be a real JSON key file.
+                let oauth = c.access_token.as_deref().is_some_and(|t| !t.is_empty());
+                if c.site_id.contains('/') || c.site_id.contains("..") {
+                    return Err(Error::SecurityPolicy(
+                        "firebase site id contains an unsafe path component".to_string(),
+                    ));
+                }
+                if !c.service_account.trim().is_empty()
+                    && !crate::deploy::is_service_account_key(&c.service_account)
+                {
+                    return Err(Error::SecurityPolicy(
+                        "firebase service account must be the JSON key file (with client_email and private_key)".to_string(),
+                    ));
+                }
+                if !oauth && c.service_account.trim().is_empty() {
+                    return Err(Error::SecurityPolicy(
+                        "connect Firebase with one-click login, or paste a service-account JSON key".to_string(),
+                    ));
+                }
+                if !oauth {
+                    required("firebase site id", &c.site_id)?;
                 }
             }
             _ => {}
@@ -364,6 +462,114 @@ impl MemCli {
         let bytes = serde_json::to_vec_pretty(&creds)
             .map_err(|e| Error::Io(format!("serialize deploy credentials: {e}")))?;
         crate::egress::atomic_private_write(&self.deploy_credentials_path()?, &bytes)
+    }
+
+    /// Save the Cloudflare one-click OAuth result on-device (preserving any project
+    /// name already set). Called by the GUI after the browser login completes.
+    pub fn save_cloudflare_oauth(
+        &self,
+        access_token: &str,
+        refresh_token: Option<&str>,
+        expires_at: Option<u64>,
+        account_id: &str,
+    ) -> Result<()> {
+        let mut creds = self.deploy_credentials()?;
+        let project = creds
+            .cloudflare
+            .as_ref()
+            .map(|c| c.project.clone())
+            .unwrap_or_default();
+        creds.cloudflare = Some(crate::deploy::CloudflareCreds {
+            token: access_token.to_string(),
+            account_id: account_id.to_string(),
+            project,
+            refresh_token: refresh_token.map(String::from),
+            expires_at,
+        });
+        self.ensure_security_dir()?;
+        let bytes = serde_json::to_vec_pretty(&creds)
+            .map_err(|e| Error::Io(format!("serialize deploy credentials: {e}")))?;
+        crate::egress::atomic_private_write(&self.deploy_credentials_path()?, &bytes)
+    }
+
+    /// Cloudflare credentials with a valid access token — refreshing the OAuth token if
+    /// it has expired (and persisting the new one). A manually-pasted API token (no
+    /// refresh token) is returned unchanged.
+    pub fn cloudflare_refreshed(&self) -> Result<crate::deploy::CloudflareCreds> {
+        let mut creds = self
+            .deploy_credentials()?
+            .cloudflare
+            .ok_or_else(|| Error::Io("no Cloudflare account connected yet".to_string()))?;
+        if let (Some(refresh), Some(expires_at)) = (creds.refresh_token.clone(), creds.expires_at) {
+            if expires_at <= now_secs() {
+                let token = crate::deploy::cloudflare_oauth_refresh(&refresh).map_err(Error::Io)?;
+                creds.token = token.access_token;
+                if token.refresh_token.is_some() {
+                    creds.refresh_token = token.refresh_token;
+                }
+                creds.expires_at = token.expires_at;
+                let json = serde_json::to_string(&creds)
+                    .map_err(|e| Error::Io(format!("serialize cloudflare creds: {e}")))?;
+                self.set_deploy_credentials("cloudflare", &json)?;
+            }
+        }
+        Ok(creds)
+    }
+
+    /// Save the Firebase one-click OAuth result on-device (preserving a manually-set
+    /// site id if the caller didn't detect one).
+    pub fn save_firebase_oauth(
+        &self,
+        access_token: &str,
+        refresh_token: Option<&str>,
+        expires_at: Option<u64>,
+        site_id: &str,
+    ) -> Result<()> {
+        let mut creds = self.deploy_credentials()?;
+        let existing_site = creds
+            .firebase
+            .as_ref()
+            .map(|f| f.site_id.clone())
+            .unwrap_or_default();
+        let site = if site_id.is_empty() {
+            existing_site
+        } else {
+            site_id.to_string()
+        };
+        creds.firebase = Some(crate::deploy::FirebaseCreds {
+            site_id: site,
+            service_account: String::new(),
+            access_token: Some(access_token.to_string()),
+            refresh_token: refresh_token.map(String::from),
+            expires_at,
+        });
+        self.ensure_security_dir()?;
+        let bytes = serde_json::to_vec_pretty(&creds)
+            .map_err(|e| Error::Io(format!("serialize deploy credentials: {e}")))?;
+        crate::egress::atomic_private_write(&self.deploy_credentials_path()?, &bytes)
+    }
+
+    /// Firebase credentials with a valid access token — refreshing the OAuth token if it
+    /// has expired (and persisting it). A service-account configuration is unchanged.
+    pub fn firebase_refreshed(&self) -> Result<crate::deploy::FirebaseCreds> {
+        let mut creds = self
+            .deploy_credentials()?
+            .firebase
+            .ok_or_else(|| Error::Io("no Firebase account connected yet".to_string()))?;
+        if let (Some(refresh), Some(expires_at)) = (creds.refresh_token.clone(), creds.expires_at) {
+            if expires_at <= now_secs() {
+                let token = crate::deploy::firebase_oauth_refresh(&refresh).map_err(Error::Io)?;
+                creds.access_token = Some(token.access_token);
+                if token.refresh_token.is_some() {
+                    creds.refresh_token = token.refresh_token;
+                }
+                creds.expires_at = token.expires_at;
+                let json = serde_json::to_string(&creds)
+                    .map_err(|e| Error::Io(format!("serialize firebase creds: {e}")))?;
+                self.set_deploy_credentials("firebase", &json)?;
+            }
+        }
+        Ok(creds)
     }
 
     /// Non-secret status: which platforms are configured + their public fields
@@ -378,7 +584,10 @@ impl MemCli {
             "vercel": c.vercel.as_ref().map(|v| serde_json::json!({
                 "project": v.project, "team_id": v.team_id })),
             "cloudflare": c.cloudflare.as_ref().map(|c| serde_json::json!({
-                "account_id": c.account_id, "project": c.project })),
+                "account_id": c.account_id, "project": c.project,
+                "oauth": c.refresh_token.is_some() })),
+            "firebase": c.firebase.as_ref().map(|f| serde_json::json!({
+                "site_id": f.site_id, "oauth": f.refresh_token.is_some() })),
         }))
     }
 
@@ -408,6 +617,7 @@ impl MemCli {
                     "netlify" => set!(netlify),
                     "vercel" => set!(vercel),
                     "cloudflare" => set!(cloudflare),
+                    "firebase" => set!(firebase),
                     other => return Err(Error::Io(format!("unknown deploy platform: {other}"))),
                 }
                 c
@@ -446,9 +656,12 @@ impl MemCli {
                 files,
                 &reviewed.name,
             ),
-            "cloudflare" => {
-                crate::deploy::deploy_cloudflare(&creds.cloudflare.ok_or_else(missing)?, files)
-            }
+            "cloudflare" => crate::deploy::deploy_cloudflare(
+                &self.cloudflare_refreshed()?,
+                files,
+                &reviewed.name,
+            ),
+            "firebase" => crate::deploy::deploy_firebase(&self.firebase_refreshed()?, files),
             other => return Err(Error::Io(format!("unsupported platform: {other}"))),
         }
         .map_err(Error::Io)?;

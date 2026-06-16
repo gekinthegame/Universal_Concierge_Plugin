@@ -479,6 +479,30 @@ pub fn peer_id_from_ed25519_hex(hex: &str) -> Option<PeerId> {
     Some(public.to_peer_id())
 }
 
+/// Recover the concierge AgentID ("username", hex Ed25519 public key) from a libp2p
+/// PeerID — the inverse of [`peer_id_from_ed25519_hex`]. Ed25519 PeerIDs embed the
+/// public key directly (identity multihash, code 0x00), so no network lookup is needed.
+/// Returns `None` for non-Ed25519 / non-identity-hashed peers.
+pub fn ed25519_hex_from_peer_id(peer: &PeerId) -> Option<String> {
+    let mh = libp2p::multihash::Multihash::<64>::from_bytes(&peer.to_bytes()).ok()?;
+    if mh.code() != 0 {
+        return None; // not an identity multihash — the key isn't embedded
+    }
+    let public = identity::PublicKey::try_decode_protobuf(mh.digest()).ok()?;
+    let ed = public.try_into_ed25519().ok()?;
+    Some(encode_hex(&ed.to_bytes()))
+}
+
+/// Encode bytes as lowercase hex (no external dependency).
+fn encode_hex(bytes: &[u8]) -> String {
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        out.push(char::from_digit((byte >> 4) as u32, 16).unwrap());
+        out.push(char::from_digit((byte & 0x0f) as u32, 16).unwrap());
+    }
+    out
+}
+
 /// Decode an even-length hex string into bytes (no external dependency).
 fn decode_hex(hex: &str) -> Option<Vec<u8>> {
     if !hex.len().is_multiple_of(2) {

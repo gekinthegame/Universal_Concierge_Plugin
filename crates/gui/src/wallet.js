@@ -187,20 +187,8 @@ document.querySelectorAll("[data-command]").forEach(button => button.addEventLis
   if (button.dataset.command === "Ingest") { openIngestModal(); return; }
   commandHelp(button.dataset.command);
 }));
-byId("export").addEventListener("click", exportCar); byId("rail-export").addEventListener("click", exportCar);
 // Compact = run GC to reclaim "Reclaimable" (superseded) blocks. Safe by
-// construction; records a tombstone receipt per reclaimed block. Confirm first
-// since it deletes blocks (only ones no name references) and can take a moment.
-byId("compact").addEventListener("click", () => safely(async () => {
-  const reclaimable = (state.lastStats && state.lastStats.orphans) || 0;
-  const msg = reclaimable
-    ? "Compact the store?\n\nThis reclaims " + reclaimable + " superseded block(s) that no name references (old index / HAMT / checkpoint versions) and records a tombstone receipt for each. Your live graph is untouched."
-    : "Compact the store?\n\nReclaims any superseded blocks and trims the auto-checkpoint chain. Your live graph is untouched.";
-  if (!window.confirm(msg)) return;
-  const res = await postJson("/api/compact", {});
-  notice("Compacted — reclaimed " + res.removed + " block(s), kept " + res.kept + ".");
-  await loadStats();
-}));
+// Compaction now runs automatically in the background (daily) — no manual button.
 byId("view-room").addEventListener("click", () => safely(loadThread));
 byId("human-only").addEventListener("click", () => {
   state.humanOnly = !state.humanOnly; byId("human-only").classList.toggle("on", state.humanOnly); safely(loadThread);

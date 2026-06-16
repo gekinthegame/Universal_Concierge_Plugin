@@ -87,8 +87,9 @@ mod tests {
         let response = handle(&mem, "/", "");
         let page = body(&response);
         assert_eq!(response.status, 200);
-        assert!(page.contains("The Data Platter"));
-        assert!(page.contains("Export-CAR"));
+        assert!(page.contains("Visual Memory Explorer"));
+        // CAR export is CLI-only now (the redundant GUI button was removed).
+        assert!(!page.contains("Export-CAR"));
         assert!(
             !page.contains("innerHTML"),
             "store data must never enter innerHTML"
@@ -529,6 +530,310 @@ mod tests {
         assert!(!page.contains("allow-same-origin"));
         assert!(!page.contains("allow-popups"));
         assert!(!page.contains("allow-forms"));
+    }
+
+    #[test]
+    fn canvas_write_saves_into_the_open_folder_and_reads_back() {
+        let (_dir, mem) = store();
+        let _ = mem;
+        let options = GuiOptions::default();
+        let site = tempfile::tempdir().expect("site tempdir");
+        let folder = site.path().to_string_lossy().to_string();
+
+        // Open the folder → token (the unified writeable canvas registers it for preview).
+        let open = body(&mutation_canvas_open(
+            &options,
+            &serde_json::json!({ "folder": folder }).to_string(),
+        ));
+        let open: serde_json::Value = serde_json::from_str(&open).expect("open json");
+        let token = open["token"].as_str().expect("token").to_string();
+
+        // Write index.html through the editor seam, then read it straight back.
+        let write = mutation_canvas_write(
+            &options,
+            &serde_json::json!({ "token": token, "path": "index.html", "content": "<h1>hi</h1>" })
+                .to_string(),
+        );
+        assert_eq!(write.status, 200);
+        assert_eq!(
+            std::fs::read_to_string(site.path().join("index.html")).expect("read index"),
+            "<h1>hi</h1>"
+        );
+        let file = body(&canvas_file_get(
+            &options,
+            &format!("token={token}&path=index.html"),
+        ));
+        let file: serde_json::Value = serde_json::from_str(&file).expect("file json");
+        assert_eq!(file["content"].as_str(), Some("<h1>hi</h1>"));
+
+        // A nested path creates its parent inside the folder.
+        let nested = mutation_canvas_write(
+            &options,
+            &serde_json::json!({ "token": token, "path": "css/site.css", "content": "body{}" })
+                .to_string(),
+        );
+        assert_eq!(nested.status, 200);
+        assert!(site.path().join("css").join("site.css").is_file());
+    }
+
+    #[test]
+    fn canvas_pwa_makes_the_project_installable() {
+        let options = GuiOptions::default();
+        let site = tempfile::tempdir().expect("site tempdir");
+        let folder = site.path().to_string_lossy().to_string();
+        std::fs::write(
+            site.path().join("index.html"),
+            "<!doctype html><html><head><title>My Game</title></head><body><h1>hi</h1></body></html>",
+        )
+        .unwrap();
+
+        let open = body(&mutation_canvas_open(
+            &options,
+            &serde_json::json!({ "folder": folder }).to_string(),
+        ));
+        let token = serde_json::from_str::<serde_json::Value>(&open).unwrap()["token"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        let resp = mutation_canvas_pwa(&options, &serde_json::json!({ "token": token }).to_string());
+        assert_eq!(resp.status, 200);
+
+        // Manifest + service worker + (non-empty) icons are written.
+        let manifest = std::fs::read_to_string(site.path().join("manifest.json")).expect("manifest");
+        assert!(manifest.contains("\"My Game\""));
+        assert!(manifest.contains("standalone"));
+        assert!(site.path().join("service-worker.js").is_file());
+        assert!(std::fs::metadata(site.path().join("icon-512.png")).unwrap().len() > 100);
+        assert!(std::fs::metadata(site.path().join("icon-192.png")).unwrap().len() > 100);
+
+        // index.html now links the manifest, registers the worker, and has the iOS icon.
+        let html = std::fs::read_to_string(site.path().join("index.html")).unwrap();
+        assert!(html.contains("rel=\"manifest\""));
+        assert!(html.contains("serviceWorker"));
+        assert!(html.contains("apple-touch-icon"));
+
+        // Idempotent: a second pass reports already-done and doesn't double-inject.
+        let again = body(&mutation_canvas_pwa(
+            &options,
+            &serde_json::json!({ "token": token }).to_string(),
+        ));
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&again).unwrap()["already"].as_bool(),
+            Some(true)
+        );
+        let html2 = std::fs::read_to_string(site.path().join("index.html")).unwrap();
+        assert_eq!(html2.matches("rel=\"manifest\"").count(), 1);
+    }
+
+    #[test]
+    fn canvas_new_scaffolds_a_website_and_an_app() {
+        let (_dir, mem) = store();
+
+        // Website: index.html + style.css, no PWA files.
+        let web = body(&mutation_canvas_new(
+            &mem,
+            &serde_json::json!({ "name": "My Site", "kind": "website" }).to_string(),
+        ));
+        let web: serde_json::Value = serde_json::from_str(&web).unwrap();
+        let web_path = std::path::PathBuf::from(web["path"].as_str().unwrap());
+        assert!(web_path.join("index.html").is_file());
+        assert!(web_path.join("style.css").is_file());
+        assert!(!web_path.join("manifest.json").exists());
+        assert!(std::fs::read_to_string(web_path.join("index.html"))
+            .unwrap()
+            .contains("My Site"));
+
+        // App/game: staged as an installable PWA from the start.
+        let app = body(&mutation_canvas_new(
+            &mem,
+            &serde_json::json!({ "name": "My Game", "kind": "app" }).to_string(),
+        ));
+        let app: serde_json::Value = serde_json::from_str(&app).unwrap();
+        let app_path = std::path::PathBuf::from(app["path"].as_str().unwrap());
+        assert!(app_path.join("manifest.json").is_file());
+        assert!(app_path.join("service-worker.js").is_file());
+        assert!(app_path.join("app.js").is_file());
+        assert!(std::fs::metadata(app_path.join("icon-512.png")).unwrap().len() > 100);
+        let ahtml = std::fs::read_to_string(app_path.join("index.html")).unwrap();
+        assert!(ahtml.contains("rel=\"manifest\"") && ahtml.contains("serviceWorker"));
+
+        // Movie/animation: a self-contained browser animation — GSAP + Lottie bundled in.
+        let movie = body(&mutation_canvas_new(
+            &mem,
+            &serde_json::json!({ "name": "My Film", "kind": "movie" }).to_string(),
+        ));
+        let movie: serde_json::Value = serde_json::from_str(&movie).unwrap();
+        let movie_path = std::path::PathBuf::from(movie["path"].as_str().unwrap());
+        assert!(std::fs::metadata(movie_path.join("gsap.min.js")).unwrap().len() > 1000);
+        assert!(std::fs::metadata(movie_path.join("lottie.min.js")).unwrap().len() > 1000);
+        assert!(movie_path.join("animation.js").is_file());
+        assert!(movie_path.join("README.md").is_file());
+        let mhtml = std::fs::read_to_string(movie_path.join("index.html")).unwrap();
+        assert!(mhtml.contains("gsap.min.js") && mhtml.contains("Record"));
+
+        // A duplicate name is refused (no silent overwrite).
+        let dup = mutation_canvas_new(
+            &mem,
+            &serde_json::json!({ "name": "My Site", "kind": "website" }).to_string(),
+        );
+        assert_eq!(dup.status, 400);
+    }
+
+    #[test]
+    fn canvas_write_refuses_to_escape_the_folder() {
+        let (_dir, _mem) = store();
+        let options = GuiOptions::default();
+        let site = tempfile::tempdir().expect("site tempdir");
+        let folder = site.path().to_string_lossy().to_string();
+        let open = body(&mutation_canvas_open(
+            &options,
+            &serde_json::json!({ "folder": folder }).to_string(),
+        ));
+        let open: serde_json::Value = serde_json::from_str(&open).expect("open json");
+        let token = open["token"].as_str().expect("token").to_string();
+
+        // A traversal path is rejected and nothing is written above the folder.
+        let escape = mutation_canvas_write(
+            &options,
+            &serde_json::json!({ "token": token, "path": "../escape.html", "content": "x" })
+                .to_string(),
+        );
+        assert!(escape.status >= 400);
+        assert!(!site.path().parent().unwrap().join("escape.html").exists());
+
+        // An unknown token is rejected outright.
+        let bogus = mutation_canvas_write(
+            &options,
+            &serde_json::json!({ "token": "deadbeef", "path": "index.html", "content": "x" })
+                .to_string(),
+        );
+        assert!(bogus.status >= 400);
+    }
+
+    #[test]
+    fn pairing_wizard_round_trip_between_two_devices() {
+        let (_dir_a, mem_a) = store();
+        let (_dir_b, mem_b) = store();
+        let opts = GuiOptions::default();
+        let json = |s: &str| serde_json::from_str::<serde_json::Value>(s).unwrap();
+
+        // Device A mints a one-use offer (auto-creating its network).
+        let offer_v = json(&body(&handle_mutation(
+            &mem_a,
+            &opts,
+            "/api/network/pair/offer",
+            "{}",
+        )));
+        assert_eq!(offer_v["ok"], true, "{offer_v}");
+        let offer = offer_v["offer"].clone();
+
+        // Device B proves possession → response + safety phrase.
+        let respond = json(&body(&handle_mutation(
+            &mem_b,
+            &opts,
+            "/api/network/pair/respond",
+            &serde_json::json!({ "offer": offer }).to_string(),
+        )));
+        assert_eq!(respond["ok"], true, "{respond}");
+        let response = respond["response"].clone();
+        let phrase_b = respond["phrase"].as_str().unwrap().to_string();
+        assert!(!phrase_b.is_empty());
+
+        // Device A derives the same phrase from offer + response (the SAS check).
+        let phrase = json(&body(&handle_mutation(
+            &mem_a,
+            &opts,
+            "/api/network/pair/phrase",
+            &serde_json::json!({ "offer": offer, "response": response }).to_string(),
+        )));
+        assert_eq!(
+            phrase["phrase"].as_str().unwrap(),
+            phrase_b,
+            "both devices must show the same phrase"
+        );
+
+        // Device A approves a full-access grant for B's device.
+        let grant_v = json(&body(&handle_mutation(
+            &mem_a,
+            &opts,
+            "/api/network/pair/approve",
+            &serde_json::json!({ "response": response, "scope": "full" }).to_string(),
+        )));
+        assert_eq!(grant_v["ok"], true, "{grant_v}");
+
+        // Device B accepts → becomes a scoped member.
+        let accept = json(&body(&handle_mutation(
+            &mem_b,
+            &opts,
+            "/api/network/pair/accept",
+            &serde_json::json!({ "grant": grant_v["grant"].clone() }).to_string(),
+        )));
+        assert_eq!(accept["ok"], true, "{accept}");
+        assert!(accept["capabilities"].as_u64().unwrap() >= 1);
+    }
+
+    #[test]
+    fn publish_refuses_a_folder_that_is_not_a_website() {
+        let (_dir, mem) = store();
+        let options = GuiOptions::default();
+
+        // A non-web project (no index.html) is rejected with a clear message — not published.
+        let proj = tempfile::tempdir().expect("proj tempdir");
+        std::fs::write(proj.path().join("main.rs"), "fn main(){}").expect("write source");
+        let refused = handle_mutation(
+            &mem,
+            &options,
+            "/api/site/deploy-plan",
+            &serde_json::json!({
+                "name": "myapp",
+                "folder": proj.path().to_string_lossy(),
+                "platform": "ipfs",
+            })
+            .to_string(),
+        );
+        assert_eq!(refused.status, 400);
+        assert!(body(&refused).contains("Only websites"));
+
+        // Adding an index.html clears the gate (it gets past the web-entry check).
+        std::fs::write(proj.path().join("index.html"), "<h1>hi</h1>").expect("write index");
+        let allowed = handle_mutation(
+            &mem,
+            &options,
+            "/api/site/deploy-plan",
+            &serde_json::json!({
+                "name": "myapp",
+                "folder": proj.path().to_string_lossy(),
+                "platform": "ipfs",
+            })
+            .to_string(),
+        );
+        assert!(!body(&allowed).contains("Only websites"));
+    }
+
+    #[test]
+    fn canvas_draft_returns_the_ai_staged_folder_for_prefill() {
+        let (_dir, mem) = store();
+        // No draft yet → null folder.
+        let empty = body(&canvas_draft_get(&mem));
+        let empty: serde_json::Value = serde_json::from_str(&empty).expect("draft json");
+        assert!(empty["folder"].is_null());
+
+        // The MCP write tools stage into <store>/canvas/draft/ — the bridge surfaces it.
+        let draft = mem
+            .store_dir()
+            .expect("store dir")
+            .join("canvas")
+            .join("draft");
+        std::fs::create_dir_all(&draft).expect("draft dir");
+        std::fs::write(draft.join("index.html"), "<h1>ai</h1>").expect("write draft");
+        let staged = body(&canvas_draft_get(&mem));
+        let staged: serde_json::Value = serde_json::from_str(&staged).expect("draft json");
+        assert_eq!(
+            staged["folder"].as_str(),
+            Some(draft.to_string_lossy().as_ref())
+        );
+        assert_eq!(staged["html"].as_str(), Some("<h1>ai</h1>"));
     }
 
     #[test]

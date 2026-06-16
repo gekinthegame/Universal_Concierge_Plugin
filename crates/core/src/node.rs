@@ -225,7 +225,8 @@ pub fn launch_private_node(store_dir: &Path) -> Result<()> {
 /// defaults (5001 API / 8080 gateway / 4001 swarm) so both can run at once.
 pub const PUBLIC_API_PORT: u16 = 5011;
 const PUBLIC_GATEWAY_PORT: u16 = 8090;
-const PUBLIC_SWARM_PORT: u16 = 4011;
+// A high, uncommon port so a single router forward doesn't collide with other rules.
+const PUBLIC_SWARM_PORT: u16 = 48011;
 
 /// The public publishing repo for this store.
 fn ipfs_public_repo(store_dir: &Path) -> PathBuf {
@@ -344,14 +345,61 @@ fn ensure_public_reachability(repo: &Path) {
         repo,
         &["config", "--json", "Swarm.EnableHolePunching", "true"],
     );
-    // UPnP / NAT-PMP automatic port mapping — the easiest path when the router
-    // supports it (Kubo's default; set explicitly so it's never off).
-    ipfs_set(
-        repo,
-        &["config", "--json", "Swarm.DisableNatPortMap", "false"],
-    );
+    // Disable UPnP / NAT-PMP automatic port mapping. In practice many routers grant a
+    // mapping on a *random* external port that they don't actually forward — which makes
+    // the node ANNOUNCE a bogus public address (so it believes it's reachable and never
+    // falls back to a relay), while real inbound dials fail. With auto-mapping off, the
+    // node announces its real listen port (PUBLIC_SWARM_PORT) so a single manual
+    // port-forward of that port is deterministic, and AutoNAT can correctly detect a
+    // private node and reserve a relay circuit as a fallback.
+    ipfs_set(repo, &["config", "--json", "Swarm.DisableNatPortMap", "true"]);
     // Announce content to the public DHT so providers can be found.
     ipfs_set(repo, &["config", "Routing.Type", "auto"]);
+    // Self-healing reachability: detect this network's public IPv4 and announce the
+    // node's real, forwardable port there (TCP + QUIC + WebTransport). A single manual
+    // router forward of PUBLIC_SWARM_PORT then makes the node directly dialable by
+    // gateways — including browser/service-worker gateways via WebTransport. Re-run on
+    // every launch, so a changed ISP-assigned IP is picked up automatically. Best-effort:
+    // if detection fails we keep any previously-announced address rather than clearing it.
+    if let Some(ip) = detect_public_ipv4() {
+        let announce = format!(
+            "[\"/ip4/{ip}/tcp/{P}\",\"/ip4/{ip}/udp/{P}/quic-v1\",\"/ip4/{ip}/udp/{P}/quic-v1/webtransport\"]",
+            P = PUBLIC_SWARM_PORT
+        );
+        ipfs_set(repo, &["config", "--json", "Addresses.AppendAnnounce", &announce]);
+    }
+}
+
+/// Best-effort detection of this network's public IPv4, so the publish node can
+/// announce its forwardable address. Queries a couple of plain "what's my IP" echo
+/// services with a short timeout; returns the first valid, non-private answer. Only
+/// the node's own public IP is learned — the same address the DHT already sees.
+fn detect_public_ipv4() -> Option<String> {
+    let client = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(5))
+        .build()
+        .ok()?;
+    for url in [
+        "https://api.ipify.org",
+        "https://checkip.amazonaws.com",
+        "https://ifconfig.me/ip",
+    ] {
+        if let Ok(resp) = client.get(url).send() {
+            if let Ok(text) = resp.text() {
+                let candidate = text.trim();
+                if let Ok(ip) = candidate.parse::<std::net::Ipv4Addr>() {
+                    if !ip.is_private()
+                        && !ip.is_loopback()
+                        && !ip.is_link_local()
+                        && !ip.is_unspecified()
+                    {
+                        return Some(ip.to_string());
+                    }
+                }
+            }
+        }
+    }
+    None
 }
 
 /// Public reachability of the publish node, derived from the addresses it has
@@ -494,10 +542,17 @@ pub fn unixfs_add_dir(repo: &Path, folder: &Path) -> Result<String> {
 /// Publish a directory CID to the site's IPNS name. Returns the `k51…` name it was
 /// published to (resolvable at `/ipns/<name>`). Requires the public daemon to be up.
 pub fn ipns_publish(repo: &Path, cid: &str, site: &str) -> Result<String> {
+    // Kubo's default record lifetime is 24h — far too short for a "permanent" address:
+    // once it lapses (and the daemon isn't around to republish) gateways reject the
+    // record as invalid. Publish with a long lifetime so the IPNS name stays resolvable,
+    // and allow offline publishing so a momentarily-unconnected node still writes the
+    // record locally for its republisher/DHT.
     let out = ipfs(repo)
         .args([
             "name",
             "publish",
+            "--lifetime=87600h", // ~10 years
+            "--allow-offline",
             &format!("--key={site}"),
             &format!("/ipfs/{cid}"),
         ])
@@ -526,9 +581,137 @@ pub fn ipns_publish(repo: &Path, cid: &str, site: &str) -> Result<String> {
     Ok(name)
 }
 
+/// Announce to the public DHT that this node provides `cid`, so gateways can find a
+/// provider. `ipfs add` only *queues* a provide (it runs asynchronously and can lag
+/// minutes behind), which is exactly why a freshly published site reads as "no
+/// providers found." Doing it explicitly pushes the provider record now. Best-effort:
+/// providing needs DHT peers, which a just-started node is still gathering, so callers
+/// should not fail the publish if this errors.
+pub fn dht_provide(repo: &Path, cid: &str) -> Result<()> {
+    // Fire-and-forget: placing provider records at ~20 DHT peers can take up to a
+    // minute, so we don't block the publish on it — the daemon keeps the record alive
+    // via its reprovider afterward.
+    ipfs(repo)
+        .args(["routing", "provide", cid])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| Error::Io(format!("ipfs routing provide: {e}")))
+}
+
+/// Export the DAG rooted at `cid` as a CAR (content-addressed archive) — the exact
+/// bytes a CAR-import upload (e.g. Filebase's S3 `x-amz-meta-import: car`) needs to
+/// recreate and pin this content. The CAR's root is `cid`, so what the service pins is
+/// identical to what we publish to IPNS.
+pub fn dag_export_car(repo: &Path, cid: &str) -> Result<Vec<u8>> {
+    let out = ipfs(repo)
+        .args(["dag", "export", cid])
+        .stdin(Stdio::null())
+        .output()
+        .map_err(|e| Error::Io(format!("ipfs dag export: {e}")))?;
+    if !out.status.success() {
+        return Err(Error::Io(format!(
+            "ipfs dag export failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        )));
+    }
+    Ok(out.stdout)
+}
+
+/// Import a CARv1 into this node's blockstore (`ipfs dag import`, CAR on stdin), so the
+/// node can serve the DAG and a pinning service can pull it by CID. Used by the record
+/// Pin path: a record lives in the mem store, not Kubo, so we stage its CAR here first.
+pub fn dag_import_car(repo: &Path, car: &[u8]) -> Result<()> {
+    use std::io::Write;
+    let mut child = ipfs(repo)
+        .args(["dag", "import", "--pin-roots=false"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| Error::Io(format!("ipfs dag import: {e}")))?;
+    child
+        .stdin
+        .take()
+        .ok_or_else(|| Error::Io("ipfs dag import: no stdin".to_string()))?
+        .write_all(car)
+        .map_err(|e| Error::Io(format!("ipfs dag import write: {e}")))?;
+    let out = child
+        .wait_with_output()
+        .map_err(|e| Error::Io(format!("ipfs dag import wait: {e}")))?;
+    if !out.status.success() {
+        return Err(Error::Io(format!(
+            "ipfs dag import failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        )));
+    }
+    Ok(())
+}
+
+/// Dial a peer multiaddr (e.g. a pinning service's "delegate"), so it can pull content
+/// from this node via bitswap right away rather than waiting to find us on the DHT.
+/// Best-effort.
+pub fn swarm_connect(repo: &Path, addr: &str) -> Result<()> {
+    let out = ipfs(repo)
+        .args(["swarm", "connect", addr])
+        .stdin(Stdio::null())
+        .output()
+        .map_err(|e| Error::Io(format!("ipfs swarm connect: {e}")))?;
+    if !out.status.success() {
+        return Err(Error::Io(format!(
+            "ipfs swarm connect failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        )));
+    }
+    Ok(())
+}
+
 /// The public publishing repo path for this store (used by `MemCli`).
 pub fn public_repo_for(store_dir: &Path) -> PathBuf {
     ipfs_public_repo(store_dir)
+}
+
+/// The private (Sidekick) Kubo repo path for this store — the PNET swarm node that
+/// keeps memory hot for this user's own paired devices, no third party.
+pub fn private_repo_for(store_dir: &Path) -> PathBuf {
+    ipfs_repo(store_dir)
+}
+
+/// Remove a recursive pin from this node, so the kept-hot content can be GC'd and is no
+/// longer served. Best-effort: a missing pin (already gone) is treated as success.
+pub fn ipfs_pin_rm(repo: &Path, cid: &str) -> Result<()> {
+    let out = ipfs(repo)
+        .args(["pin", "rm", "--recursive", cid])
+        .stdin(Stdio::null())
+        .output()
+        .map_err(|e| Error::Io(format!("ipfs pin rm: {e}")))?;
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    if !out.status.success() && !stderr.contains("not pinned") {
+        return Err(Error::Io(format!("ipfs pin rm failed: {}", stderr.trim())));
+    }
+    Ok(())
+}
+
+/// Import a CAR into this node's blockstore **and recursively pin its root**, so the
+/// node keeps the content (survives GC) and its reprovider keeps announcing it. This is
+/// the "keep hot on my private node" seed: the bytes live in the node and are served to
+/// paired devices over the swarm. Best-effort `dht_provide` is done by the caller.
+pub fn dag_import_and_pin(repo: &Path, root_cid: &str, car: &[u8]) -> Result<()> {
+    dag_import_car(repo, car)?; // write the blocks (idempotent, CID-verified)
+    let out = ipfs(repo)
+        .args(["pin", "add", "--recursive", root_cid])
+        .stdin(Stdio::null())
+        .output()
+        .map_err(|e| Error::Io(format!("ipfs pin add: {e}")))?;
+    if !out.status.success() {
+        return Err(Error::Io(format!(
+            "ipfs pin add failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        )));
+    }
+    Ok(())
 }
 
 impl MemCli {

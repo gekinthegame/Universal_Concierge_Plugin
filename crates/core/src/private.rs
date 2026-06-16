@@ -193,6 +193,66 @@ impl MemCli {
         })
     }
 
+    /// Encrypt a subgraph for **blind off-device pinning** (the Pin → Private path).
+    ///
+    /// Builds a Cryptree ciphertext of the root's reachable plaintext blocks, persists
+    /// the verified ciphertext blocks **and** the owner read capability locally (so the
+    /// content stays decryptable here), and returns the ciphertext root plus a CAR of
+    /// that ciphertext DAG — ready to hand to a pinning service. Unlike
+    /// [`Self::convert_and_share_private`], there is no destination namespace, recipient,
+    /// or one-shot grant: the only reader is this owner. The service only ever holds
+    /// opaque ciphertext (Decision 0026 / threat-model: encrypted = blind-pinned inert
+    /// ciphertext). Password-gated (vault unlock). The original plaintext is untouched.
+    pub fn encrypt_subgraph_for_pin(&self, root: &Cid, password: &str) -> Result<(Cid, Vec<u8>)> {
+        let _policy_lock = self.policy_lock()?;
+        self.verify_password_unlocked(password)?;
+
+        // The exact reachable plaintext manifest (root + every descendant block).
+        let (manifest, _bytes) = self.export_car_manifest(root)?;
+        let manifest_doc = ManifestDoc {
+            root: root.0.clone(),
+            cids: manifest.iter().map(|cid| cid.0.clone()).collect(),
+        };
+        let mut children = Vec::with_capacity(manifest.len() + 1);
+        children.push((
+            MANIFEST_CHILD.to_string(),
+            Plain::File(
+                serde_json::to_vec(&manifest_doc)
+                    .map_err(|error| Error::Encryption(format!("manifest: {error}")))?,
+            ),
+        ));
+        for cid in &manifest {
+            children.push((cid.0.clone(), Plain::File(self.read_block(cid)?)));
+        }
+        let tree =
+            build(&Plain::Dir(children)).map_err(|error| Error::Encryption(error.to_string()))?;
+
+        // Write only verified ciphertext blocks, then keep the read capability in the
+        // vault so this owner can still decrypt what was blind-pinned off-device.
+        for block in &tree.blocks {
+            self.store_verified_raw_block(&Cid(block.cid.clone()), &block.bytes)?;
+        }
+        self.add_capability_to_vault_unlocked(&tree.root, password)?;
+
+        // Assemble the CAR from the exact ciphertext blocks — a Cryptree DAG is not a
+        // UCP Record graph, so it can't be reached by the record-link walk `export_car`
+        // uses; the manifest is the full block set (mirrors export_reviewed_private_car).
+        let mut blocks = Vec::with_capacity(tree.blocks.len());
+        for block in &tree.blocks {
+            blocks.push((
+                block.cid.parse::<cid::Cid>().map_err(|error| {
+                    Error::Encryption(format!("invalid ciphertext CID: {error}"))
+                })?,
+                block.bytes.clone(),
+            ));
+        }
+        let root = tree.root.cid.parse::<cid::Cid>().map_err(|error| {
+            Error::Encryption(format!("invalid ciphertext root: {error}"))
+        })?;
+        let car = crate::car::build_car(&root, &blocks)?;
+        Ok((Cid(tree.root.cid.clone()), car))
+    }
+
     /// Convert one exact reviewed plaintext graph, immediately consume its
     /// one-shot grant, and issue a read-only capability to the reviewed
     /// destination. The source plaintext never leaves this process.
@@ -893,6 +953,38 @@ mod tests {
             read_key: [7; 32],
         };
         assert!(mem.read_private_with_capability(&wrong).is_err());
+    }
+
+    #[test]
+    fn encrypt_for_pin_blinds_the_record_yet_the_owner_keeps_the_key() {
+        let (_dir, mem, root) = store();
+        let (ciphertext_root, car) = mem.encrypt_subgraph_for_pin(&root, "pw").unwrap();
+
+        // The thing pinned is a fresh ciphertext root, not the plaintext record.
+        assert_ne!(ciphertext_root.0, root.0);
+        assert!(ciphertext_root.0.parse::<cid::Cid>().is_ok());
+        assert!(!car.is_empty());
+
+        // What the pinning service would receive carries no plaintext.
+        assert!(
+            !car.windows(b"WETLANDS-CLASSIFIED".len())
+                .any(|window| window == b"WETLANDS-CLASSIFIED"),
+            "the exported ciphertext CAR must not leak plaintext",
+        );
+
+        // The owner kept the read capability locally, so the blind-pinned ciphertext
+        // is still fully recoverable here.
+        let cap = mem.find_capability_unlocked(&ciphertext_root.0, "pw").unwrap();
+        let recovered = mem
+            .read_private_with_capability(&PrivateCapability::from_capability(&cap.to_read_only()))
+            .unwrap();
+        assert!(recovered.blocks.iter().any(|(_, bytes)| bytes
+            .windows(b"WETLANDS-CLASSIFIED".len())
+            .any(|window| window == b"WETLANDS-CLASSIFIED")));
+
+        // The plaintext record is untouched; a wrong password cannot encrypt-for-pin.
+        assert!(mem.read_block(&root).is_ok());
+        assert!(mem.encrypt_subgraph_for_pin(&root, "wrong").is_err());
     }
 
     #[test]

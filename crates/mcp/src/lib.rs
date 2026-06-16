@@ -32,6 +32,17 @@ const GUIDE_CRITIQUE: &str = include_str!("guides/critique.md");
 // Proven renderers, vendored so published media stays self-contained/offline (MIT).
 const ENGINE_THREE: &[u8] = include_bytes!("engines/three.module.min.js");
 const ENGINE_PHASER: &[u8] = include_bytes!("engines/phaser.min.js");
+// The motion/animation skill bundles two libs together. GSAP © GreenSock (no-charge
+// license); Lottie © Airbnb (MIT).
+const ENGINE_GSAP: &[u8] = include_bytes!("engines/gsap.min.js");
+const ENGINE_LOTTIE: &[u8] = include_bytes!("engines/lottie.min.js");
+const MOTION_SNIPPET: &str = r#"<script src="./gsap.min.js"></script>
+<script src="./lottie.min.js"></script>
+<script>
+  const tl = gsap.timeline({repeat:-1, yoyo:true});
+  tl.from('#el', {y:40, opacity:0, duration:1, ease:'power3.out'});
+  // Lottie (After-Effects vector motion): lottie.loadAnimation({container, renderer:'svg', path:'anim.json', loop:true, autoplay:true});
+</script>"#;
 
 /// Marker kept for callers that probed the old deferred stub.
 pub const STATUS: &str = "implemented (JSON-RPC 2.0 / stdio, protocol 2025-11-25)";
@@ -281,13 +292,15 @@ to drop in a vendored renderer; the user previews the folder in the Studio and p
         ));
         tools.push(tool_def(
             "concierge.scaffold_engine",
-            "Drop a proven, vendored web renderer into a site folder so a game/3D scene stays \
-self-contained (no CDN, works offline + on IPFS): 'three' (Three.js, 3D) or 'phaser' (Phaser, \
-2D). Returns the filename + a ready-to-use snippet. STAGING ONLY — never publishes.",
+            "Drop a proven, vendored web renderer into a site folder so a game/3D scene/animation \
+stays self-contained (no CDN, works offline + on IPFS): 'three' (Three.js, 3D), 'phaser' (Phaser, \
+2D), or 'motion' (GSAP + Lottie — animation/motion-graphics that record to video in-browser, no \
+ffmpeg). Returns the filenames + a ready-to-use snippet. Pair with design_guide(topic='motion'). \
+STAGING ONLY — never publishes.",
             json!({
                 "type": "object",
                 "properties": {
-                    "engine": { "type": "string", "enum": ["three", "phaser"], "description": "'three' (3D) or 'phaser' (2D)" },
+                    "engine": { "type": "string", "enum": ["three", "phaser", "motion"], "description": "'three' (3D), 'phaser' (2D), or 'motion' (GSAP + Lottie animation)" },
                     "site": { "type": "string", "description": "Optional site name (folder); defaults to 'draft'" },
                 },
                 "required": ["engine"],
@@ -520,8 +533,9 @@ fn tool_write_site(mem: &MemCli, args: &Value) -> Result<String, String> {
     std::fs::create_dir_all(&folder).map_err(|e| format!("create draft dir: {e}"))?;
     std::fs::write(folder.join("index.html"), html).map_err(|e| format!("write draft: {e}"))?;
     Ok(format!(
-        "Staged site '{safe}' ({} bytes) at {}. It appears live in the Concierge Studio (Write tab). \
-The user previews it and publishes it themselves — nothing has been published or made public.",
+        "Staged site '{safe}' ({} bytes) at {}. The Concierge Studio auto-prefills its site-folder \
+field with this path and opens it as the live writeable canvas. The user previews it and publishes \
+it themselves — nothing has been published or made public.",
         html.len(),
         folder.join("index.html").display()
     ))
@@ -670,7 +684,7 @@ fn tool_write_asset(mem: &MemCli, args: &Value) -> Result<String, String> {
     }
     std::fs::write(&dest, &bytes).map_err(|e| format!("write asset: {e}"))?;
     Ok(format!(
-        "Staged '{}' ({} bytes) in site '{}' at {}. Open the folder {} in the Studio (Folder mode) to preview; the user publishes it. Nothing has been published.",
+        "Staged '{}' ({} bytes) in site '{}' at {}. Open the folder {} in the Studio to preview live (the default 'draft' site auto-prefills the site-folder field); the user publishes it. Nothing has been published.",
         rel.display(), bytes.len(), safe_site(site), dest.display(), folder.display()
     ))
 }
@@ -681,6 +695,27 @@ fn tool_scaffold_engine(mem: &MemCli, args: &Value) -> Result<String, String> {
     let site = args.get("site").and_then(Value::as_str).unwrap_or("draft");
     let folder = site_dir(mem, site)?;
     std::fs::create_dir_all(&folder).map_err(|e| format!("create dir: {e}"))?;
+
+    // Motion/animation skill — bundles GSAP + Lottie (two files). Browser-native video
+    // export via MediaRecorder, no ffmpeg, no installs.
+    if matches!(
+        engine.as_str(),
+        "motion" | "animation" | "animate" | "gsap" | "lottie"
+    ) {
+        std::fs::write(folder.join("gsap.min.js"), ENGINE_GSAP)
+            .map_err(|e| format!("write gsap: {e}"))?;
+        std::fs::write(folder.join("lottie.min.js"), ENGINE_LOTTIE)
+            .map_err(|e| format!("write lottie: {e}"))?;
+        return Ok(format!(
+            "Vendored GSAP ({} KB) + Lottie ({} KB) into site '{}' — self-contained (no CDN, works offline + on IPFS).\n\nUse them in index.html:\n{}\n\nFor motion guidance call concierge.design_guide(topic='motion'). Capture the result to a video file in the browser via MediaRecorder + getDisplayMedia — no ffmpeg. Stage your animation with concierge.write_asset, preview the folder ({}) live in the Studio, then publish. Nothing has been published.",
+            ENGINE_GSAP.len() / 1024,
+            ENGINE_LOTTIE.len() / 1024,
+            safe_site(site),
+            MOTION_SNIPPET,
+            folder.display()
+        ));
+    }
+
     let (file, bytes, snippet): (&str, &[u8], String) = match engine.as_str() {
         "three" | "threejs" | "three.js" => (
             "three.module.min.js",
@@ -696,11 +731,11 @@ fn tool_scaffold_engine(mem: &MemCli, args: &Value) -> Result<String, String> {
 <script src=\"./phaser.min.js\"></script>\n\
 <script>\n  const game = new Phaser.Game({ type: Phaser.AUTO, width: 800, height: 600, scene: { preload(){}, create(){}, update(){} } });\n</script>".to_string(),
         ),
-        other => return Err(format!("unknown engine '{other}'. Use 'three' (3D) or 'phaser' (2D).")),
+        other => return Err(format!("unknown engine '{other}'. Use 'three' (3D), 'phaser' (2D), or 'motion' (GSAP + Lottie animation).")),
     };
     std::fs::write(folder.join(file), bytes).map_err(|e| format!("write engine: {e}"))?;
     Ok(format!(
-        "Vendored {} ({} KB) into site '{}' as {}. Self-contained — no CDN, works offline + on IPFS.\n\nUse it:\n{}\n\nThen stage your game code with concierge.write_asset, preview the folder ({}) in the Studio, and publish. Nothing has been published.",
+        "Vendored {} ({} KB) into site '{}' as {}. Self-contained — no CDN, works offline + on IPFS.\n\nUse it:\n{}\n\nThen stage your game code with concierge.write_asset, preview the folder ({}) live in the Studio, and publish. Nothing has been published.",
         if file.starts_with("three") { "Three.js" } else { "Phaser" },
         bytes.len() / 1024, safe_site(site), file, snippet, folder.display()
     ))
@@ -900,5 +935,25 @@ mod tests {
             json!({ "uri": "file:///etc/passwd" }),
         );
         assert_eq!(bad["error"]["code"], -32602);
+    }
+
+    #[test]
+    fn scaffold_engine_motion_bundles_gsap_and_lottie() {
+        let (_dir, mem) = store();
+        let res = call(
+            &mem,
+            true,
+            "tools/call",
+            json!({
+                "name": "concierge.scaffold_engine",
+                "arguments": { "engine": "motion", "site": "anim" }
+            }),
+        );
+        assert_eq!(res["result"]["isError"], false);
+        let folder = mem.store_dir().unwrap().join("canvas/anim");
+        assert!(std::fs::metadata(folder.join("gsap.min.js")).unwrap().len() > 1000);
+        assert!(std::fs::metadata(folder.join("lottie.min.js")).unwrap().len() > 1000);
+        // STAGING ONLY — nothing published.
+        assert!(mem.publish_receipts().unwrap().is_empty());
     }
 }

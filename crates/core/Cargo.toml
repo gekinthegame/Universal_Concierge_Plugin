@@ -17,12 +17,17 @@ libc = { workspace = true }
 multihash = { workspace = true }
 rand_core = { workspace = true }
 regex = "1.10"
-# Multi-platform website publishing (GitHub Pages / Netlify / Vercel / Cloudflare).
+# Multi-platform website publishing (GitHub Pages / Netlify / Vercel / Cloudflare /
+# Firebase Hosting).
 reqwest = { version = "0.12", features = ["blocking", "json", "multipart"] }
 zip = "2"
 base64 = "0.22"
 sha1 = "0.10"
 blake3 = "1"
+# Firebase Hosting deploy: gzip each asset (its content hash is SHA256 of the gzip)
+# and mint a Google OAuth token by RS256-signing a JWT with the service-account key.
+flate2 = "1"
+rsa = { version = "0.9", features = ["pem", "sha2"] }
 # Brave/Opera wallet attestation (Decision 0033): verify an EVM personal_sign so a
 # linked address is cryptographically tied to the AgentID. We hold no keys.
 k256 = { version = "0.13", features = ["ecdsa"] }

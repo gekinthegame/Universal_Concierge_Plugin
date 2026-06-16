@@ -24,7 +24,8 @@ use concierge_core::{
     Record, Result as CoreResult, SharedEmbedder, UserId,
 };
 use concierge_net::{
-    peer_id_from_ed25519_hex, store_provider, ConciergeNode, Multiaddr, NodeConfig, NodeEvent,
+    ed25519_hex_from_peer_id, peer_id_from_ed25519_hex, store_provider, ConciergeNode, Multiaddr,
+    NodeConfig, NodeEvent,
 };
 use rand_core::{OsRng, RngCore};
 
@@ -36,15 +37,17 @@ mod server;
 #[cfg(test)]
 use canvas::preview_token;
 use canvas::{
-    approved_agent_matches_peer, approved_contact_card_author, canvas_draft_get, canvas_files_get,
-    canvas_mtime_get, canvas_preview_serve, canvas_signal_get, mutation_canvas_open,
-    mutation_canvas_signal, mutation_canvas_snapshot, mutation_save_checkpoint,
+    approved_agent_matches_peer, approved_contact_card_author, canvas_draft_get, canvas_file_get,
+    canvas_files_get, canvas_mtime_get, canvas_preview_serve, canvas_projects_get,
+    canvas_signal_get, mutation_canvas_open, mutation_canvas_signal, mutation_canvas_snapshot,
+    mutation_canvas_new, mutation_canvas_pwa, mutation_canvas_write, mutation_save_checkpoint,
     parse_canvas_signal, parse_contact_card, queue_canvas_signal, record_site_checkpoint,
     site_checkpoint_response, site_checkpoints_json,
 };
 use mutations::{
-    body_str, contacts_json, deploy_status_json, handle_mutation, mcp_status_json, parse_body,
-    profile_json, reachability_json, requests_json, resolve_response, sites_json, valid_site_name,
+    body_str, contacts_json, deploy_status_json, handle_mutation, mcp_status_json, oauth_status_json,
+    parse_body, pin_status_json, profile_json, reachability_json, requests_json, resolve_response,
+    sites_json, valid_site_name,
     wallet_json, wallet_proposals_json,
 };
 use read_routes::{
@@ -72,6 +75,7 @@ const APP_CSS: &str = include_str!("app.css");
 const APP_JS: &str = include_str!("app.js");
 const WALLET_JS: &str = include_str!("wallet.js");
 const STUDIO_JS: &str = include_str!("studio.js");
+const WORLDMAP_JSON: &str = include_str!("worldmap.json");
 const BRAIN_PNG: &[u8] = include_bytes!("brain.png");
 const LOGO_PNG: &[u8] = include_bytes!("logo.png");
 const SWARM_PNG: &[u8] = include_bytes!("swarm.png");
@@ -631,6 +635,11 @@ pub fn handle_with_options(
             "text/javascript; charset=utf-8",
             STUDIO_JS.as_bytes().to_vec(),
         ),
+        "/worldmap.json" => Response::new(
+            200,
+            "application/json; charset=utf-8",
+            WORLDMAP_JSON.as_bytes().to_vec(),
+        ),
         "/api/brain.png" => Response::new(200, "image/png", BRAIN_PNG.to_vec()),
         "/api/logo.png" => Response::new(200, "image/png", LOGO_PNG.to_vec()),
         "/api/swarm.png" => Response::new(200, "image/png", SWARM_PNG.to_vec()),
@@ -644,6 +653,8 @@ pub fn handle_with_options(
         "/api/site/checkpoint" => site_checkpoint_response(mem, query),
         "/api/mcp/status" => to_response(mcp_status_json(mem)),
         "/api/canvas/files" => canvas_files_get(options, query),
+        "/api/canvas/file" => canvas_file_get(options, query),
+        "/api/canvas/projects" => canvas_projects_get(mem),
         "/api/canvas/mtime" => canvas_mtime_get(options, query),
         "/api/canvas/draft" => canvas_draft_get(mem),
         "/api/canvas/signal" => canvas_signal_get(options, query),
@@ -661,12 +672,19 @@ pub fn handle_with_options(
         "/api/rooms" => to_response(rooms_json(mem)),
         "/api/network" => to_response(network_json(mem)),
         "/api/peers" => peers_response(mem, options),
+        "/api/hot-pins" => match mem.hot_pins() {
+            Ok(pins) => Response::json(serde_json::json!({ "pins": pins }).to_string()),
+            Err(error) => Response::error(error.to_string()),
+        },
         "/api/thread" => thread_response(mem, query),
         "/api/privacy" => privacy_response(mem, query),
         "/api/search" => search_response(mem, options, query),
         "/api/sidekick/status" => to_response(sidekick_status_json(mem)),
         "/api/claude-code/status" => to_response(claude_code_status_json(mem)),
         "/api/deploy/credentials" => to_response(deploy_status_json(mem)),
+        "/api/deploy/cloudflare/oauth-status" => Response::json(oauth_status_json("cloudflare")),
+        "/api/deploy/firebase/oauth-status" => Response::json(oauth_status_json("firebase")),
+        "/api/pin/credentials" => to_response(pin_status_json(mem)),
         "/api/wallet" => to_response(wallet_json(mem)),
         "/api/wallet/proposals" => to_response(wallet_proposals_json(mem)),
         "/api/egress-plan" => egress_plan_response(mem, options, query),

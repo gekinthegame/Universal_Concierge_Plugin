@@ -117,6 +117,7 @@ COMMANDS:
                          Open the Data Platter privacy controls        [Phase 7/D]
     mcp serve [--write]  Serve memory over MCP (stdio) for a host AI
     setup                Connect the Concierge to Claude Code as an MCP server
+    blender-setup        Connect Blender (BlenderMCP) to the host AI for Movie/Animation
     help                 Show this help
 ";
 
@@ -1254,6 +1255,47 @@ fn cmd_setup() -> ExitCode {
     ExitCode::SUCCESS
 }
 
+/// `blender-setup` — register **BlenderMCP** with Claude Code so the host AI can drive
+/// Blender for Movie/Animation projects. Best-effort; reports missing prerequisites.
+fn cmd_blender_setup() -> ExitCode {
+    use std::process::Command;
+    let listed = match Command::new("claude").args(["mcp", "list"]).output() {
+        Ok(out) => String::from_utf8_lossy(&out.stdout).into_owned(),
+        Err(_) => {
+            println!("Claude Code (the `claude` CLI) was not found. Install Claude Code, then re-run this.");
+            return ExitCode::FAILURE;
+        }
+    };
+    if listed.lines().any(|l| l.trim_start().starts_with("blender:")) {
+        println!("Blender (BlenderMCP) is already connected to Claude Code.");
+    } else {
+        let has_uvx = Command::new("uvx")
+            .arg("--version")
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false);
+        if !has_uvx {
+            println!("Install uv (the Python runner BlenderMCP uses): https://docs.astral.sh/uv/ — then re-run this.");
+            return ExitCode::FAILURE;
+        }
+        let ok = Command::new("claude")
+            .args(["mcp", "add", "-s", "user", "blender", "--", "uvx", "blender-mcp"])
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        if ok {
+            println!("Connected Blender (BlenderMCP) to Claude Code. Restart Claude Code to use its tools.");
+        } else {
+            println!("Auto-register failed. Run: claude mcp add -s user blender -- uvx blender-mcp");
+            return ExitCode::FAILURE;
+        }
+    }
+    println!(
+        "\nNext: install the Blender add-on:\n  Blender → Edit → Preferences → Add-ons → Install… → choose addon.py\n  (Concierge repo: vendor/blender-mcp/addon.py, or download from https://blendermcp.org)\n  Enable “Interface: Blender MCP”, then in the 3D viewport press N → BlenderMCP → Connect to MCP server."
+    );
+    ExitCode::SUCCESS
+}
+
 /// Register this binary as a Claude Code MCP server (`concierge`, write tools on).
 /// Idempotent, and **upgrades a stale registration** (wrong path / missing `--write`)
 /// so the Studio/canvas write tool is always available. Best-effort: a missing
@@ -1282,7 +1324,9 @@ fn connect_claude_mcp() -> String {
 
     // Already correct (this binary + write tools)? Leave it.
     if listed.lines().any(|line| {
-        line.trim_start().starts_with("concierge:") && line.contains(&want) && line.contains("--write")
+        line.trim_start().starts_with("concierge:")
+            && line.contains(&want)
+            && line.contains("--write")
     }) {
         return "Claude Code: the Concierge MCP server is already connected.".to_string();
     }
@@ -1298,7 +1342,16 @@ fn connect_claude_mcp() -> String {
     }
     let status = Command::new("claude")
         .args([
-            "mcp", "add", "-s", "user", "concierge", "--", &want, "mcp", "serve", "--write",
+            "mcp",
+            "add",
+            "-s",
+            "user",
+            "concierge",
+            "--",
+            &want,
+            "mcp",
+            "serve",
+            "--write",
         ])
         .stdin(Stdio::null())
         .status();
@@ -1432,6 +1485,7 @@ fn main() -> ExitCode {
         Some("gui") => cmd_gui(&args),
         Some("mcp") => cmd_mcp(&args),
         Some("setup") => cmd_setup(),
+        Some("blender-setup") => cmd_blender_setup(),
         Some("help") | Some("--help") | Some("-h") | None => {
             print!("{HELP}");
             ExitCode::SUCCESS

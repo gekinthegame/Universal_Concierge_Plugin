@@ -63,10 +63,14 @@ The Librarian keeps your entire memory "hot" and ready for retrieval.
 
 ### 3. The Studio (Autonomous Web Publishing)
 The Studio is where the AI transitions from "talking" to "building."
-*   **AI-Staged Web:** Ask your AI to design a site, and it writes directly into the Studio's **Write** tab—no copy-pasting required.
-*   **Live Preview:** Content landed in the Studio is rendered instantly via a hot-reloading draft system.
-*   **Multi-Platform Publishing:** Reviewed deployment to **IPFS**, **GitHub Pages**, **Netlify**, **Vercel**, and **Cloudflare Pages**. Plaintext FTP is intentionally unsupported.
-*   **Zero Hosting Fees:** Leverage free developer tiers across the web with a single click.
+
+![The Studio — a writeable canvas with a live file tree, the code editor, and the site rendering beside it. A real, unretouched screenshot of the Concierge in action.](docs/screenshots/studio.jpg)
+
+*   **One Writeable Canvas:** Point it at any project folder — you and your AI edit its files together in a live **file-tree explorer**, and every change saves straight to disk. Tell the AI to build a site and its work lands right here, no copy-pasting.
+*   **Live App Preview:** Any web app, site, or game renders instantly beside the editor and hot-reloads as the files change — the same live loop, for whatever you build.
+*   **Multi-Platform Publishing:** Reviewed, password-gated deployment of a real website to **IPFS/IPNS**, **GitHub Pages**, **Netlify**, **Vercel**, **Cloudflare Pages**, and **Firebase Hosting** — with **one-click OAuth** for Cloudflare and Firebase (no tokens to paste). Plaintext FTP is intentionally unsupported.
+*   **Stays Online When You're Off:** Pin a published site to **Filebase**, **Pinata**, or **4everland** so it serves from always-on nodes even when your node is asleep.
+*   **Zero Hosting Fees:** Leverage free developer tiers across the web — IPFS is the sovereign default, with zero landlords.
 *   **Educational Live-Share:** Open a "Live Session" to let an approved peer watch the AI build in real-time over WebRTC.
 
 ### 4. The Messenger (Decentralized Communication)

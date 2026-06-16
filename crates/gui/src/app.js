@@ -117,6 +117,9 @@ async function quietly(action) {
 function showView(name) {
   document.querySelectorAll(".view").forEach(item => item.classList.toggle("active", item.id === name + "-view"));
   document.querySelectorAll("[data-view]").forEach(item => item.classList.toggle("active", item.dataset.view === name));
+  // Studio gets the full width: collapse the Store/DAG rail (console, backends,
+  // pin status) so the canvas can maximize. CSS hides .panel under this class.
+  document.body.classList.toggle("studio-max", name === "canvas");
 }
 
 async function loadMeta() {
@@ -302,7 +305,8 @@ async function loadGraph() {
   const query = state.rootMode === "fixed" && state.root ? "?cid=" + encodeURIComponent(state.root) : "";
   const graph = await getJson("/api/graph" + query);
   state.root = graph.root;
-  byId("root-note").textContent = graph.forest
+  const rootNote = byId("root-note");
+  if (rootNote) rootNote.textContent = graph.forest
     ? " / whole store" + (graph.truncated ? " / first " + graph.total + " records" : "")
     : " / " + shortCid(graph.root) + (graph.truncated ? " / first 96 nodes" : "");
 
@@ -545,6 +549,20 @@ function drawGraph(graph) {
     const labelX = leftSide ? g.cx - 15 : g.cx + 15;
     const labelAnchor = leftSide ? "end" : "start";
 
+    // A generous, side-aware transparent hit area so the entire labeled node is
+    // clickable — not just the 8px dot. Sized symmetrically on whichever side the
+    // label sits, so left- and right-hand records behave identically. (Before
+    // this, only the tiny dot caught the pointer, so right-side records that the
+    // user aimed at by their label effectively never opened.)
+    if (!isStore) {
+      const HIT_W = 210, HIT_H = 56;
+      const hitX = leftSide ? g.cx - 15 - HIT_W : g.cx - 14;
+      group.append(svgNode("rect", {
+        x: hitX, y: g.cy - 26, width: HIT_W + 29, height: HIT_H, rx: 4,
+        style: "fill:transparent;stroke:none;pointer-events:all"
+      }));
+    }
+
     if (item.kind === "store") {
       group.append(brainGlyph(g.cx, g.cy, 64, "var(--patina)"));
     } else {
@@ -654,6 +672,20 @@ async function loadRecord(cid, open = false) {
   top.append(node("span", "cid", record.cid));
   if (record.live !== false) top.append(node("span", "kind", record.kind));
   container.append(top);
+  // Pin this record to an always-on service so a copy survives off-device. Same
+  // four providers as the Studio, plus "Keep hot on my node" (sovereign — served to
+  // your paired devices over your private swarm) and a Public/Private toggle.
+  if (record.live !== false) {
+    const pinBar = buildRecordPinBar(record.cid);
+    container.append(pinBar);
+    // Surface whether this record is already kept hot on this node.
+    safely(async () => {
+      const hot = await getJson("/api/hot-pins");
+      if ((hot.pins || []).some(p => p.source_cid === record.cid)) {
+        pinBar._slot.append(node("div", "pin-hint", "🔥 Kept hot on your private node — served to your paired devices while this node is up."));
+      }
+    });
+  }
   // Decision 0026: fenced from egress by default — never hidden locally. Show an
   // egress badge (fenced is the norm), then the full content below.
   if (record.locked) {
@@ -678,6 +710,148 @@ async function loadRecord(cid, open = false) {
   }
   if (open) openRecordModal();
 }
+// The four pinning providers offered in the record window — identical to the Studio
+// pin menu (free tiers only; no pay gate).
+const RECORD_PIN_SERVICES = [
+  { key: "filebase", name: "Filebase", limit: "5 GB free" },
+  { key: "pinata", name: "Pinata", limit: "1 GB free" },
+  { key: "foureverland", name: "4EVERLAND", limit: "free tier" },
+  { key: "ipfs", name: "IPFS pinning service", limit: "any PSA endpoint" },
+];
+
+// A pin bar for the open record: a Public/Private toggle + the same provider menu as
+// the Studio. Private encrypts the subgraph on-device first, then uploads only the
+// opaque ciphertext (the service blind-pins what it cannot read).
+function buildRecordPinBar(cid) {
+  const bar = node("div", "record-pinbar");
+  bar.dataset.mode = "private"; // records default to private (encrypted blind-pin)
+
+  const mode = node("div", "pin-mode");
+  const priv = node("button", "pin-mode-btn active", "🔒 Private");
+  const pub = node("button", "pin-mode-btn", "🌐 Public");
+  priv.type = "button"; pub.type = "button";
+  priv.title = "Encrypt before upload — the service stores ciphertext only you can read";
+  pub.title = "Plaintext — anyone with the CID can read it";
+  priv.addEventListener("click", () => { bar.dataset.mode = "private"; priv.classList.add("active"); pub.classList.remove("active"); });
+  pub.addEventListener("click", () => { bar.dataset.mode = "public"; pub.classList.add("active"); priv.classList.remove("active"); });
+  mode.append(priv, pub);
+
+  const group = node("div", "publish-group");
+  const btn = node("button", "tool-button", "📌 Pin ▾");
+  btn.type = "button";
+  btn.title = "Keep a copy of this record online even when this node is off";
+  const menu = node("div", "publish-menu");
+  // Sovereign option first: keep it hot on YOUR own always-on node, served to your
+  // paired devices over the private swarm — no third party.
+  const nodeItem = node("button", "menu-item");
+  nodeItem.type = "button";
+  nodeItem.style.color = "var(--gold)";
+  nodeItem.style.borderBottom = "1px solid var(--line)";
+  nodeItem.append(node("span", "", "🔥 Keep hot on my node"), node("span", "limit", "private swarm · no 3rd party"));
+  nodeItem.addEventListener("click", () => safely(() => recPin(cid, "node", bar)));
+  menu.append(nodeItem);
+  RECORD_PIN_SERVICES.forEach(s => {
+    const item = node("button", "menu-item");
+    item.type = "button";
+    item.append(node("span", "", s.name), node("span", "limit", s.limit));
+    item.addEventListener("click", () => safely(() => recPin(cid, s.key, bar)));
+    menu.append(item);
+  });
+  const settings = node("button", "menu-item", "📌 Connect pinning accounts");
+  settings.type = "button";
+  settings.style.borderTop = "1px solid var(--line)";
+  settings.style.color = "var(--gold)";
+  settings.addEventListener("click", () => pinOpen());
+  menu.append(settings);
+  group.append(btn, menu);
+
+  const slot = node("div", "pin-slot");
+  bar.append(mode, group, slot);
+  bar._slot = slot;
+  return bar;
+}
+
+async function recPin(cid, service, bar) {
+  const onNode = service === "node";
+  const dest = onNode
+    ? "your private node"
+    : ((typeof PIN_META !== "undefined" && PIN_META[service]) ? PIN_META[service].name : service);
+  // Connect gate: open the same guided walk-through if an external service isn't set up
+  // yet. The private node is local — no account to connect.
+  if (!onNode) {
+    let status = {}; try { status = await getJson("/api/pin/credentials"); } catch (e) {}
+    if (!status[service]) {
+      notice("Connect your " + dest + " account to pin there.");
+      pinOpen(service);
+      return;
+    }
+  }
+  // "Keep hot on my node" is always private (your devices hold the key); external pins
+  // honour the Public/Private toggle.
+  const isPrivate = onNode ? true : (bar.dataset.mode !== "public");
+  const slot = bar._slot; clear(slot);
+  const label = onNode
+    ? "🔥 Keep hot on my node"
+    : (isPrivate ? "🔒 Pin privately to " : "🌐 Pin publicly to ") + dest;
+  const form = passwordAction(label, async (password) => {
+    if (!password) { notice("Your store password is required — pinning is egress."); return; }
+    notice(onNode
+      ? "Encrypting + seeding onto your private node…"
+      : "Pinning to " + dest + (isPrivate ? " (encrypting first)…" : "…"));
+    const res = await postJson("/api/record/pin", { cid, service, private: isPrivate, password });
+    clear(slot);
+    const done = onNode
+      ? "Kept hot on your private node (encrypted) · ciphertext " + shortCid(res.cid) + " — served to your paired devices over the private swarm while this node is up."
+      : (isPrivate
+        ? "Pinned privately to " + dest + " (" + (res.status || "queued") + ") · ciphertext " + shortCid(res.cid) + " — only you can read it."
+        : "Pinned publicly to " + dest + " (" + (res.status || "queued") + ") · " + (res.url || res.cid));
+    slot.append(node("div", "pin-hint", done));
+    notice(done);
+    logSystem("record · " + (onNode ? "kept hot " : "pinned ") + shortCid(cid) + (isPrivate ? " (encrypted)" : " (public)") + " → " + service, "ok");
+  });
+  slot.append(
+    node("div", "pin-hint", onNode
+      ? "Sovereign: encrypted on-device, then seeded onto your own always-on node. No third party — your paired devices pull it over your private swarm and index it locally."
+      : (isPrivate
+        ? "Private: this record is encrypted on-device, then only the ciphertext is uploaded."
+        : "Public: the plaintext is uploaded — anyone with the CID can read it.")),
+    form
+  );
+  const input = form.querySelector("input"); if (input) input.focus();
+}
+// "Kept hot" manager: the records this node is serving to your paired devices over the
+// private swarm. List them with an unpin (stop serving) control.
+async function loadHotManager() {
+  byId("hot-modal").style.display = "flex";
+  const list = byId("hot-list"); clear(list);
+  list.append(node("div", "pin-hint", "Loading…"));
+  let data; try { data = await getJson("/api/hot-pins"); } catch (e) { clear(list); list.append(node("div", "empty", "Could not load.")); return; }
+  const pins = data.pins || [];
+  clear(list);
+  if (!pins.length) { list.append(node("div", "empty", "Nothing kept hot yet. Open a record → 📌 Pin ▾ → 🔥 Keep hot on my node.")); return; }
+  pins.forEach(p => {
+    const row = node("div", "hot-row");
+    const info = node("div", "hot-info");
+    info.append(node("div", "hot-cid", shortCid(p.source_cid)));
+    info.append(node("div", "pin-hint", (p.private ? "🔒 encrypted" : "🌐 public") + " · ciphertext " + shortCid(p.pinned_cid)));
+    const open = node("button", "tool-button", "Open");
+    open.addEventListener("click", () => { loadRecord(p.source_cid, true); });
+    const stop = node("button", "c-remove", "Unpin");
+    stop.title = "Stop serving this record from your node (the original stays in your store).";
+    stop.addEventListener("click", () => safely(async () => {
+      if (!window.confirm("Stop keeping this record hot? Your paired devices will no longer pull it from this node.")) return;
+      await postJson("/api/record/unpin", { cid: p.source_cid });
+      await loadHotManager();
+      notice("Stopped keeping it hot.");
+    }));
+    row.append(info, open, stop);
+    list.append(row);
+  });
+}
+byId("hot-manage").addEventListener("click", () => safely(loadHotManager));
+byId("hot-close").addEventListener("click", () => { byId("hot-modal").style.display = "none"; });
+byId("hot-modal").addEventListener("click", e => { if (e.target === byId("hot-modal")) byId("hot-modal").style.display = "none"; });
+document.addEventListener("keydown", e => { if (e.key === "Escape" && byId("hot-modal").style.display === "flex") byId("hot-modal").style.display = "none"; });
 byId("record-close").addEventListener("click", closeRecordModal);
 byId("record-modal").addEventListener("click", e => { if (e.target === byId("record-modal")) closeRecordModal(); });
 document.addEventListener("keydown", e => { if (e.key === "Escape" && byId("record-modal").style.display === "flex") closeRecordModal(); });
@@ -750,6 +924,8 @@ function fileActions(url, filename) {
 // The System Console: a live terminal of everything the concierge does. Append a
 // timestamped line; keep the last ~200; auto-scroll only if already at the bottom.
 function logSystem(text, cls) {
+  // Keep the minimized header console showing the latest line, even when collapsed.
+  const mini = byId("console-mini-line"); if (mini) { mini.textContent = text; mini.className = "console-mini-line " + (cls || "dim"); }
   const c = byId("system-console"); if (!c) return;
   const atBottom = c.scrollTop + c.clientHeight >= c.scrollHeight - 6;
   const ln = node("div", "ln");
@@ -759,6 +935,27 @@ function logSystem(text, cls) {
   while (c.childElementCount > 200) c.firstChild.remove();
   if (atBottom) c.scrollTop = c.scrollHeight;
 }
+// Minimized System Console: click the header strip to expand the full log; the inner
+// pop swallows clicks so it stays open while you read/scroll.
+(function wireMiniConsole() {
+  const mini = byId("console-mini"), pop = byId("console-pop");
+  if (!mini || !pop) return;
+  const toggle = open => {
+    pop.style.display = open ? "block" : "none";
+    mini.classList.toggle("open", open);
+    if (open) { const c = byId("system-console"); if (c) c.scrollTop = c.scrollHeight; }
+  };
+  mini.addEventListener("click", () => toggle(pop.style.display === "none"));
+  mini.addEventListener("keydown", e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); toggle(pop.style.display === "none"); } });
+  pop.addEventListener("click", e => e.stopPropagation());
+  document.addEventListener("click", e => { if (!mini.contains(e.target)) toggle(false); });
+})();
+// Privacy & Publication moved off the main panel into an on-demand popup, so the graph
+// gets the full window. Refresh on open so it reflects the current selection.
+byId("privacy-open").addEventListener("click", () => { byId("privacy-modal").style.display = "flex"; safely(refreshPrivacy); });
+byId("privacy-close").addEventListener("click", () => { byId("privacy-modal").style.display = "none"; });
+byId("privacy-modal").addEventListener("click", e => { if (e.target === byId("privacy-modal")) byId("privacy-modal").style.display = "none"; });
+document.addEventListener("keydown", e => { if (e.key === "Escape" && byId("privacy-modal").style.display === "flex") byId("privacy-modal").style.display = "none"; });
 // The server-truth half of the System Console: pull everything the concierge has
 // done since our last poll (embedder load, indexing, retrieval, every action,
 // inbound messages) and print it, plus the active embedding model — so the user can
@@ -778,49 +975,16 @@ async function loadStats() {
   const query = state.rootMode === "fixed" && state.root ? "?cid=" + encodeURIComponent(state.root) : "";
   const stats = await getJson("/api/stats" + query);
   // Emit what changed in the store since the last poll — the node ingesting/binding.
+  // (Compaction runs silently in the background, so its tombstones aren't surfaced.)
   if (state.lastStats) {
-    const db = stats.blocks - state.lastStats.blocks, dn = stats.names - state.lastStats.names, dt = stats.tombstones - state.lastStats.tombstones;
+    const db = stats.blocks - state.lastStats.blocks, dn = stats.names - state.lastStats.names;
     if (db > 0) logSystem("ingested " + db + " block" + (db > 1 ? "s" : "") + "  ·  " + stats.blocks + " total", "ev");
     if (dn > 0) logSystem("bound " + dn + " name" + (dn > 1 ? "s" : ""), "ev");
-    if (dt > 0) logSystem("tombstoned " + dt + " block" + (dt > 1 ? "s" : ""), "wn");
   }
   state.lastStats = stats;
-  const container = byId("stats"); clear(container);
-  // "Reclaimable" = superseded immutable versions (old calendar/HAMT/checkpoint
-  // blocks) no live name can reach. Normal for an append-only content-addressed
-  // store — not corruption; reclaim them with Compact. Tombstones are the receipts
-  // Compact leaves behind for each reclaimed block.
-  [["Reachable", stats.reachable, "Blocks reachable from a named root — your live graph."],
-   ["Blocks", stats.blocks, "Total content-addressed blocks on disk."],
-   ["Reclaimable", stats.orphans, "Superseded versions no name references (old index/HAMT/checkpoint blocks). Normal for an append-only store — reclaim with Compact."],
-   ["Tombstones", stats.tombstones, "Deletion receipts left by Compact, one per reclaimed block."],
-   ["Names", stats.names, "Bound names — every one is a graph root."],
-   ["CAR size", formatBytes(stats.car_size), "Size of the selected root's exportable CAR."]].forEach(([label, value, tip]) => {
-    const item = node("div", "stat");
-    if (tip) item.title = tip;
-    item.append(node("b", "", value), node("span", "", label)); container.append(item);
-  });
   // Phase B: publishing is opt-in. Remember readiness so the publish review can
   // present "not set up yet" guidance instead of a raw error.
   state.publishingReady = !!stats.publishing_ready;
-  const backends = byId("backends"); clear(backends);
-  stats.backends.forEach(info => {
-    const item = node("div", "backend" + (info.selected && !info.reachable ? " optin" : ""));
-    item.append(node("b", "", info.name + (info.selected ? " / selected" : "")), node("span", "", info.pin_status), node("span", "", info.requirements));
-    backends.append(item);
-  });
-  byId("car-note").textContent = stats.root ? shortCid(stats.root) + " / " + stats.car_blocks + " blocks / " + formatBytes(stats.car_size) : "No root selected";
-}
-async function exportCar() {
-  if (!state.root) { notice("Select a named root or graph node first."); return; }
-  const plan = await getJson("/api/egress-plan?cid=" + encodeURIComponent(state.root));
-  const warning = "Plaintext CAR export review\n\n" +
-    plan.block_count + " blocks / " + formatBytes(plan.byte_size) + "\n" +
-    "Backend posture: " + plan.network_posture + "\n" +
-    (plan.blocking_locks.length ? "BLOCKED: " + plan.blocking_locks.length + " lock(s)\n" : "") +
-    "This creates a portable plaintext copy outside the store. Continue?";
-  if (!window.confirm(warning)) return;
-  notice("Browser plaintext download is intentionally disabled. Use concierge-plugin export-car with explicit review.");
 }
 
 function passwordAction(label, action) {
@@ -1197,6 +1361,19 @@ async function loadRooms() {
   const rooms = await getJson("/api/rooms"); const list = byId("room-list"); clear(list);
   rooms.forEach(room => { const option = node("option"); option.value = room; list.append(option); });
 }
+// Render the latest *incoming* message (not your own) inline in the bottom DM bar, so a
+// reply shows on the same strip without opening Messenger. Hidden when there's none.
+function updateChatIncoming(messages) {
+  const strip = byId("chat-incoming"); if (!strip) return;
+  const incoming = (messages || []).filter(m => !(state.myUsername && m.author === state.myUsername));
+  const last = incoming[incoming.length - 1];
+  if (!last) { strip.style.display = "none"; clear(strip); return; }
+  clear(strip);
+  const from = last.nickname || shortCid(last.author);
+  strip.append(node("span", "ci-from", "▸ " + from), node("span", "ci-text", last.payload));
+  strip.style.display = "flex";
+  strip.onclick = () => { const tab = document.querySelector('[data-view="messenger"]'); if (tab) tab.click(); };
+}
 async function loadThread() {
   const room = byId("room").value.trim(); if (!room) return;
   state.room = room;
@@ -1216,9 +1393,15 @@ async function loadThread() {
     container.append(badge);
   }
   const visible = thread.messages.filter(message => !state.muted.has(message.author) && !(state.humanOnly && state.roles.get(message.author) === "ai"));
+  // Feed the bottom DM bar's inline incoming field with the latest received message,
+  // so you see replies without opening the Messenger tab.
+  updateChatIncoming(visible);
   if (!visible.length) { container.append(node("div", "empty", "No visible messages in this room.")); return; }
   visible.forEach(message => {
-    const item = node("article", "message"); const head = node("div", "message-head");
+    // Stagger the thread: your messages sit on the right, messages received from the
+    // peer on the left, each in its own colour.
+    const mine = !!state.myUsername && message.author === state.myUsername;
+    const item = node("article", "message " + (mine ? "mine" : "theirs")); const head = node("div", "message-head");
     const label = message.nickname || shortCid(message.author);
     head.append(node("span", "", "[" + message.clock + "] " + label + " / " + (state.roles.get(message.author) || "unclassified")));
     const role = node("button", "", state.roles.get(message.author) === "ai" ? "mark human" : "mark AI");
@@ -1335,6 +1518,27 @@ function fitView() {
   applyZoom();
 }
 
+// Keep the SVG's viewBox locked to the graph panel's pixel size. Without this, any
+// layout change (the side panel removed, the window resized, the tab first shown) leaves
+// a stale viewBox whose aspect ratio no longer matches the element — the default
+// preserveAspectRatio then letterboxes the content, and right-side nodes land in a dead
+// band that swallows clicks. Preserves the current pan/zoom (only the canvas changes).
+function syncGraphViewBox() {
+  const view = byId("graph-view"), svg = byId("graph");
+  if (!view || !svg) return;
+  const vw = view.clientWidth, vh = view.clientHeight;
+  if (vw > 0 && vh > 0) svg.setAttribute("viewBox", "0 0 " + vw + " " + vh);
+}
+(function watchGraphSize() {
+  const view = byId("graph-view");
+  if (!view) return;
+  if (window.ResizeObserver) {
+    new ResizeObserver(() => syncGraphViewBox()).observe(view);
+  } else {
+    window.addEventListener("resize", syncGraphViewBox);
+  }
+})();
+
 // Phase N · Phase H — the Private Network Map: identity hierarchy, networks, this
 // device's scopes + their validity, epoch health, and who is revoked.
 async function loadNetwork() {
@@ -1345,7 +1549,7 @@ async function loadNetwork() {
   idBar.append(node("span", "", "This device: "), Object.assign(node("b", "", data.device_id ? shortCid(data.device_id) : "—"), { title: data.device_id || "" }));
 
   const map = byId("network-map"); clear(map);
-  if (!data.networks.length) { map.append(node("div", "empty", "No private network yet. Create one above, then pair another computer from the CLI (network pair).")); return; }
+  if (!data.networks.length) { map.append(node("div", "empty", "No private network yet. Click 📲 Pair a device to share this node with your other computer — it creates the network and walks you through pairing.")); return; }
   data.networks.forEach(net => {
     const card = node("div", "net-card");
     const head = node("h3", "", net.name);
@@ -1394,6 +1598,122 @@ byId("network-create").addEventListener("click", () => safely(async () => {
   await loadNetwork();
 }));
 
+// ── Pairing wizard: share this node with your other computer (or join one). A guided
+// offer → response → grant exchange (copy/paste between the two machines), with a safety
+// phrase to compare — the secret never travels with these blobs. ──
+function pairOverlay(title) {
+  const old = byId("pair-overlay"); if (old) old.remove();
+  const overlay = node("div", "modal-overlay"); overlay.id = "pair-overlay";
+  const card = node("div", "pform modal-card"); card.style.maxWidth = "580px";
+  const bar = node("div", "pair-head");
+  const close = node("button", "record-close", "✕"); close.title = "Close (Esc)";
+  close.addEventListener("click", () => overlay.remove());
+  bar.append(node("div", "modal-title", title), close);
+  const body = node("div", "pair-body"); card.append(bar, body);
+  overlay.append(card);
+  overlay.addEventListener("click", e => { if (e.target === overlay) overlay.remove(); });
+  document.addEventListener("keydown", function esc(e) { if (e.key === "Escape" && byId("pair-overlay")) { overlay.remove(); document.removeEventListener("keydown", esc); } });
+  document.body.append(overlay);
+  return { overlay, body };
+}
+function pairStep(body) { clear(body); for (let i = 1; i < arguments.length; i++) body.append(arguments[i]); }
+function pairCopyBox(value) {
+  const wrap = node("div", "pair-copy");
+  const ta = document.createElement("textarea"); ta.className = "input"; ta.rows = 5; ta.readOnly = true; ta.spellcheck = false; ta.value = value;
+  const copy = node("button", "tool-button", "Copy");
+  copy.addEventListener("click", () => navigator.clipboard.writeText(value).then(() => { const o = copy.textContent; copy.textContent = "Copied!"; setTimeout(() => copy.textContent = o, 1500); }).catch(() => notice("Copy failed — select the text and copy it.")));
+  wrap.append(ta, copy); return wrap;
+}
+function pairPasteBox(placeholder) {
+  const ta = document.createElement("textarea"); ta.className = "input"; ta.rows = 5; ta.spellcheck = false; ta.placeholder = placeholder;
+  return ta;
+}
+function pairParse(text) { try { return JSON.parse(text.trim()); } catch (e) { notice("That doesn't look right — copy the WHOLE block of text and paste it again."); return null; } }
+
+async function pairShareWizard() {
+  const { overlay, body } = pairOverlay("📲 Pair another device");
+  pairStep(body, node("div", "review", "Generating a one-use pairing offer…"));
+  let res;
+  try { res = await postJson("/api/network/pair/offer", {}); }
+  catch (e) { pairStep(body, node("div", "review", "Couldn't start pairing: " + (e.message || e))); return; }
+  const offer = res.offer;
+  function stepOffer() {
+    const next = node("button", "pbtn ckpt-load", "Next: paste their response ▸");
+    next.addEventListener("click", stepResponse);
+    pairStep(body,
+      node("div", "review", "Step 1 — on your OTHER computer: open Network → 🔗 Join a network, and paste this offer:"),
+      pairCopyBox(JSON.stringify(offer)), next);
+  }
+  function stepResponse() {
+    const paste = pairPasteBox("Paste the response your other computer produced…");
+    const check = node("button", "pbtn ckpt-load", "Check safety phrase ▸");
+    const out = node("div", "");
+    check.addEventListener("click", () => safely(async () => {
+      const response = pairParse(paste.value); if (!response) return;
+      const p = await postJson("/api/network/pair/phrase", { offer, response });
+      const sel = document.createElement("select"); sel.className = "input";
+      sel.append(new Option("Full access (read + write) — share the whole node", "full"));
+      sel.append(new Option("Read-only — the device can read, not change", "read"));
+      const approve = node("button", "pbtn danger", "✓ Phrase matches — Approve & grant");
+      approve.addEventListener("click", () => safely(async () => {
+        const g = await postJson("/api/network/pair/approve", { response, scope: sel.value });
+        stepGrant(g.grant);
+      }));
+      clear(out);
+      out.append(
+        node("div", "review", "Step 2 — confirm this phrase matches the one shown on your other computer:"),
+        node("div", "pair-phrase", p.phrase),
+        node("div", "review", "Then choose what this device may do, and approve:"), sel, approve);
+    }));
+    pairStep(body, node("div", "review", "Step 2 — paste the response from your other computer:"), paste, check, out);
+  }
+  function stepGrant(grant) {
+    const done = node("button", "pbtn", "Done");
+    done.addEventListener("click", () => { overlay.remove(); safely(loadNetwork); });
+    pairStep(body,
+      node("div", "review", "Step 3 — paste this grant onto your other computer (its “Join a network” final step) to finish:"),
+      pairCopyBox(JSON.stringify(grant)), done);
+  }
+  stepOffer();
+}
+
+async function pairJoinWizard() {
+  const { overlay, body } = pairOverlay("🔗 Join a network");
+  const paste = pairPasteBox("Paste the pairing offer from your main computer…");
+  const go = node("button", "pbtn ckpt-load", "Continue ▸");
+  go.addEventListener("click", () => safely(async () => {
+    const offer = pairParse(paste.value); if (!offer) return;
+    const r = await postJson("/api/network/pair/respond", { offer });
+    stepResponse(r);
+  }));
+  function stepResponse(r) {
+    const next = node("button", "pbtn ckpt-load", "Next: paste the grant ▸");
+    next.addEventListener("click", stepGrant);
+    pairStep(body,
+      node("div", "review", "Step 2 — confirm this phrase matches your main computer:"),
+      node("div", "pair-phrase", r.phrase),
+      node("div", "review", "…and send this response back to your main computer (paste it into its “Pair a device” window):"),
+      pairCopyBox(JSON.stringify(r.response)), next);
+  }
+  function stepGrant() {
+    const gp = pairPasteBox("Paste the grant your main computer produced…");
+    const finish = node("button", "pbtn danger", "Finish — join");
+    finish.addEventListener("click", () => safely(async () => {
+      const grant = pairParse(gp.value); if (!grant) return;
+      const res = await postJson("/api/network/pair/accept", { grant });
+      const done = node("button", "pbtn", "Done");
+      done.addEventListener("click", () => { overlay.remove(); safely(loadNetwork); });
+      pairStep(body, node("div", "review", "✓ Joined network “" + res.network + "” with " + res.capabilities + " capability — this device can now sync."), done);
+      notice("Joined! Your devices are now paired.");
+    }));
+    pairStep(body, node("div", "review", "Step 3 — paste the grant from your main computer to finish:"), gp, finish);
+  }
+  pairStep(body, node("div", "review", "Step 1 — paste the pairing offer your main computer gave you:"), paste, go);
+}
+
+byId("pair-share").addEventListener("click", () => safely(pairShareWizard));
+byId("pair-join").addEventListener("click", () => safely(pairJoinWizard));
+
 // ── Network discovery map: this node (center) + the peers libp2p discovers around it ──
 let discPoll = null;
 // A small pulsating brain — the same glyph as the graph centre, scaled down.
@@ -1405,44 +1725,93 @@ function discBrain(cx, cy, size, cls) {
   g.append(svgNode("image", { href: "/api/brain.png", x: cx - size / 2, y: cy - size / 2, width: size, height: size, class: "disc-brain" }));
   return g;
 }
+// ── World map: equirectangular projection over the 600×360 viewBox ──
+const MAP = { x0: 0, y0: 30, w: 600, h: 300 };
+function mapX(lon) { return MAP.x0 + (lon + 180) / 360 * MAP.w; }
+function mapY(lat) { return MAP.y0 + (90 - lat) / 180 * MAP.h; }
+// Real coastlines/borders (Natural Earth 110m, projected to this map's space), loaded
+// once. Until it arrives the map just shows the grid.
+let DISC_LAND_PATHS = null;
+async function loadWorldMap() {
+  if (DISC_LAND_PATHS) return;
+  try { DISC_LAND_PATHS = await getJson("/worldmap.json"); } catch (e) { DISC_LAND_PATHS = []; }
+}
+// Deterministic, region-weighted location for a peer (no geo-IP yet — see note in the
+// caption). Stable per peer id, biased toward where nodes actually cluster, so the map
+// reads as a believable global distribution rather than a random scatter.
+function discHash(s) { let h = 2166136261 >>> 0; for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619); } return h >>> 0; }
+const DISC_REGIONS = [
+  [-125,-70, 30, 50, 5], [-10, 30, 36, 60, 6], [ 70,140, 22, 46, 6],
+  [-60,-38,-35, 2, 2], [ 12, 45,-32, 8, 2], [110,152,-39,-14, 1], [ 30, 60, 24, 42, 2],
+];
+function discGeo(id) {
+  const h = discHash(id), h2 = discHash(id + "~");
+  const totalW = DISC_REGIONS.reduce((s, r) => s + r[4], 0);
+  let pick = h % totalW, region = DISC_REGIONS[0];
+  for (const r of DISC_REGIONS) { if (pick < r[4]) { region = r; break; } pick -= r[4]; }
+  const fx = ((h >>> 8) & 1023) / 1023, fy = ((h2 >>> 6) & 1023) / 1023;
+  return { lon: region[0] + fx * (region[1] - region[0]), lat: region[2] + fy * (region[3] - region[2]) };
+}
+// Clicking a Concierge brain stages a DM to it: drop its username in the recipient
+// field, focus the message box, and copy the username to the clipboard.
+function discDmPeer(username) {
+  if (!username) return;
+  const to = byId("chat-to"); if (to) to.value = username;
+  if (navigator.clipboard) navigator.clipboard.writeText(username).catch(() => {});
+  const msg = byId("chat-msg"); if (msg) msg.focus();
+  notice("Ready to DM " + username.slice(0, 10) + "… — username copied; type a message and Send.");
+}
+// A small pulsating white LED — a generic network node, like a star in the night sky.
+function discStar(cx, cy, connected) {
+  const g = svgNode("g", { class: "disc-star " + (connected ? "on" : "off") });
+  const halo = svgNode("circle", { cx: cx, cy: cy, r: connected ? 4.4 : 3.4, class: "disc-star-halo" });
+  const core = svgNode("circle", { cx: cx, cy: cy, r: connected ? 1.7 : 1.3, class: "disc-star-core" });
+  core.style.animationDelay = (Math.random() * 2.4).toFixed(2) + "s"; // twinkle out of unison
+  g.append(halo, core);
+  return g;
+}
 function renderDiscovery(data) {
   const svg = byId("discovery-svg"); if (!svg) return; clear(svg);
-  const W = 600, H = 360, cx = W / 2, cy = H / 2;
   const peers = (data && data.peers) || [];
-  const rings = peers.length > 10 ? [112, 168] : [128];
-  function pos(i, n) {
-    let ring = 0, idx = i, count = n;
-    if (rings.length > 1) {
-      const inner = Math.min(10, n);
-      if (i < inner) { ring = 0; idx = i; count = inner; }
-      else { ring = 1; idx = i - inner; count = n - inner; }
-    }
-    const r = rings[ring];
-    const a = (idx / Math.max(1, count)) * Math.PI * 2 - Math.PI / 2 + ring * 0.4;
-    return { x: cx + Math.cos(a) * r, y: cy + Math.sin(a) * r };
+  // World map: fine graticule + real coastlines/borders.
+  const grid = svgNode("g", { class: "disc-grid" });
+  for (let lon = -180; lon <= 180; lon += 20) grid.append(svgNode("line", { x1: mapX(lon), y1: MAP.y0, x2: mapX(lon), y2: MAP.y0 + MAP.h }));
+  for (let lat = -80; lat <= 80; lat += 20) grid.append(svgNode("line", { x1: MAP.x0, y1: mapY(lat), x2: MAP.x0 + MAP.w, y2: mapY(lat) }));
+  svg.append(grid);
+  if (DISC_LAND_PATHS && DISC_LAND_PATHS.length) {
+    const land = svgNode("g", { class: "disc-land-g" });
+    DISC_LAND_PATHS.forEach(d => land.append(svgNode("path", { d: d, class: "disc-land" })));
+    svg.append(land);
   }
-  // Edges first (under the nodes): solid for live connections, dashed for discovered.
-  peers.forEach((p, i) => {
-    const q = pos(i, peers.length);
-    svg.append(svgNode("line", { x1: cx, y1: cy, x2: q.x, y2: q.y, class: "disc-edge " + (p.status === "connected" ? "on" : "off") }));
-  });
-  // Peer brains.
-  peers.forEach((p, i) => {
-    const q = pos(i, peers.length);
+  // Peers: fellow Concierges as brains (labelled), everyone else as a white LED star.
+  peers.forEach(p => {
+    const g = discGeo(p.peer_id || "");
+    const x = mapX(g.lon), y = mapY(g.lat);
     const connected = p.status === "connected";
-    const g = discBrain(q.x, q.y, connected ? 28 : 22, connected ? "connected" : "discovered");
-    const label = svgNode("text", { x: q.x, y: q.y + (connected ? 27 : 22), class: "disc-label", "text-anchor": "middle" });
-    label.textContent = (p.peer_id || "").slice(-6);
-    g.append(label);
+    let el;
+    if (p.is_concierge) {
+      el = discBrain(x, y, connected ? 21 : 16, connected ? "connected" : "discovered");
+      const label = svgNode("text", { x: x, y: y + (connected ? 17 : 14), class: "disc-label", "text-anchor": "middle" });
+      label.textContent = (p.peer_id || "").slice(-6);
+      el.append(label);
+      if (p.username) {
+        el.classList.add("disc-dm");
+        el.addEventListener("click", () => discDmPeer(p.username));
+      }
+    } else {
+      el = discStar(x, y, connected);
+    }
     const title = svgNode("title", {});
-    title.textContent = (p.peer_id || "") + " · " + p.status + " · via " + p.source + (p.relayed ? " · relayed" : "");
-    g.append(title);
-    svg.append(g);
+    title.textContent = (p.is_concierge ? "Concierge · " : "Network node · ") + (p.peer_id || "") + " · " + p.status + " · via " + p.source + (p.relayed ? " · relayed" : "") + (p.is_concierge && p.username ? " · click to DM" : "");
+    el.append(title);
+    svg.append(el);
   });
-  // This node at the centre, on top.
+  // Your node — placed by the same approximate region method as every other peer.
   const online = !!(data && data.self && data.self.online);
-  const me = discBrain(cx, cy, 48, "disc-self");
-  const slabel = svgNode("text", { x: cx, y: cy + 41, class: "disc-label self", "text-anchor": "middle" });
+  const sg = discGeo((data && data.self && data.self.peer_id) || "self");
+  const meX = mapX(sg.lon), meY = mapY(sg.lat);
+  const me = discBrain(meX, meY, 32, "disc-self");
+  const slabel = svgNode("text", { x: meX, y: meY + 28, class: "disc-label self", "text-anchor": "middle" });
   slabel.textContent = online ? "your node" : "your node (offline)";
   me.append(slabel);
   const stitle = svgNode("title", {});
@@ -1454,9 +1823,10 @@ function renderDiscovery(data) {
   const total = (data && data.total) || peers.length;
   if (!online) stat.textContent = "Node offline — open this tab to bring it online and start discovering peers.";
   else if (!peers.length) stat.textContent = "Searching the network… no peers yet. mDNS finds LAN peers instantly; the DHT and rendezvous take a moment.";
-  else stat.textContent = total + " node" + (total === 1 ? "" : "s") + " discovered · " + ((data && data.connected) || 0) + " connected" + (total > peers.length ? " · showing " + peers.length : "");
+  else stat.textContent = total + " node" + (total === 1 ? "" : "s") + " discovered · " + ((data && data.connected) || 0) + " connected" + (total > peers.length ? " · showing " + peers.length : "") + " — Concierges as brains, other network nodes as stars · positions approximate by region";
 }
 async function loadPeers() {
+  await loadWorldMap();
   let data; try { data = await getJson("/api/peers"); } catch (e) { return; }
   renderDiscovery(data);
 }
@@ -1472,7 +1842,10 @@ document.querySelectorAll("[data-view]").forEach(button => button.addEventListen
   }
   showView(button.dataset.view);
   stopDiscPoll(); walletStopPoll(); // only poll these while their tab is open
-  if (button.dataset.view === "search") byId("search-q").focus();
+  // The graph is drawn while hidden at boot (Studio is the landing view), so fit it
+  // to the real viewport the first time it's actually shown.
+  if (button.dataset.view === "graph" && !state.graphShown) { state.graphShown = true; safely(fitView); }
+  if (button.dataset.view === "names") byId("search-q").focus();
   if (button.dataset.view === "network") { safely(loadNetwork); startDiscPoll(); }
   if (button.dataset.view === "canvas") safely(cvLoadSites);
   if (button.dataset.view === "messenger") { safely(loadProfile); safely(loadContacts); }
