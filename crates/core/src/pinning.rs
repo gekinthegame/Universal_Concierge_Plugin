@@ -118,7 +118,11 @@ pub fn pin_cid(service: &PinService, cid: &str, name: &str) -> Result<PinOutcome
     let delegates = value
         .get("delegates")
         .and_then(|d| d.as_array())
-        .map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect())
+        .map(|a| {
+            a.iter()
+                .filter_map(|x| x.as_str().map(String::from))
+                .collect()
+        })
         .unwrap_or_default();
     Ok(PinOutcome {
         request_id,
@@ -141,10 +145,17 @@ pub fn upload_pinata_dir(
         .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
         .take(48)
         .collect();
-    let wrapper = if safe.is_empty() { "site".to_string() } else { safe };
+    let wrapper = if safe.is_empty() {
+        "site".to_string()
+    } else {
+        safe
+    };
     let mut form = reqwest::blocking::multipart::Form::new()
         .text("pinataOptions", r#"{"cidVersion":1}"#)
-        .text("pinataMetadata", serde_json::json!({ "name": name }).to_string());
+        .text(
+            "pinataMetadata",
+            serde_json::json!({ "name": name }).to_string(),
+        );
     for (rel, bytes) in files {
         let part = reqwest::blocking::multipart::Part::bytes(bytes.clone())
             .file_name(format!("{wrapper}/{rel}"));
@@ -282,8 +293,8 @@ fn filebase_s3_send(
         "AWS4-HMAC-SHA256 Credential={access_key}/{scope}, SignedHeaders={signed_headers}, Signature={signature}"
     );
 
-    let verb = reqwest::Method::from_bytes(method.as_bytes())
-        .map_err(|e| format!("bad method: {e}"))?;
+    let verb =
+        reqwest::Method::from_bytes(method.as_bytes()).map_err(|e| format!("bad method: {e}"))?;
     let mut request = reqwest::blocking::Client::builder()
         .timeout(Duration::from_secs(180))
         .build()
@@ -297,7 +308,9 @@ fn filebase_s3_send(
     if import_car {
         request = request.header("x-amz-meta-import", "car");
     }
-    let resp = request.send().map_err(|e| format!("filebase request: {e}"))?;
+    let resp = request
+        .send()
+        .map_err(|e| format!("filebase request: {e}"))?;
     let status = resp.status().as_u16();
     Ok((status, resp.text().unwrap_or_default()))
 }
@@ -344,8 +357,16 @@ fn uri_encode(value: &str, keep_slash: bool) -> String {
             b'/' if keep_slash => out.push('/'),
             _ => {
                 out.push('%');
-                out.push(char::from_digit((byte >> 4) as u32, 16).unwrap().to_ascii_uppercase());
-                out.push(char::from_digit((byte & 0x0f) as u32, 16).unwrap().to_ascii_uppercase());
+                out.push(
+                    char::from_digit((byte >> 4) as u32, 16)
+                        .unwrap()
+                        .to_ascii_uppercase(),
+                );
+                out.push(
+                    char::from_digit((byte & 0x0f) as u32, 16)
+                        .unwrap()
+                        .to_ascii_uppercase(),
+                );
             }
         }
     }
@@ -360,7 +381,7 @@ fn amz_date(unix_secs: u64) -> (String, String) {
     let (hour, minute, second) = (rem / 3600, (rem % 3600) / 60, rem % 60);
     let z = days + 719_468;
     let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
-    let doe = (z - era * 146_097) as i64;
+    let doe = z - era * 146_097;
     let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
     let year = yoe + era * 400;
     let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
@@ -531,7 +552,10 @@ mod tests {
     fn filebase_token_round_trips() {
         let token = base64::engine::general_purpose::STANDARD.encode("KEY:SECRET:my-bucket");
         let (k, s, b) = decode_filebase_token(&token).unwrap();
-        assert_eq!((k.as_str(), s.as_str(), b.as_str()), ("KEY", "SECRET", "my-bucket"));
+        assert_eq!(
+            (k.as_str(), s.as_str(), b.as_str()),
+            ("KEY", "SECRET", "my-bucket")
+        );
         assert!(decode_filebase_token("not-base64!!").is_err());
         let bad = base64::engine::general_purpose::STANDARD.encode("only:two");
         assert!(decode_filebase_token(&bad).is_err());

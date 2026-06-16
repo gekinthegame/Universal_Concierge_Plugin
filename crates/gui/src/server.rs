@@ -557,16 +557,15 @@ fn read_request(stream: &mut TcpStream) -> std::io::Result<RequestOutcome> {
 
     // Read the body (if any). Ingest and Site operations get a larger budget.
     let path = target.split('?').next().unwrap_or("/");
-    let body_limit =
-        if path == "/api/ingest"
-            || path == "/api/canvas/snapshot"
-            || path == "/api/canvas/write"
-            || path == "/api/site/publish"
-        {
-            MAX_LARGE_BODY_BYTES
-        } else {
-            MAX_BODY_BYTES
-        };
+    let body_limit = if path == "/api/ingest"
+        || path == "/api/canvas/snapshot"
+        || path == "/api/canvas/write"
+        || path == "/api/site/publish"
+    {
+        MAX_LARGE_BODY_BYTES
+    } else {
+        MAX_BODY_BYTES
+    };
     let content_length = headers
         .get("content-length")
         .and_then(|value| value.parse::<usize>().ok())

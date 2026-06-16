@@ -246,9 +246,11 @@ impl MemCli {
                 block.bytes.clone(),
             ));
         }
-        let root = tree.root.cid.parse::<cid::Cid>().map_err(|error| {
-            Error::Encryption(format!("invalid ciphertext root: {error}"))
-        })?;
+        let root = tree
+            .root
+            .cid
+            .parse::<cid::Cid>()
+            .map_err(|error| Error::Encryption(format!("invalid ciphertext root: {error}")))?;
         let car = crate::car::build_car(&root, &blocks)?;
         Ok((Cid(tree.root.cid.clone()), car))
     }
@@ -974,7 +976,9 @@ mod tests {
 
         // The owner kept the read capability locally, so the blind-pinned ciphertext
         // is still fully recoverable here.
-        let cap = mem.find_capability_unlocked(&ciphertext_root.0, "pw").unwrap();
+        let cap = mem
+            .find_capability_unlocked(&ciphertext_root.0, "pw")
+            .unwrap();
         let recovered = mem
             .read_private_with_capability(&PrivateCapability::from_capability(&cap.to_read_only()))
             .unwrap();

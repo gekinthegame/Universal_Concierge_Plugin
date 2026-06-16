@@ -39,16 +39,15 @@ use canvas::preview_token;
 use canvas::{
     approved_agent_matches_peer, approved_contact_card_author, canvas_draft_get, canvas_file_get,
     canvas_files_get, canvas_mtime_get, canvas_preview_serve, canvas_projects_get,
-    canvas_signal_get, mutation_canvas_open, mutation_canvas_signal, mutation_canvas_snapshot,
-    mutation_canvas_new, mutation_canvas_pwa, mutation_canvas_write, mutation_save_checkpoint,
-    parse_canvas_signal, parse_contact_card, queue_canvas_signal, record_site_checkpoint,
-    site_checkpoint_response, site_checkpoints_json,
+    canvas_signal_get, mutation_canvas_new, mutation_canvas_open, mutation_canvas_pwa,
+    mutation_canvas_signal, mutation_canvas_snapshot, mutation_canvas_write,
+    mutation_save_checkpoint, parse_canvas_signal, parse_contact_card, queue_canvas_signal,
+    record_site_checkpoint, site_checkpoint_response, site_checkpoints_json,
 };
 use mutations::{
-    body_str, contacts_json, deploy_status_json, handle_mutation, mcp_status_json, oauth_status_json,
-    parse_body, pin_status_json, profile_json, reachability_json, requests_json, resolve_response,
-    sites_json, valid_site_name,
-    wallet_json, wallet_proposals_json,
+    body_str, contacts_json, deploy_status_json, handle_mutation, mcp_status_json,
+    oauth_status_json, parse_body, pin_status_json, profile_json, reachability_json, requests_json,
+    resolve_response, sites_json, valid_site_name, wallet_json, wallet_proposals_json,
 };
 use read_routes::{
     activity_response, blob_response, checkpoints_json, egress_plan_response, graph_response,

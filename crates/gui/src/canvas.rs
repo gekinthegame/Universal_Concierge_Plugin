@@ -538,7 +538,11 @@ pub(super) fn canvas_draft_get(mem: &MemCli) -> Response {
             .to_string(),
         )
     };
-    let Some(folder) = mem.store_dir().ok().map(|dir| dir.join("canvas").join("draft")) else {
+    let Some(folder) = mem
+        .store_dir()
+        .ok()
+        .map(|dir| dir.join("canvas").join("draft"))
+    else {
         return none();
     };
     let index = folder.join("index.html");
@@ -702,7 +706,13 @@ fn apply_pwa(dir: &std::path::Path) -> Result<(String, bool), String> {
         .or_else(|| dir.file_name().map(|s| s.to_string_lossy().to_string()))
         .unwrap_or_else(|| "App".to_string());
     let name = name.trim().to_string();
-    let short: String = name.split_whitespace().next().unwrap_or(&name).chars().take(18).collect();
+    let short: String = name
+        .split_whitespace()
+        .next()
+        .unwrap_or(&name)
+        .chars()
+        .take(18)
+        .collect();
 
     std::fs::write(dir.join("icon-512.png"), pwa_png_icon(512))
         .map_err(|e| format!("write icon: {e}"))?;
@@ -765,8 +775,16 @@ pub(super) fn mutation_canvas_new(mem: &MemCli, body: &str) -> Response {
         Ok(value) => value,
         Err(response) => return response,
     };
-    let display = value.get("name").and_then(|v| v.as_str()).unwrap_or("").trim();
-    let kind = value.get("kind").and_then(|v| v.as_str()).unwrap_or("website").trim();
+    let display = value
+        .get("name")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .trim();
+    let kind = value
+        .get("kind")
+        .and_then(|v| v.as_str())
+        .unwrap_or("website")
+        .trim();
     let safe = sanitize_project_name(display);
 
     let canvas = match mem.store_dir() {
@@ -783,7 +801,11 @@ pub(super) fn mutation_canvas_new(mem: &MemCli, body: &str) -> Response {
         return Response::error(format!("create project: {error}"));
     }
 
-    let title = if display.is_empty() { safe.clone() } else { display.to_string() };
+    let title = if display.is_empty() {
+        safe.clone()
+    } else {
+        display.to_string()
+    };
     let (index, css) = match kind {
         "app" => app_starter(&title),
         "movie" => movie_starter(&title),
@@ -989,7 +1011,9 @@ fn pwa_png_icon(size: u32) -> Vec<u8> {
     let mut data = vec![0u8; n * n * 4];
     for y in 0..size {
         for x in 0..size {
-            let t = ((x as f32 - cx).hypot(y as f32 - cy) / maxd).min(1.0).powf(0.9);
+            let t = ((x as f32 - cx).hypot(y as f32 - cy) / maxd)
+                .min(1.0)
+                .powf(0.9);
             let i = (y as usize * n + x as usize) * 4;
             data[i] = lerp(209.0, 10.0, t) as u8;
             data[i + 1] = lerp(34.0, 11.0, t) as u8;
@@ -1074,7 +1098,11 @@ pub(super) fn canvas_projects_get(mem: &MemCli) -> Response {
         b.get("mtime")
             .and_then(serde_json::Value::as_u64)
             .unwrap_or(0)
-            .cmp(&a.get("mtime").and_then(serde_json::Value::as_u64).unwrap_or(0))
+            .cmp(
+                &a.get("mtime")
+                    .and_then(serde_json::Value::as_u64)
+                    .unwrap_or(0),
+            )
     });
     Response::json(
         serde_json::json!({ "root": canvas.to_string_lossy(), "projects": projects }).to_string(),

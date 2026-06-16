@@ -295,9 +295,7 @@ impl MemCli {
         let _policy_lock = self.policy_lock()?;
         self.verify_password_unlocked(password)?;
         let gh = self.deploy_credentials()?.github.ok_or_else(|| {
-            Error::Io(
-                "connect GitHub first (Studio → Publish ▸ → Connect accounts)".to_string(),
-            )
+            Error::Io("connect GitHub first (Studio → Publish ▸ → Connect accounts)".to_string())
         })?;
         if gh.token.trim().is_empty() || gh.owner.trim().is_empty() {
             return Err(Error::Io(

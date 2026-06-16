@@ -952,7 +952,12 @@ mod tests {
         assert_eq!(res["result"]["isError"], false);
         let folder = mem.store_dir().unwrap().join("canvas/anim");
         assert!(std::fs::metadata(folder.join("gsap.min.js")).unwrap().len() > 1000);
-        assert!(std::fs::metadata(folder.join("lottie.min.js")).unwrap().len() > 1000);
+        assert!(
+            std::fs::metadata(folder.join("lottie.min.js"))
+                .unwrap()
+                .len()
+                > 1000
+        );
         // STAGING ONLY — nothing published.
         assert!(mem.publish_receipts().unwrap().is_empty());
     }

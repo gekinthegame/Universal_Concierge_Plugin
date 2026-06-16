@@ -46,7 +46,12 @@ pub(super) fn peers_response(mem: &MemCli, options: &GuiOptions) -> Response {
             // A concierge node's AgentID ("username") for DMs is recoverable from its
             // Ed25519 PeerID — so clicking its brain can copy a sendable username.
             let username = is_concierge
-                .then(|| p.peer_id.parse().ok().and_then(|peer| ed25519_hex_from_peer_id(&peer)))
+                .then(|| {
+                    p.peer_id
+                        .parse()
+                        .ok()
+                        .and_then(|peer| ed25519_hex_from_peer_id(&peer))
+                })
                 .flatten();
             serde_json::json!({
                 "peer_id": p.peer_id,

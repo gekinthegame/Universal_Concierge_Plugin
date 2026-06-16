@@ -352,7 +352,10 @@ fn ensure_public_reachability(repo: &Path) {
     // node announces its real listen port (PUBLIC_SWARM_PORT) so a single manual
     // port-forward of that port is deterministic, and AutoNAT can correctly detect a
     // private node and reserve a relay circuit as a fallback.
-    ipfs_set(repo, &["config", "--json", "Swarm.DisableNatPortMap", "true"]);
+    ipfs_set(
+        repo,
+        &["config", "--json", "Swarm.DisableNatPortMap", "true"],
+    );
     // Announce content to the public DHT so providers can be found.
     ipfs_set(repo, &["config", "Routing.Type", "auto"]);
     // Self-healing reachability: detect this network's public IPv4 and announce the
@@ -366,7 +369,10 @@ fn ensure_public_reachability(repo: &Path) {
             "[\"/ip4/{ip}/tcp/{P}\",\"/ip4/{ip}/udp/{P}/quic-v1\",\"/ip4/{ip}/udp/{P}/quic-v1/webtransport\"]",
             P = PUBLIC_SWARM_PORT
         );
-        ipfs_set(repo, &["config", "--json", "Addresses.AppendAnnounce", &announce]);
+        ipfs_set(
+            repo,
+            &["config", "--json", "Addresses.AppendAnnounce", &announce],
+        );
     }
 }
 

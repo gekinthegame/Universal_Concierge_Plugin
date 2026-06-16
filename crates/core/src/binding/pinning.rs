@@ -132,11 +132,15 @@ impl MemCli {
                 "only a website (with an index.html) can be pinned".to_string(),
             ));
         }
-        let svc = self.pin_credentials()?.get(service).cloned().ok_or_else(|| {
-            Error::Io(format!(
-                "no {service} credentials yet — add them in Studio → Pin settings"
-            ))
-        })?;
+        let svc = self
+            .pin_credentials()?
+            .get(service)
+            .cloned()
+            .ok_or_else(|| {
+                Error::Io(format!(
+                    "no {service} credentials yet — add them in Studio → Pin settings"
+                ))
+            })?;
         let store = self.store_dir()?;
         let repo = crate::node::public_repo_for(&store);
         crate::node::launch_public_node(&store)?;
@@ -171,8 +175,8 @@ impl MemCli {
                     .into_iter()
                     .map(|f| (f.rel, f.bytes))
                     .collect::<Vec<_>>();
-                let cid =
-                    crate::pinning::upload_pinata_dir(&svc.token, &files, name).map_err(Error::Io)?;
+                let cid = crate::pinning::upload_pinata_dir(&svc.token, &files, name)
+                    .map_err(Error::Io)?;
                 (cid, "pinned".to_string(), String::new())
             }
             _ => {
@@ -257,7 +261,11 @@ impl MemCli {
                 crate::node::dag_import_and_pin(&priv_repo, &pinned.0, &car)?;
                 let _ = crate::node::dht_provide(&priv_repo, &pinned.0);
                 self.record_hot_pin(&source.0, &pinned.0, private)?;
-                ("hot".to_string(), String::new(), "private node (swarm)".to_string())
+                (
+                    "hot".to_string(),
+                    String::new(),
+                    "private node (swarm)".to_string(),
+                )
             }
             "filebase" => {
                 let svc = self.require_pin_service(service)?;
@@ -299,11 +307,14 @@ impl MemCli {
     }
 
     fn require_pin_service(&self, service: &str) -> Result<crate::pinning::PinService> {
-        self.pin_credentials()?.get(service).cloned().ok_or_else(|| {
-            Error::Io(format!(
-                "no {service} credentials yet — add them in the Pin settings"
-            ))
-        })
+        self.pin_credentials()?
+            .get(service)
+            .cloned()
+            .ok_or_else(|| {
+                Error::Io(format!(
+                    "no {service} credentials yet — add them in the Pin settings"
+                ))
+            })
     }
 
     /// Wait for this store's private (Sidekick) Kubo daemon to accept connections.

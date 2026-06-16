@@ -111,10 +111,9 @@ pub fn commit_and_push(
     if !folder.is_dir() {
         return Err(format!("project folder not found: {}", folder.display()));
     }
-    Command::new("git")
-        .arg("--version")
-        .output()
-        .map_err(|_| "git is not installed — install Git to commit projects to GitHub".to_string())?;
+    Command::new("git").arg("--version").output().map_err(|_| {
+        "git is not installed — install Git to commit projects to GitHub".to_string()
+    })?;
 
     let created_repo = ensure_repo(token, owner, repo, private)?;
 
@@ -123,7 +122,8 @@ pub fn commit_and_push(
     }
     let gitignore = folder.join(".gitignore");
     if !gitignore.exists() {
-        std::fs::write(&gitignore, DEFAULT_GITIGNORE).map_err(|e| format!("write .gitignore: {e}"))?;
+        std::fs::write(&gitignore, DEFAULT_GITIGNORE)
+            .map_err(|e| format!("write .gitignore: {e}"))?;
     }
 
     git_ok(folder, &["add", "-A"])?;
@@ -189,7 +189,13 @@ pub fn sanitize_repo(name: &str) -> String {
     let mut out: String = name
         .trim()
         .chars()
-        .map(|c| if c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.') { c } else { '-' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.') {
+                c
+            } else {
+                '-'
+            }
+        })
         .take(100)
         .collect();
     while out.starts_with(['-', '.']) {

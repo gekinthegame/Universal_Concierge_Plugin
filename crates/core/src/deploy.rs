@@ -772,7 +772,10 @@ pub fn deploy_netlify(
     let mut manifest = serde_json::Map::new();
     for f in files {
         let sha = sha1_hex(&f.bytes);
-        manifest.insert(format!("/{}", f.rel), serde_json::Value::String(sha.clone()));
+        manifest.insert(
+            format!("/{}", f.rel),
+            serde_json::Value::String(sha.clone()),
+        );
         by_digest.insert(sha, f);
     }
     let deploy = ok_json(
@@ -788,7 +791,9 @@ pub fn deploy_netlify(
     // Netlify returns the SHA1s it still needs (others are already stored/deduped).
     if let Some(required) = deploy.get("required").and_then(|r| r.as_array()) {
         for sha in required.iter().filter_map(|s| s.as_str()) {
-            let Some(f) = by_digest.get(sha) else { continue };
+            let Some(f) = by_digest.get(sha) else {
+                continue;
+            };
             let resp = cl
                 .put(format!("{api}/api/v1/deploys/{deploy_id}/files/{}", f.rel))
                 .bearer_auth(&c.token)
@@ -844,6 +849,7 @@ fn netlify_find_site(
     }))
 }
 
+#[cfg(test)] // a legacy zip path kept only for the deploy-format regression test
 fn zip_files(files: &[DeployFile]) -> Result<Vec<u8>, String> {
     let mut buf = Vec::new();
     {
@@ -1060,7 +1066,9 @@ pub fn cloudflare_list_account_id(token: &str) -> Result<String, String> {
         "https://api.cloudflare.com/client/v4",
     );
     let value = ok_json(
-        client().get(format!("{api}/accounts?per_page=1")).bearer_auth(token),
+        client()
+            .get(format!("{api}/accounts?per_page=1"))
+            .bearer_auth(token),
         "cloudflare accounts",
     )?;
     value
@@ -1651,9 +1659,18 @@ mod tests {
     fn cloudflare_oauth_url_is_well_formed() {
         let start = cloudflare_oauth_start();
         let url = &start.authorize_url;
-        assert!(url.starts_with("https://dash.cloudflare.com/oauth2/auth?"), "{url}");
-        assert!(url.contains("client_id=54d11594-84e4-41aa-b438-e81b8fa78ee7"), "{url}");
-        assert!(url.contains("redirect_uri=http%3A%2F%2Flocalhost%3A8976%2Foauth%2Fcallback"), "{url}");
+        assert!(
+            url.starts_with("https://dash.cloudflare.com/oauth2/auth?"),
+            "{url}"
+        );
+        assert!(
+            url.contains("client_id=54d11594-84e4-41aa-b438-e81b8fa78ee7"),
+            "{url}"
+        );
+        assert!(
+            url.contains("redirect_uri=http%3A%2F%2Flocalhost%3A8976%2Foauth%2Fcallback"),
+            "{url}"
+        );
         assert!(url.contains("code_challenge_method=S256"), "{url}");
         assert!(url.contains(&format!("state={}", start.state)), "{url}");
         assert!(url.contains("scope=account%3Aread"), "{url}");
@@ -1669,9 +1686,15 @@ mod tests {
         let redirect = "http://127.0.0.1:51234";
         let start = firebase_oauth_start(redirect);
         let url = &start.authorize_url;
-        assert!(url.starts_with("https://accounts.google.com/o/oauth2/v2/auth?"), "{url}");
+        assert!(
+            url.starts_with("https://accounts.google.com/o/oauth2/v2/auth?"),
+            "{url}"
+        );
         assert!(url.contains("client_id=563584335869-"), "{url}");
-        assert!(url.contains("redirect_uri=http%3A%2F%2F127.0.0.1%3A51234"), "{url}");
+        assert!(
+            url.contains("redirect_uri=http%3A%2F%2F127.0.0.1%3A51234"),
+            "{url}"
+        );
         assert!(url.contains("code_challenge_method=S256"), "{url}");
         assert!(url.contains("access_type=offline"), "{url}");
         assert!(url.contains("scope=openid"), "{url}");
@@ -1683,7 +1706,10 @@ mod tests {
     #[test]
     fn provider_names_are_sanitized() {
         // Vercel: lowercase, allowed punctuation kept, '---' collapsed, edges trimmed.
-        assert_eq!(vercel_project_name("ConciergeSideKick"), "conciergesidekick");
+        assert_eq!(
+            vercel_project_name("ConciergeSideKick"),
+            "conciergesidekick"
+        );
         assert_eq!(vercel_project_name("My Site!"), "my-site");
         assert_eq!(vercel_project_name("a---b"), "a--b");
         assert_eq!(vercel_project_name("--Hello.World_1--"), "hello.world_1");
@@ -1842,7 +1868,9 @@ mod mock_tests {
                     .to_string();
                 (
                     200,
-                    format!(r#"{{"id":"dep1","ssl_url":"https://my.netlify.app","required":["{sha}"]}}"#),
+                    format!(
+                        r#"{{"id":"dep1","ssl_url":"https://my.netlify.app","required":["{sha}"]}}"#
+                    ),
                 )
             } else if method == "GET" && path.contains("/sites") {
                 (200, "[]".into()) // no existing site with this name → create one
@@ -1870,7 +1898,9 @@ mod mock_tests {
             .collect();
         assert!(paths.iter().any(|p| p.ends_with("/api/v1/sites")));
         assert!(paths.iter().any(|p| p.contains("/sites/site123/deploys")));
-        assert!(paths.iter().any(|p| p.contains("/deploys/dep1/files/index.html")));
+        assert!(paths
+            .iter()
+            .any(|p| p.contains("/deploys/dep1/files/index.html")));
         std::env::remove_var("CONCIERGE_DEPLOY_NETLIFY_BASE");
 
         // ── GitHub: ref(404) → blob → tree → commit → create-ref → pages(404) → enable ──
@@ -2049,15 +2079,10 @@ wqpMeGWXht6yqjEaGCERenA=
                             r#"{{"uploadUrl":"{base2}/upload","uploadRequiredHashes":["{hash}"]}}"#
                         ),
                     )
-                } else if path.contains("update_mask=status") {
-                    (200, "{}".to_string())
-                } else if path.contains("/releases") {
-                    (200, "{}".to_string())
-                } else if path.contains("/upload/") {
-                    (200, "{}".to_string())
                 } else if path.ends_with("/versions") {
                     (200, r#"{"name":"sites/demo/versions/v1"}"#.to_string())
                 } else {
+                    // update_mask=status, /releases, /upload/, and anything else all ack.
                     (200, "{}".to_string())
                 };
                 let resp = format!(

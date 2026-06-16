@@ -2,6 +2,9 @@ use super::*;
 use concierge_core::{cid_link, Node};
 use concierge_net::content_message_id;
 
+/// A one-shot callback that completes an OAuth exchange from the returned code.
+type OAuthFinish = Box<dyn FnOnce(&str) -> Result<String, String> + Send>;
+
 pub(super) fn handle_mutation(
     mem: &MemCli,
     options: &GuiOptions,
@@ -419,7 +422,8 @@ pub(super) fn oauth_status_json(provider: &str) -> String {
         .ok()
         .and_then(|m| m.get(provider).cloned())
         .unwrap_or_default();
-    serde_json::json!({ "status": p.status, "message": p.message, "account": p.account }).to_string()
+    serde_json::json!({ "status": p.status, "message": p.message, "account": p.account })
+        .to_string()
 }
 
 /// Drive one provider's login: open the authorize URL (returned), then on the callback
@@ -429,9 +433,14 @@ fn oauth_run(
     authorize_url: String,
     listener: std::net::TcpListener,
     expected_state: String,
-    finish: Box<dyn FnOnce(&str) -> Result<String, String> + Send>,
+    finish: OAuthFinish,
 ) -> Response {
-    oauth_set(provider, "pending", "Waiting for you to approve in the browser…", "");
+    oauth_set(
+        provider,
+        "pending",
+        "Waiting for you to approve in the browser…",
+        "",
+    );
     let provider = provider.to_string();
     std::thread::spawn(move || oauth_listen(provider, listener, expected_state, finish));
     Response::json(serde_json::json!({ "authorize_url": authorize_url }).to_string())
@@ -465,14 +474,22 @@ fn mutation_cf_oauth_start(mem: &MemCli) -> Response {
         .map_err(|e| e.to_string())?;
         Ok(account)
     });
-    oauth_run("cloudflare", start.authorize_url, listener, start.state, finish)
+    oauth_run(
+        "cloudflare",
+        start.authorize_url,
+        listener,
+        start.state,
+        finish,
+    )
 }
 
 fn mutation_fb_oauth_start(mem: &MemCli) -> Response {
     // Google "Desktop" clients allow a loopback redirect on any port — bind an ephemeral one.
     let listener = match std::net::TcpListener::bind("127.0.0.1:0") {
         Ok(listener) => listener,
-        Err(error) => return Response::error(format!("couldn't open the local login listener: {error}")),
+        Err(error) => {
+            return Response::error(format!("couldn't open the local login listener: {error}"))
+        }
     };
     let port = listener.local_addr().map(|a| a.port()).unwrap_or(0);
     let redirect = format!("http://127.0.0.1:{port}");
@@ -481,8 +498,8 @@ fn mutation_fb_oauth_start(mem: &MemCli) -> Response {
     let verifier = start.verifier.clone();
     let finish = Box::new(move |code: &str| -> Result<String, String> {
         let token = concierge_core::deploy::firebase_oauth_exchange(code, &verifier, &redirect)?;
-        let site = concierge_core::deploy::firebase_default_site(&token.access_token)
-            .unwrap_or_default();
+        let site =
+            concierge_core::deploy::firebase_default_site(&token.access_token).unwrap_or_default();
         mem.save_firebase_oauth(
             &token.access_token,
             token.refresh_token.as_deref(),
@@ -496,7 +513,13 @@ fn mutation_fb_oauth_start(mem: &MemCli) -> Response {
             site
         })
     });
-    oauth_run("firebase", start.authorize_url, listener, start.state, finish)
+    oauth_run(
+        "firebase",
+        start.authorize_url,
+        listener,
+        start.state,
+        finish,
+    )
 }
 
 /// Wait (up to 5 min) for the browser to redirect to the localhost callback, capture
@@ -505,7 +528,7 @@ fn oauth_listen(
     provider: String,
     listener: std::net::TcpListener,
     expected_state: String,
-    finish: Box<dyn FnOnce(&str) -> Result<String, String> + Send>,
+    finish: OAuthFinish,
 ) {
     use std::io::{Read, Write};
     listener.set_nonblocking(true).ok();
@@ -556,14 +579,24 @@ fn oauth_listen(
 
     if let Some(error) = params.get("error") {
         reply(&mut stream, "Login cancelled", false);
-        oauth_set(&provider, "error", &format!("login was declined: {error}"), "");
+        oauth_set(
+            &provider,
+            "error",
+            &format!("login was declined: {error}"),
+            "",
+        );
         return;
     }
     let code = params.get("code").cloned().unwrap_or_default();
     let state = params.get("state").cloned().unwrap_or_default();
     if code.is_empty() || state != expected_state {
         reply(&mut stream, "Login could not be verified", false);
-        oauth_set(&provider, "error", "Login response didn't validate (state mismatch).", "");
+        oauth_set(
+            &provider,
+            "error",
+            "Login response didn't validate (state mismatch).",
+            "",
+        );
         return;
     }
     reply(&mut stream, "✓ Connected — finishing up", true);
@@ -757,13 +790,20 @@ fn mutation_git_commit(mem: &MemCli, body: &str) -> Response {
         Ok(p) => p.to_string(),
         Err(response) => return response,
     };
-    let repo = value.get("repo").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let repo = value
+        .get("repo")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
     let message = value
         .get("message")
         .and_then(|v| v.as_str())
         .unwrap_or("")
         .to_string();
-    let private = value.get("private").and_then(|v| v.as_bool()).unwrap_or(true);
+    let private = value
+        .get("private")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(true);
     match mem.commit_project_github(&folder, &repo, &message, private, &password) {
         Ok(receipt) => Response::json(
             serde_json::json!({
@@ -803,8 +843,14 @@ fn mutation_blender_connect() -> Response {
             )
         }
     };
-    if listed.lines().any(|l| l.trim_start().starts_with("blender:")) {
-        return reply(true, "Blender (BlenderMCP) is already connected to Claude Code.");
+    if listed
+        .lines()
+        .any(|l| l.trim_start().starts_with("blender:"))
+    {
+        return reply(
+            true,
+            "Blender (BlenderMCP) is already connected to Claude Code.",
+        );
     }
     let has_uvx = Command::new("uvx")
         .arg("--version")
@@ -1316,8 +1362,7 @@ fn pair_scope_caps(
     network_id: concierge_core::NetworkId,
     scope: &str,
 ) -> (concierge_core::Namespace, Vec<concierge_core::Operation>) {
-    let namespace =
-        concierge_core::Namespace::new(network_id, concierge_core::NamespaceScope::All);
+    let namespace = concierge_core::Namespace::new(network_id, concierge_core::NamespaceScope::All);
     let ops = if scope == "read" {
         vec!["sync_read"]
     } else {
@@ -1331,7 +1376,10 @@ fn pair_scope_caps(
 }
 
 /// Pull one of `offer` / `response` / `grant` out of the request body and deserialize it.
-fn pair_field<T: serde::de::DeserializeOwned>(value: &serde_json::Value, key: &str) -> Result<T, Response> {
+fn pair_field<T: serde::de::DeserializeOwned>(
+    value: &serde_json::Value,
+    key: &str,
+) -> Result<T, Response> {
     match value.get(key) {
         Some(v) => serde_json::from_value(v.clone())
             .map_err(|e| Response::bad_request(&format!("invalid {key}: {e}"))),
@@ -1354,7 +1402,8 @@ fn mutation_pair_offer(mem: &MemCli) -> Response {
     // (the user supplies the actual peer address at sync time).
     match mem.create_pairing_offer(&descriptor.network_id, "/ip4/127.0.0.1/tcp/4001") {
         Ok(offer) => Response::json(
-            serde_json::json!({ "ok": true, "network": descriptor.name, "offer": offer }).to_string(),
+            serde_json::json!({ "ok": true, "network": descriptor.name, "offer": offer })
+                .to_string(),
         ),
         Err(error) => Response::error(error.to_string()),
     }
@@ -1415,13 +1464,19 @@ fn mutation_pair_approve(mem: &MemCli, body: &str) -> Response {
         Ok(response) => response,
         Err(resp) => return resp,
     };
-    let scope = value.get("scope").and_then(|s| s.as_str()).unwrap_or("full");
+    let scope = value
+        .get("scope")
+        .and_then(|s| s.as_str())
+        .unwrap_or("full");
     let Some(descriptor) = mem.networks().ok().and_then(|n| n.into_iter().next()) else {
         return Response::bad_request("no network on this device");
     };
     let (namespace, ops) = pair_scope_caps(descriptor.network_id, scope);
-    match mem.complete_pairing(&response, &[(namespace, ops)], concierge_core::DEFAULT_CERT_TTL_SECS)
-    {
+    match mem.complete_pairing(
+        &response,
+        &[(namespace, ops)],
+        concierge_core::DEFAULT_CERT_TTL_SECS,
+    ) {
         Ok(grant) => Response::json(serde_json::json!({ "ok": true, "grant": grant }).to_string()),
         Err(error) => Response::error(error.to_string()),
     }

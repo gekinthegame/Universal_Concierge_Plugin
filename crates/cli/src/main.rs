@@ -1266,7 +1266,10 @@ fn cmd_blender_setup() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    if listed.lines().any(|l| l.trim_start().starts_with("blender:")) {
+    if listed
+        .lines()
+        .any(|l| l.trim_start().starts_with("blender:"))
+    {
         println!("Blender (BlenderMCP) is already connected to Claude Code.");
     } else {
         let has_uvx = Command::new("uvx")
@@ -1279,14 +1282,25 @@ fn cmd_blender_setup() -> ExitCode {
             return ExitCode::FAILURE;
         }
         let ok = Command::new("claude")
-            .args(["mcp", "add", "-s", "user", "blender", "--", "uvx", "blender-mcp"])
+            .args([
+                "mcp",
+                "add",
+                "-s",
+                "user",
+                "blender",
+                "--",
+                "uvx",
+                "blender-mcp",
+            ])
             .status()
             .map(|s| s.success())
             .unwrap_or(false);
         if ok {
             println!("Connected Blender (BlenderMCP) to Claude Code. Restart Claude Code to use its tools.");
         } else {
-            println!("Auto-register failed. Run: claude mcp add -s user blender -- uvx blender-mcp");
+            println!(
+                "Auto-register failed. Run: claude mcp add -s user blender -- uvx blender-mcp"
+            );
             return ExitCode::FAILURE;
         }
     }
