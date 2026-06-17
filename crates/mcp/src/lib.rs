@@ -32,6 +32,7 @@ const GUIDE_RESPONSIVE: &str = include_str!("guides/responsive.md");
 const GUIDE_WRITING: &str = include_str!("guides/writing.md");
 const GUIDE_CRITIQUE: &str = include_str!("guides/critique.md");
 const GUIDE_STUDIO: &str = include_str!("guides/studio.md");
+const GUIDE_GAME_STUDIO: &str = include_str!("guides/game_studio.md");
 const GUIDE_GAME_DESIGN: &str = include_str!("guides/game_design.md");
 const GUIDE_ART_DIRECTION: &str = include_str!("guides/art_direction.md");
 // Proven renderers, vendored so published media stays self-contained/offline (MIT).
@@ -429,10 +430,12 @@ recency. Use this to find relevant context by topic, not by an exact name.",
             "concierge.design_guide",
             "Get proven design guidance (the Impeccable + CCGS skills) so you create really nice \
 media — typography, color, spacing, motion, interaction, responsive, UX writing, a critique \
-checklist, or specialized Game Studio guidance (studio protocol, game design, art direction). \
-Load the relevant topic BEFORE building UI/media.",
+checklist, or Game Studio guidance (the build pipeline, studio protocol, game design, art direction). \
+Building a game/3D/movie? Load topic='game_studio' FIRST — the end-to-end build pipeline (concept → \
+GDD → art → architecture → stories → QA gates) on the Babylon engine; then game_design/art_direction \
+for the specifics. Load the relevant topic BEFORE building UI/media.",
             str_schema(
-                &[("topic", "One of: overview, typography, color, spacing, motion, interaction, responsive, writing, critique, studio, game_design, art_direction. Omit for an index + overview.")],
+                &[("topic", "One of: overview, typography, color, spacing, motion, interaction, responsive, writing, critique, game_studio, studio, game_design, art_direction. Omit for an index + overview.")],
                 &[],
             ),
         ),
@@ -951,6 +954,9 @@ fn tool_design_guide(args: &Value) -> Result<String, String> {
         "writing" | "copy" | "ux" | "ux-writing" | "clarify" => GUIDE_WRITING,
         "critique" | "review" | "audit" => GUIDE_CRITIQUE,
         "studio" | "protocol" | "collaboration" | "ccgs" => GUIDE_STUDIO,
+        "game_studio" | "pipeline" | "workflow" | "build" | "gamedev" | "process" => {
+            GUIDE_GAME_STUDIO
+        }
         "game_design" | "mechanics" | "gdd" | "loops" | "balance" => GUIDE_GAME_DESIGN,
         "art_direction" | "visuals" | "style" | "art_bible" => GUIDE_ART_DIRECTION,
         "overview" | "" => {
@@ -966,15 +972,16 @@ Call `concierge.design_guide` with a `topic` to load any of:\n\n\
 - `responsive`  · mobile-first, fluid, container queries\n\
 - `writing`     · button labels, errors, empty states\n\
 - `critique`    · a full design-review checklist\n\n\
-### Game Studio (CCGS)\n\
+### Game Studio (CCGS, on the Babylon engine)\n\
+- `game_studio` · the END-TO-END build pipeline (concept → GDD → art → architecture → stories → QA gates)\n\
 - `studio`      · collaborative protocol, roles, delegation\n\
 - `game_design` · MDA framework, systems, loops, GDD standard\n\
 - `art_direction`· visual identity, art bibles, juice, aesthetics\n\n\
-Then build, and run `concierge.design_audit` on what you staged.\n\n\
+Building a game/3D/movie? START with `game_studio`. Then build, and run `concierge.design_audit` on what you staged.\n\n\
 ---\n\n{GUIDE_OVERVIEW}"
             ));
         }
-        other => return Err(format!("unknown topic '{other}'. Try: typography, color, spacing, motion, interaction, responsive, writing, critique, studio, game_design, art_direction (or omit for an overview).")),
+        other => return Err(format!("unknown topic '{other}'. Try: typography, color, spacing, motion, interaction, responsive, writing, critique, game_studio, studio, game_design, art_direction (or omit for an overview).")),
     };
     Ok(body.to_string())
 }
@@ -1197,7 +1204,7 @@ fn tool_scaffold_engine(mem: &MemCli, args: &Value) -> Result<String, String> {
             ""
         };
         return Ok(format!(
-            "Vendored Babylon.js ({} MB){} + webm-muxer + capture.js into site '{}' — a medium 3D ENGINE, self-contained (no CDN, works offline + on IPFS).\n\nUse it:\n{}\n\nOne scene serves a SCENE, a GAME (interactive), or a MOVIE (the same seekable timeline recorded — video is AUTOMATIC and FULL-LENGTH on Save/Publish, any length, no ffmpeg). MOVIES must stay DETERMINISTIC: animate with a paused AnimationGroup + goToFrame, never a clock or live physics (physics is for games).{} Design guidance: concierge.design_guide(topic='art_direction'). Stage with concierge.write_asset, preview ({}) live, then publish. Nothing has been published.",
+            "Vendored Babylon.js ({} MB){} + webm-muxer + capture.js into site '{}' — a medium 3D ENGINE, self-contained (no CDN, works offline + on IPFS).\n\nUse it:\n{}\n\nOne scene serves a SCENE, a GAME (interactive), or a MOVIE (the same seekable timeline recorded — video is AUTOMATIC and FULL-LENGTH on Save/Publish, any length, no ffmpeg). MOVIES must stay DETERMINISTIC: animate with a paused AnimationGroup + goToFrame, never a clock or live physics (physics is for games).{} Building a real game? START with concierge.design_guide(topic='game_studio') — the end-to-end pipeline (concept → GDD → art bible → architecture → stories → QA gates) retargeted to this engine. Stage with concierge.write_asset, preview ({}) live, then publish. Nothing has been published.",
             ENGINE_BABYLON.len() / (1024 * 1024),
             if is_game { " + CharacterController" } else { "" },
             safe_site(site),
@@ -1472,6 +1479,10 @@ mod tests {
             ("studio", "Collaborative Consultant"),
             ("game_design", "MDA Framework"),
             ("art_direction", "Art Bible"),
+            // The Phase 3 end-to-end pipeline, retargeted to the Babylon engine + its constraints.
+            ("game_studio", "Game Studio Pipeline"),
+            ("pipeline", "Quality Gates"),
+            ("workflow", "Traceability"),
         ] {
             let res = call(
                 &mem,
@@ -1504,8 +1515,10 @@ mod tests {
             }),
         );
         let overview_text = overview["result"]["content"][0]["text"].as_str().unwrap();
-        assert!(overview_text.contains("Game Studio (CCGS)"));
+        assert!(overview_text.contains("Game Studio (CCGS"));
         assert!(overview_text.contains("game_design"));
+        // The Phase 3 pipeline is the advertised starting point for game/3D/movie work.
+        assert!(overview_text.contains("game_studio"));
     }
 
     #[test]
