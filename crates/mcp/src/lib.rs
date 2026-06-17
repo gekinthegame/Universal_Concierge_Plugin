@@ -36,6 +36,9 @@ const GUIDE_GAME_DESIGN: &str = include_str!("guides/game_design.md");
 const GUIDE_ART_DIRECTION: &str = include_str!("guides/art_direction.md");
 // Proven renderers, vendored so published media stays self-contained/offline (MIT).
 const ENGINE_THREE: &[u8] = include_bytes!("engines/three.module.min.js");
+// Global/classic build (generated from the ESM module): a normal <script> sets window.THREE, so
+// non-module AI code works and there is no CORS/importmap to fail in the sandboxed preview iframe.
+const ENGINE_THREE_GLOBAL: &[u8] = include_bytes!("engines/three.min.js");
 const ENGINE_PHASER: &[u8] = include_bytes!("engines/phaser.min.js");
 const ENGINE_AFRAME: &[u8] = include_bytes!("engines/aframe.min.js");
 const ENGINE_AFRAME_ENV: &[u8] = include_bytes!("engines/aframe-environment-component.min.js");
@@ -1091,18 +1094,29 @@ fn tool_scaffold_engine(mem: &MemCli, args: &Value) -> Result<String, String> {
     }
 
     let (file, bytes, snippet): (&str, &[u8], String) = match engine.as_str() {
-        "three" | "threejs" | "three.js" => (
+        "three" | "threejs" | "three.js" => {
+            // Also vendor the GLOBAL/classic build so window.THREE is available to plain (non-module)
+            // code — the dominant way models write Three.js. A normal <script> sets the global, so
+            // there is no importmap or ES-module CORS to fail inside the sandboxed preview iframe.
+            // The ESM module (three.module.min.js) is still written for anyone using `import`.
+            write_canvas_file(
+                &root,
+                &folder,
+                std::path::Path::new("three.min.js"),
+                ENGINE_THREE_GLOBAL,
+            )
+            .map_err(|e| format!("write three global: {e}"))?;
+            (
             "three.module.min.js",
             ENGINE_THREE,
-            "Three.js is ESM. Build CINEMATIC 3D, not flat: PBR materials with a studio ENVIRONMENT MAP \
-(reflections), three-point lighting with SOFT SHADOWS, ACES tone mapping, and EASED motion. To export \
-video it must render into the SAME <canvas id=\"stage\"> the Concierge captures (preserveDrawingBuffer) \
+            "Three.js — build CINEMATIC 3D, not flat. The vendored build loads with a NORMAL <script> \
+and sets a global `THREE` (no ES modules, no importmap, no CORS — works in the sandboxed preview). For \
+VIDEO it must render into the SAME <canvas id=\"stage\"> the Concierge captures (preserveDrawingBuffer) \
 and be DETERMINISTIC: seeking to time t always draws the same frame — easing is a function of t, NEVER \
 clock.getDelta() / requestAnimationFrame lerp (those desync the frame-by-frame export). In index.html:\n\
 <canvas id=\"stage\" width=\"1280\" height=\"720\"></canvas>\n\
-<script type=\"importmap\">{\"imports\":{\"three\":\"./three.module.min.js\"}}</script>\n\
-<script type=\"module\">\n\
-  import * as THREE from 'three';\n\
+<script src=\"./three.min.js\"></script>   <!-- sets window.THREE; three.module.min.js is also staged for ESM -->\n\
+<script>\n\
   const stage = document.getElementById('stage');\n\
   const renderer = new THREE.WebGLRenderer({ canvas: stage, antialias: true, preserveDrawingBuffer: true });\n\
   renderer.setSize(stage.width, stage.height, false);\n\
@@ -1156,7 +1170,8 @@ clock.getDelta() / requestAnimationFrame lerp (those desync the frame-by-frame e
   (function loop(){ window.__seek((performance.now() / 1000) % window.__duration); requestAnimationFrame(loop); })();\n\
   // Richer choreography? scaffold_engine('motion') adds GSAP; drive a paused timeline with tl.time(t).\n\
 </script>".to_string(),
-        ),
+            )
+        }
         "phaser" | "phaserjs" => (
             "phaser.min.js",
             ENGINE_PHASER,
@@ -1615,15 +1630,28 @@ mod tests {
             text.contains("NEVER \nclock.getDelta()") || text.contains("NEVER clock.getDelta()"),
             "three snippet must warn against clock-delta easing: {text}"
         );
+        let scene_dir = mem.store_dir().unwrap().join("canvas/scene");
         assert!(
-            std::fs::metadata(
-                mem.store_dir()
-                    .unwrap()
-                    .join("canvas/scene/three.module.min.js")
-            )
-            .unwrap()
-            .len()
+            std::fs::metadata(scene_dir.join("three.module.min.js"))
+                .unwrap()
+                .len()
                 > 1000
+        );
+        // The global/classic build is vendored too, and the snippet loads it with a plain
+        // <script> + global THREE — so non-module AI code works and there's no CORS/importmap to
+        // fail in the sandboxed preview (the bug that produced "THREE is not defined").
+        let global = std::fs::read_to_string(scene_dir.join("three.min.js")).unwrap();
+        assert!(
+            global.contains("window.THREE") && global.len() > 1000,
+            "global three build must define window.THREE"
+        );
+        assert!(
+            text.contains("./three.min.js"),
+            "snippet must load the global build with a classic script: {text}"
+        );
+        assert!(
+            !text.contains("import * as THREE"),
+            "snippet must use the global THREE, not an ES-module import: {text}"
         );
     }
 

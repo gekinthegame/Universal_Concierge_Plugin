@@ -470,14 +470,12 @@ fn require_canvas_dir(
     folder: &std::path::Path,
 ) -> Result<std::path::PathBuf, Response> {
     let root = canvas_root(mem)?;
-    let canon = folder
-        .canonicalize()
-        .map_err(|_| Response::error(format!("not a folder: {}", folder.display())))?;
+    // A folder that no longer exists (e.g. the project was deleted while its preview token is
+    // still registered) is "gone", not an internal error — return 404 so hot-reload polling
+    // doesn't spam 500s in the console.
+    let canon = folder.canonicalize().map_err(|_| Response::not_found())?;
     if !canon.is_dir() {
-        return Err(Response::error(format!(
-            "not a folder: {}",
-            folder.display()
-        )));
+        return Err(Response::not_found());
     }
     if !canon.starts_with(&root) {
         return Err(Response::forbidden());
