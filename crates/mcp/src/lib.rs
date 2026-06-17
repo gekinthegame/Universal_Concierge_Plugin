@@ -20,6 +20,8 @@ use serde_json::{json, Value};
 // ── Bundled, self-contained media toolkit (Decision: build on proven work) ──
 // Impeccable design knowledge (Apache-2.0, © 2025-2026 Paul Bakaus) — see
 // `guides/IMPECCABLE-LICENSE.txt` and `guides/IMPECCABLE-NOTICE.md`.
+// CCGS-derived game-studio guidance (MIT, © 2026 Donchitos) — see
+// `guides/CCGS-LICENSE.txt`.
 const GUIDE_OVERVIEW: &str = include_str!("guides/overview.md");
 const GUIDE_TYPOGRAPHY: &str = include_str!("guides/typography.md");
 const GUIDE_COLOR: &str = include_str!("guides/color.md");
@@ -29,6 +31,9 @@ const GUIDE_INTERACTION: &str = include_str!("guides/interaction.md");
 const GUIDE_RESPONSIVE: &str = include_str!("guides/responsive.md");
 const GUIDE_WRITING: &str = include_str!("guides/writing.md");
 const GUIDE_CRITIQUE: &str = include_str!("guides/critique.md");
+const GUIDE_STUDIO: &str = include_str!("guides/studio.md");
+const GUIDE_GAME_DESIGN: &str = include_str!("guides/game_design.md");
+const GUIDE_ART_DIRECTION: &str = include_str!("guides/art_direction.md");
 // Proven renderers, vendored so published media stays self-contained/offline (MIT).
 const ENGINE_THREE: &[u8] = include_bytes!("engines/three.module.min.js");
 const ENGINE_PHASER: &[u8] = include_bytes!("engines/phaser.min.js");
@@ -319,11 +324,12 @@ recency. Use this to find relevant context by topic, not by an exact name.",
         ),
         tool_def(
             "concierge.design_guide",
-            "Get proven frontend-design guidance (the Impeccable skill) so you create really nice \
-media — typography, color, spacing, motion, interaction, responsive, UX writing, or a critique \
-checklist. Load the relevant topic BEFORE building UI/media.",
+            "Get proven design guidance (the Impeccable + CCGS skills) so you create really nice \
+media — typography, color, spacing, motion, interaction, responsive, UX writing, a critique \
+checklist, or specialized Game Studio guidance (studio protocol, game design, art direction). \
+Load the relevant topic BEFORE building UI/media.",
             str_schema(
-                &[("topic", "One of: overview, typography, color, spacing, motion, interaction, responsive, writing, critique. Omit for an index + overview.")],
+                &[("topic", "One of: overview, typography, color, spacing, motion, interaction, responsive, writing, critique, studio, game_design, art_direction. Omit for an index + overview.")],
                 &[],
             ),
         ),
@@ -841,10 +847,14 @@ fn tool_design_guide(args: &Value) -> Result<String, String> {
         "responsive" | "adapt" | "mobile" => GUIDE_RESPONSIVE,
         "writing" | "copy" | "ux" | "ux-writing" | "clarify" => GUIDE_WRITING,
         "critique" | "review" | "audit" => GUIDE_CRITIQUE,
+        "studio" | "protocol" | "collaboration" | "ccgs" => GUIDE_STUDIO,
+        "game_design" | "mechanics" | "gdd" | "loops" | "balance" => GUIDE_GAME_DESIGN,
+        "art_direction" | "visuals" | "style" | "art_bible" => GUIDE_ART_DIRECTION,
         "overview" | "" => {
             return Ok(format!(
-                "# Impeccable design guidance (built into the Concierge)\n\n\
-Call `concierge.design_guide` with a `topic` to load any of:\n\
+                "# Proven design guidance (built into the Concierge)\n\n\
+Call `concierge.design_guide` with a `topic` to load any of:\n\n\
+### Impeccable (Web & UI)\n\
 - `typography`  · type systems, font pairing, scales\n\
 - `color`       · palettes, OKLCH, contrast, dark mode\n\
 - `spacing`     · spacing systems, grids, hierarchy\n\
@@ -853,11 +863,15 @@ Call `concierge.design_guide` with a `topic` to load any of:\n\
 - `responsive`  · mobile-first, fluid, container queries\n\
 - `writing`     · button labels, errors, empty states\n\
 - `critique`    · a full design-review checklist\n\n\
+### Game Studio (CCGS)\n\
+- `studio`      · collaborative protocol, roles, delegation\n\
+- `game_design` · MDA framework, systems, loops, GDD standard\n\
+- `art_direction`· visual identity, art bibles, juice, aesthetics\n\n\
 Then build, and run `concierge.design_audit` on what you staged.\n\n\
 ---\n\n{GUIDE_OVERVIEW}"
             ));
         }
-        other => return Err(format!("unknown topic '{other}'. Try: typography, color, spacing, motion, interaction, responsive, writing, critique (or omit for an overview).")),
+        other => return Err(format!("unknown topic '{other}'. Try: typography, color, spacing, motion, interaction, responsive, writing, critique, studio, game_design, art_direction (or omit for an overview).")),
     };
     Ok(body.to_string())
 }
@@ -1245,6 +1259,60 @@ mod tests {
             );
             assert_eq!(rejected["result"]["isError"], true);
         }
+    }
+
+    #[test]
+    fn design_guide_exposes_game_studio_topics() {
+        let (_dir, mem) = store();
+        let listed = dispatch(&mem, false, "tools/list", None, &json!(1));
+        let design_tool = listed["result"]["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|tool| tool["name"] == "concierge.design_guide")
+            .expect("design guide tool listed");
+        let description = design_tool["description"].as_str().unwrap();
+        assert!(description.contains("Game Studio"));
+        assert!(description.contains("game design"));
+
+        for (topic, token) in [
+            ("studio", "Collaborative Consultant"),
+            ("game_design", "MDA Framework"),
+            ("art_direction", "Art Bible"),
+        ] {
+            let res = call(
+                &mem,
+                false,
+                "tools/call",
+                json!({
+                    "name": "concierge.design_guide",
+                    "arguments": { "topic": topic }
+                }),
+            );
+            assert_eq!(res["result"]["isError"], false, "{topic} should load");
+            let text = res["result"]["content"][0]["text"].as_str().unwrap();
+            assert!(
+                text.contains(token),
+                "{topic} guide should contain `{token}`: {text}"
+            );
+            assert!(
+                !text.contains("invoke_agent"),
+                "{topic} guide must not advertise unsupported agent spawning"
+            );
+        }
+
+        let overview = call(
+            &mem,
+            false,
+            "tools/call",
+            json!({
+                "name": "concierge.design_guide",
+                "arguments": {}
+            }),
+        );
+        let overview_text = overview["result"]["content"][0]["text"].as_str().unwrap();
+        assert!(overview_text.contains("Game Studio (CCGS)"));
+        assert!(overview_text.contains("game_design"));
     }
 
     #[test]

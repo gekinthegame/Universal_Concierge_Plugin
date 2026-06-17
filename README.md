@@ -44,6 +44,8 @@ an MCP server** (`concierge`, write tools on) — so its tools (`concierge.retri
 ```sh
 concierge-plugin setup
 ```
+For games and interactive media, `concierge.design_guide` includes CCGS-derived
+Studio guidance: `studio`, `game_design`, and `art_direction`.
 
 ---
 
