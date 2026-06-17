@@ -48,6 +48,12 @@ const ENGINE_BABYLON: &[u8] = include_bytes!("engines/babylon.js");
 // 3rd/1st-person character controller (Apache-2.0) — animated movement (idle/walk/run/jump/strafe),
 // no physics engine needed. Drop-in for games; depends on the BABYLON global.
 const ENGINE_CHARACTER_CONTROLLER: &[u8] = include_bytes!("engines/CharacterController.js");
+// Babylon loaders (Apache-2.0) — import real .glb/.gltf models (rigged characters, scenery). A
+// classic <script> after babylon.js registers the glTF loader on BABYLON.SceneLoader.
+const ENGINE_BABYLON_LOADERS: &[u8] = include_bytes!("engines/babylonjs.loaders.min.js");
+// ammo.js (zlib) — Bullet physics for GAMES (rigid bodies, gravity, collisions). NOT seek-
+// deterministic, so never for movies. ~1.8 MB; an opt-in add-on, not bundled into every scene.
+const ENGINE_AMMO: &[u8] = include_bytes!("engines/ammo.js");
 const ENGINE_AFRAME: &[u8] = include_bytes!("engines/aframe.min.js");
 const ENGINE_AFRAME_ENV: &[u8] = include_bytes!("engines/aframe-environment-component.min.js");
 // The motion/animation skill bundles two libs together. GSAP © GreenSock (no-charge
@@ -147,6 +153,22 @@ const BABYLON_SNIPPET: &str = r#"A medium 3D ENGINE. One scene = a SCENE, a GAME
   // ---- GAME instead? Skip __seek; put input + logic in runRenderLoop. For a walk/run/jump character,
   //      call concierge.scaffold_engine(engine='game') to add the CharacterController. ----
 </script>"#;
+const GLTF_SNIPPET: &str = r#"Import real 3D models (.glb/.gltf) — rigged characters, scenery, props. Drop the model file INTO this project folder (assets must be VENDORED — no CDN/runtime fetch, since you publish to public IPFS; Poly Haven is CC0, check the license of anything else). Load AFTER babylon.js:
+<script src="./babylonjs.loaders.min.js"></script>
+Then in the scene:
+  const result = await BABYLON.SceneLoader.ImportMeshAsync('', './', 'character.glb', scene);
+  result.meshes.forEach(m => { m.receiveShadows = true; });   // shadow.addShadowCaster(result.meshes[0]) to cast
+  // result.animationGroups holds the model's clips. For a MOVIE, keep one PAUSED and drive it with
+  // window.__seek (goToFrame) — deterministic. For a playable character, attach the bundled
+  // CharacterController to the rigged mesh whose animation ranges are named idle/walk/run/jump."#;
+const PHYSICS_SNIPPET: &str = r#"Add real physics (rigid bodies, gravity, collisions) — for a GAME only. Physics is NOT seek-deterministic, so NEVER use it in a movie (use keyframe AnimationGroups there). Load AFTER babylon.js:
+<script src="./ammo.js"></script>
+Then, once, before building impostors:
+  await Ammo();
+  scene.enablePhysics(new BABYLON.Vector3(0, -9.81, 0), new BABYLON.AmmoJSPlugin());
+  ground.physicsImpostor = new BABYLON.PhysicsImpostor(ground, BABYLON.PhysicsImpostor.BoxImpostor, { mass: 0, restitution: 0.3 }, scene);
+  hero.physicsImpostor   = new BABYLON.PhysicsImpostor(hero,  BABYLON.PhysicsImpostor.SphereImpostor, { mass: 1, restitution: 0.5 }, scene);
+  // Drive input + logic in engine.runRenderLoop (game mode), NOT the __seek path."#;
 const MOTION_SNIPPET: &str = r#"Draw to a <canvas> from a SEEKABLE timeline; the Concierge renders every frame to video on Save/Publish (any length, no ffmpeg). index.html:
 <canvas id="stage"></canvas>
 <script src="./gsap.min.js"></script>
@@ -536,13 +558,14 @@ stays self-contained (no CDN, works offline + on IPFS): 'babylon' (Babylon.js �
 scene graph + PBR + a SEEKABLE timeline, so one scene is a 3D scene, a game, OR a movie; the premium \
 3D/game/movie path), 'game' (Babylon + a drop-in walk/run/jump CharacterController), 'aframe' \
 (A-Frame, declarative 3D HTML), 'three' (Three.js, low-level 3D JS — cinematic PBR defaults), \
-'phaser' (Phaser, 2D), or 'motion' (GSAP + Lottie). Returns the filenames + a ready-to-use snippet. \
+'phaser' (Phaser, 2D), or 'motion' (GSAP + Lottie). Babylon ADD-ONS: 'gltf' (import .glb/.gltf models) \
+and 'physics' (ammo.js — Bullet physics, games only). Returns the filenames + a ready-to-use snippet. \
 Call concierge.list_site FIRST — if the renderer is already staged, do NOT call this. Pair with \
-design_guide(topic='art_direction'). STAGING ONLY — never publishes.",
+design_guide(topic='game_studio'). STAGING ONLY — never publishes.",
             json!({
                 "type": "object",
                 "properties": {
-                    "engine": { "type": "string", "enum": ["babylon", "game", "aframe", "three", "phaser", "motion"], "description": "'babylon' (medium 3D engine: scene/game/movie), 'game' (Babylon + character controller), 'aframe' (3D HTML), 'three' (low-level 3D JS), 'phaser' (2D), or 'motion' (GSAP + Lottie)" },
+                    "engine": { "type": "string", "enum": ["babylon", "game", "gltf", "physics", "aframe", "three", "phaser", "motion"], "description": "'babylon' (medium 3D engine: scene/game/movie), 'game' (Babylon + character controller), 'gltf' (import .glb/.gltf models), 'physics' (ammo.js, games only), 'aframe' (3D HTML), 'three' (low-level 3D JS), 'phaser' (2D), or 'motion' (GSAP + Lottie)" },
                     "site": { "type": "string", "description": "Optional site name (folder); defaults to 'draft'" },
                 },
                 "required": ["engine"],
@@ -1204,12 +1227,45 @@ fn tool_scaffold_engine(mem: &MemCli, args: &Value) -> Result<String, String> {
             ""
         };
         return Ok(format!(
-            "Vendored Babylon.js ({} MB){} + webm-muxer + capture.js into site '{}' — a medium 3D ENGINE, self-contained (no CDN, works offline + on IPFS).\n\nUse it:\n{}\n\nOne scene serves a SCENE, a GAME (interactive), or a MOVIE (the same seekable timeline recorded — video is AUTOMATIC and FULL-LENGTH on Save/Publish, any length, no ffmpeg). MOVIES must stay DETERMINISTIC: animate with a paused AnimationGroup + goToFrame, never a clock or live physics (physics is for games).{} Building a real game? START with concierge.design_guide(topic='game_studio') — the end-to-end pipeline (concept → GDD → art bible → architecture → stories → QA gates) retargeted to this engine. Stage with concierge.write_asset, preview ({}) live, then publish. Nothing has been published.",
+            "Vendored Babylon.js ({} MB){} + webm-muxer + capture.js into site '{}' — a medium 3D ENGINE, self-contained (no CDN, works offline + on IPFS).\n\nUse it:\n{}\n\nOne scene serves a SCENE, a GAME (interactive), or a MOVIE (the same seekable timeline recorded — video is AUTOMATIC and FULL-LENGTH on Save/Publish, any length, no ffmpeg). MOVIES must stay DETERMINISTIC: animate with a paused AnimationGroup + goToFrame, never a clock or live physics (physics is for games).{} Building a real game? START with concierge.design_guide(topic='game_studio') — the end-to-end pipeline (concept → GDD → art bible → architecture → stories → QA gates) retargeted to this engine. Add-ons: scaffold_engine(engine='gltf') imports .glb/.gltf models, scaffold_engine(engine='physics') adds Bullet physics (games only). Cinematic FX (bloom, vignette, grain, FXAA) need no extra file — add a BABYLON.DefaultRenderingPipeline (built into babylon.js). Stage with concierge.write_asset, preview ({}) live, then publish. Nothing has been published.",
             ENGINE_BABYLON.len() / (1024 * 1024),
             if is_game { " + CharacterController" } else { "" },
             safe_site(site),
             BABYLON_SNIPPET,
             game_note,
+            folder.display()
+        ));
+    }
+
+    // Add-ons to a Babylon (Game / 3D) project. Opt-in so they don't bloat every scene.
+    if matches!(
+        engine.as_str(),
+        "gltf" | "glb" | "assets" | "models" | "model"
+    ) {
+        write_canvas_file(
+            &root,
+            &folder,
+            std::path::Path::new("babylonjs.loaders.min.js"),
+            ENGINE_BABYLON_LOADERS,
+        )
+        .map_err(|e| format!("write babylon loaders: {e}"))?;
+        return Ok(format!(
+            "Vendored Babylon loaders ({} KB) into site '{}' — import real .glb/.gltf models into your Babylon scene (add it to a Game / 3D project).\n\nUse it:\n{}\n\nStage with concierge.write_asset (and drop your model file in the folder), preview ({}) live, then publish. Nothing has been published.",
+            ENGINE_BABYLON_LOADERS.len() / 1024,
+            safe_site(site),
+            GLTF_SNIPPET,
+            folder.display()
+        ));
+    }
+
+    if matches!(engine.as_str(), "physics" | "ammo" | "ammojs") {
+        write_canvas_file(&root, &folder, std::path::Path::new("ammo.js"), ENGINE_AMMO)
+            .map_err(|e| format!("write ammo: {e}"))?;
+        return Ok(format!(
+            "Vendored ammo.js ({} MB, Bullet physics) into site '{}' — rigid bodies, gravity, collisions for a GAME (add it to a Game / 3D project). Physics is NOT seek-deterministic — never use it in a movie.\n\nUse it:\n{}\n\nStage with concierge.write_asset, preview ({}) live, then publish. Nothing has been published.",
+            ENGINE_AMMO.len() / (1024 * 1024),
+            safe_site(site),
+            PHYSICS_SNIPPET,
             folder.display()
         ));
     }
@@ -1868,6 +1924,54 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("CharacterController"));
+    }
+
+    #[test]
+    fn scaffold_engine_babylon_addons_gltf_and_physics() {
+        let (_dir, mem) = store();
+        // glTF import: the loaders bundle + a SceneLoader snippet (vendor-the-asset guidance).
+        let gltf = call(
+            &mem,
+            true,
+            "tools/call",
+            json!({
+                "name": "concierge.scaffold_engine",
+                "arguments": { "engine": "gltf", "site": "world" }
+            }),
+        );
+        assert_eq!(gltf["result"]["isError"], false);
+        let gtext = gltf["result"]["content"][0]["text"].as_str().unwrap();
+        assert!(gtext.contains("SceneLoader.ImportMeshAsync") && gtext.contains("VENDORED"));
+        assert!(
+            std::fs::metadata(
+                mem.store_dir()
+                    .unwrap()
+                    .join("canvas/world/babylonjs.loaders.min.js")
+            )
+            .unwrap()
+            .len()
+                > 1000
+        );
+
+        // Physics: ammo.js + an impostor snippet, explicitly games-only (not seek-deterministic).
+        let phys = call(
+            &mem,
+            true,
+            "tools/call",
+            json!({
+                "name": "concierge.scaffold_engine",
+                "arguments": { "engine": "physics", "site": "world" }
+            }),
+        );
+        assert_eq!(phys["result"]["isError"], false);
+        let ptext = phys["result"]["content"][0]["text"].as_str().unwrap();
+        assert!(ptext.contains("AmmoJSPlugin") && ptext.contains("NOT seek-deterministic"));
+        assert!(
+            std::fs::metadata(mem.store_dir().unwrap().join("canvas/world/ammo.js"))
+                .unwrap()
+                .len()
+                > 1_000_000
+        );
     }
 
     #[test]

@@ -1,0 +1,2 @@
+Babylon.js loaders (glTF / OBJ / STL) — Apache-2.0, (c) Babylon.js authors.
+See BABYLON-LICENSE.txt. https://github.com/BabylonJS/Babylon.js

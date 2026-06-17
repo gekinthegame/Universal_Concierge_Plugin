@@ -1,0 +1,3 @@
+ammo.js — a port of Bullet Physics to JavaScript, zlib licensed.
+Bullet Continuous Collision Detection and Physics Library (c) Erwin Coumans.
+https://github.com/kripken/ammo.js / https://github.com/bulletphysics/bullet3
