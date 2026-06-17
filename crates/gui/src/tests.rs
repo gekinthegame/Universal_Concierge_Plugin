@@ -534,6 +534,20 @@ mod tests {
             .csp
             .expect("preview csp")
             .contains("sandbox allow-scripts"));
+        // The opaque-origin iframe loads ES modules (vendored Three.js, importmaps) in CORS mode;
+        // these headers let those cross-origin (null→loopback) fetches succeed. Without them the
+        // module scripts are blocked. Only the preview static files carry CORS — never the API.
+        let cors = |name: &str| {
+            preview
+                .headers
+                .iter()
+                .any(|(k, v)| k == name && (v == "*" || v == "cross-origin"))
+        };
+        assert!(
+            cors("Access-Control-Allow-Origin"),
+            "preview must allow cross-origin module fetches from the null-origin iframe"
+        );
+        assert!(cors("Cross-Origin-Resource-Policy"));
 
         let page = body(&handle(&mem, "/", ""));
         assert!(page.contains(r#"sandbox="allow-scripts""#));

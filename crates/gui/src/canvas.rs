@@ -1680,6 +1680,19 @@ pub(super) fn canvas_preview_serve(mem: &MemCli, options: &GuiOptions, rest: &st
             let mut response = Response::new(200, site_media_type(&canon.to_string_lossy()), bytes);
             response.embeddable = true;
             response.csp = Some(PREVIEW_CSP);
+            // The preview iframe runs sandboxed with an OPAQUE (null) origin, so it can't reach
+            // the parent's CSRF token or API. But ES modules + importmaps fetch in CORS mode, and
+            // a null→loopback fetch is cross-origin — without these headers the vendored
+            // `three.module.min.js` and a module `app.js` are blocked ("from origin 'null' …
+            // blocked by CORS policy"). These are the user's own staged static files (no secrets);
+            // the CSRF-gated mutation API sends no such header, so sandbox isolation is preserved.
+            response
+                .headers
+                .push(("Access-Control-Allow-Origin".to_string(), "*".to_string()));
+            response.headers.push((
+                "Cross-Origin-Resource-Policy".to_string(),
+                "cross-origin".to_string(),
+            ));
             response
         }
         Err(_) => Response::not_found(),
