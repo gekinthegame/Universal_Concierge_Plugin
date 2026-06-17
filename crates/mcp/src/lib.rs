@@ -496,10 +496,10 @@ scaffold_engine again and do NOT create parallel files; the renderer is already 
         tools.push(tool_def(
             "concierge.write_site",
             "Stage a website (its index.html) for the user to preview live in the Studio and \
-publish themselves. STAGING ONLY — this never publishes or makes anything public. For a 3D hero, \
-add Three.js via concierge.scaffold_engine(engine='three') — it ships cinematic PBR defaults \
-(env-map reflections, soft shadows, tone mapping) and stays seekable. For design quality, load \
-concierge.design_guide first.",
+publish themselves. STAGING ONLY — this never publishes or makes anything public. For a 3D hero or an \
+interactive scene, add the Babylon.js engine via concierge.scaffold_engine(engine='babylon') — PBR, \
+soft shadows, ACES tone mapping, and a seekable timeline (also exports video); scaffold_engine(engine=\
+'three') stays for low-level Three.js. For design quality, load concierge.design_guide first.",
             str_schema(
                 &[
                     ("html", "The full index.html for the site"),
@@ -1144,7 +1144,7 @@ fn tool_scaffold_engine(mem: &MemCli, args: &Value) -> Result<String, String> {
         )
         .map_err(|e| format!("write capture.js: {e}"))?;
         return Ok(format!(
-            "Vendored GSAP ({} KB) + Lottie ({} KB) + webm-muxer + capture.js into site '{}' — self-contained (no CDN, works offline + on IPFS).\n\nUse them in index.html:\n{}\n\nFor motion guidance call concierge.design_guide(topic='motion'). The video is AUTOMATIC and FULL-LENGTH: on Save/Publish the Concierge renders every frame (window.__duration × window.__fps) to a real video with WebCodecs — any length, as fast as the machine allows, no Record button, no ffmpeg. Keep the timeline SEEKABLE (no random/clock). For 3D in your movie, call concierge.scaffold_engine(engine='three') instead — same seekable contract, plus cinematic PBR defaults (environment-map reflections, soft shadows, ACES tone mapping); it renders to the same canvas and exports video identically. Stage with concierge.write_asset, preview ({}) live, then publish. Nothing has been published.",
+            "Vendored GSAP ({} KB) + Lottie ({} KB) + webm-muxer + capture.js into site '{}' — self-contained (no CDN, works offline + on IPFS).\n\nUse them in index.html:\n{}\n\nFor motion guidance call concierge.design_guide(topic='motion'). The video is AUTOMATIC and FULL-LENGTH: on Save/Publish the Concierge renders every frame (window.__duration × window.__fps) to a real video with WebCodecs — any length, as fast as the machine allows, no Record button, no ffmpeg. Keep the timeline SEEKABLE (no random/clock). For 3D, call concierge.scaffold_engine(engine='babylon') — a real engine (scene graph, PBR, soft shadows, ACES tone mapping) whose paused-AnimationGroup timeline is seekable, so the SAME scene exports video like this 2D path AND runs as a game; concierge.scaffold_engine(engine='three') stays for low-level Three.js. Stage with concierge.write_asset, preview ({}) live, then publish. Nothing has been published.",
             ENGINE_GSAP.len() / 1024,
             ENGINE_LOTTIE.len() / 1024,
             safe_site(site),

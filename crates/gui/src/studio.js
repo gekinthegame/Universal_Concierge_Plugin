@@ -609,8 +609,14 @@ async function newProject(kind) {
   await cvOpenFolder(res.path);          // open the fresh project in the canvas
   if (kind === "movie") {
     // Self-contained animation skill: GSAP + Lottie bundled into the project — no installs.
-    notice("🎬 New movie/animation “" + res.name + "” — built in the browser with GSAP + Lottie (bundled, no installs). Edit animation.js, watch it play, then ⏺ Record to save a video. (Advanced 3D via Blender is optional — see README.)");
+    notice("🎬 New movie/animation “" + res.name + "” — built in the browser with GSAP + Lottie (bundled, no installs). Edit animation.js, watch it play, then ⏺ Record to save a video. (For 3D, use a Game / 3D project — Babylon, also seekable to video.)");
     logSystem("studio · new movie/animation · " + res.name + " · GSAP + Lottie skill", "ok");
+    return;
+  }
+  if (kind === "game") {
+    // Babylon.js engine bundled — one scene is a 3D scene, a game, OR a movie (seekable to video).
+    notice("🎮 New game/3D “" + res.name + "” — built on the bundled Babylon.js engine (PBR, shadows, a seekable timeline, a character controller). Edit the scene in index.html. Same scene exports to video like a movie, or runs as a game.");
+    logSystem("studio · new game/3D · " + res.name + " · Babylon engine", "ok");
     return;
   }
   notice(kind === "app"
@@ -621,6 +627,7 @@ async function newProject(kind) {
 byId("new-website").addEventListener("click", () => safely(() => newProject("website")));
 byId("new-app").addEventListener("click", () => safely(() => newProject("app")));
 byId("new-movie").addEventListener("click", () => safely(() => newProject("movie")));
+byId("new-game").addEventListener("click", () => safely(() => newProject("game")));
 
 // ── Commit the whole project to GitHub (git add -A → commit → push) ───────────
 function gitIsPrivate() {

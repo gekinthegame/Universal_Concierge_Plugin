@@ -1018,6 +1018,7 @@ pub(super) fn mutation_canvas_new(mem: &MemCli, body: &str) -> Response {
     let (index, css) = match kind {
         "app" => app_starter(&title),
         "movie" => movie_starter(&title),
+        "game" => game_starter(&title),
         _ => website_starter(&title),
     };
     if let Err(error) = write_canvas_file(
@@ -1082,6 +1083,40 @@ pub(super) fn mutation_canvas_new(mem: &MemCli, body: &str) -> Response {
                 &dir,
                 std::path::Path::new("README.md"),
                 movie_readme(&title).as_bytes(),
+            );
+        }
+        "game" => {
+            // The medium ENGINE (Babylon.js) + the deterministic video exporter + a drop-in
+            // character controller — one scene is a 3D scene, a game, OR a movie. Self-contained.
+            let _ = write_canvas_file(
+                &canvas,
+                &dir,
+                std::path::Path::new("babylon.js"),
+                BABYLON_JS,
+            );
+            let _ = write_canvas_file(
+                &canvas,
+                &dir,
+                std::path::Path::new("webm-muxer.js"),
+                WEBM_MUXER_JS,
+            );
+            let _ = write_canvas_file(
+                &canvas,
+                &dir,
+                std::path::Path::new("capture.js"),
+                MOVIE_CAPTURE_JS.as_bytes(),
+            );
+            let _ = write_canvas_file(
+                &canvas,
+                &dir,
+                std::path::Path::new("CharacterController.js"),
+                CHARACTER_CONTROLLER_JS,
+            );
+            let _ = write_canvas_file(
+                &canvas,
+                &dir,
+                std::path::Path::new("README.md"),
+                game_readme(&title).as_bytes(),
             );
         }
         _ => {}
@@ -1206,6 +1241,12 @@ const LOTTIE_JS: &[u8] = include_bytes!("engines/lottie.min.js");
 // webm-muxer (© Vanilla, MIT) — turns WebCodecs frames into a real .webm container in the
 // browser, so movies render frame-by-frame (any length) with no ffmpeg.
 const WEBM_MUXER_JS: &[u8] = include_bytes!("engines/webm-muxer.js");
+// Babylon.js (Apache-2.0) — the medium ENGINE for a "Game / 3D" project: scene graph + PBR + a
+// seekable timeline, so one scene is a 3D scene, a game, OR a movie. Vendored into the GUI binary
+// too (a second copy, ~8.5 MB) so a New project ships it inline — no CDN, offline, on IPFS.
+const BABYLON_JS: &[u8] = include_bytes!("engines/babylon.js");
+// Drop-in 3rd/1st-person character controller (Apache-2.0) — walk/run/jump, no physics engine.
+const CHARACTER_CONTROLLER_JS: &[u8] = include_bytes!("engines/CharacterController.js");
 
 /// A Movie/Animation project draws to a `<canvas>` from a **seekable** timeline. The
 /// Concierge renders it **frame-by-frame, offline** (any length) to a real video on
@@ -1221,13 +1262,89 @@ fn movie_starter(title: &str) -> (String, String) {
 
 fn movie_readme(title: &str) -> String {
     format!(
-        "# {title} — Movie / Animation\n\nA self-contained browser animation, built with **GSAP** + **Lottie** and rendered to real video **frame-by-frame, offline** — all bundled, no CDN, no npm, no ffmpeg, no installs. Works offline and on IPFS.\n\n> **Building this with an AI assistant?** This project is **already staged** — `index.html`, `animation.js`, `capture.js`, `gsap.min.js`, `lottie.min.js`, `webm-muxer.js`, and `style.css` all exist. **Build the movie by EDITING `animation.js`.** Do NOT scaffold a new project, do NOT re-add the engine files, and do NOT create a parallel folder — the renderer (`capture.js`) is already wired in and produces the video automatically on Save. (Via MCP: call `concierge.list_site` to see these files, then `concierge.write_asset` with `path='animation.js'`.)\n\n## How it works\n- The animation draws to a `<canvas id=\"stage\">` from a **paused, seekable GSAP timeline**. `animation.js` exposes three things the renderer uses:\n  - `window.__duration` — the movie length in **seconds** (defaults to the timeline length; set it to anything — 30, 900, 1800…).\n  - `window.__fps` — frames per second (default 30).\n  - `window.__seek(t)` — deterministically draws the frame at time `t`.\n- **Video is automatic and full-length.** On **Save** or **Publish**, the Concierge renders every frame (`__duration × __fps`) with **WebCodecs** + the bundled WebM muxer and writes `animation.webm` into the folder. It renders **as fast as your machine allows** — not in real time — so a 15- or 30-minute movie is just more frames, not a 30-minute wait while a tab records.\n- Because it's deterministic, build with a **seekable** timeline (no `Math.random()` / wall-clock); seeking to time `t` must always draw the same frame. Lottie works too: `renderer:'canvas'` + `anim.goToAndStop(t*1000, false)`.\n\n## 3D in your movie\nFor **in-browser 3D** — self-contained, cinematic, no install — add Three.js via `concierge.scaffold_engine(engine='three')`. It drops a PBR scene (environment-map reflections, soft shadows, ACES tone mapping) that renders into the same `<canvas id=\"stage\">` and stays **seekable**, so it exports video exactly like the 2D path. Keep `window.__seek(t)` deterministic (a function of `t`, never a clock/`getDelta`).\nFor heavy *offline* 3D, drive **Blender** instead (must be installed): `concierge-plugin blender-setup`, install `vendor/blender-mcp/addon.py`, connect it.\n"
+        "# {title} — Movie / Animation\n\nA self-contained browser animation, built with **GSAP** + **Lottie** and rendered to real video **frame-by-frame, offline** — all bundled, no CDN, no npm, no ffmpeg, no installs. Works offline and on IPFS.\n\n> **Building this with an AI assistant?** This project is **already staged** — `index.html`, `animation.js`, `capture.js`, `gsap.min.js`, `lottie.min.js`, `webm-muxer.js`, and `style.css` all exist. **Build the movie by EDITING `animation.js`.** Do NOT scaffold a new project, do NOT re-add the engine files, and do NOT create a parallel folder — the renderer (`capture.js`) is already wired in and produces the video automatically on Save. (Via MCP: call `concierge.list_site` to see these files, then `concierge.write_asset` with `path='animation.js'`.)\n\n## How it works\n- The animation draws to a `<canvas id=\"stage\">` from a **paused, seekable GSAP timeline**. `animation.js` exposes three things the renderer uses:\n  - `window.__duration` — the movie length in **seconds** (defaults to the timeline length; set it to anything — 30, 900, 1800…).\n  - `window.__fps` — frames per second (default 30).\n  - `window.__seek(t)` — deterministically draws the frame at time `t`.\n- **Video is automatic and full-length.** On **Save** or **Publish**, the Concierge renders every frame (`__duration × __fps`) with **WebCodecs** + the bundled WebM muxer and writes `animation.webm` into the folder. It renders **as fast as your machine allows** — not in real time — so a 15- or 30-minute movie is just more frames, not a 30-minute wait while a tab records.\n- Because it's deterministic, build with a **seekable** timeline (no `Math.random()` / wall-clock); seeking to time `t` must always draw the same frame. Lottie works too: `renderer:'canvas'` + `anim.goToAndStop(t*1000, false)`.\n\n## 3D in your movie\nFor **in-browser 3D** — self-contained, cinematic, no install — start a **Game / 3D** project (the Babylon.js engine: PBR, soft shadows, ACES tone mapping, and a **seekable** animation timeline), or add it here via `concierge.scaffold_engine(engine='babylon')`. The same paused-`AnimationGroup` timeline that animates a movie also runs as a game, and exports to video exactly like this 2D path. Keep `window.__seek(t)` deterministic (a function of `t`, never a clock or live physics). `concierge.scaffold_engine(engine='three')` remains for low-level/bespoke Three.js.\nFor heavy *offline* 3D, drive **Blender** instead (must be installed): `concierge-plugin blender-setup`, install `vendor/blender-mcp/addon.py`, connect it.\n"
     )
 }
 
 const STARTER_MOVIE_CSS: &str = r#"html,body{height:100%;margin:0;overflow:hidden;background:#0a0b1a}
 #stage{display:block;width:100vw;height:100vh}
 "#;
+
+/// A Game / 3D project built on **Babylon.js** — a real engine (scene graph, PBR, shadows, and a
+/// **seekable** animation timeline), so one scene is a 3D scene, a game, OR a movie. The deterministic
+/// `capture.js` exports the timeline to video exactly like the Movie path.
+fn game_starter(title: &str) -> (String, String) {
+    let html = format!(
+        "<!doctype html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n<title>{title}</title>\n<link rel=\"stylesheet\" href=\"style.css\">\n<script src=\"babylon.js\"></script>\n<script src=\"webm-muxer.js\"></script>\n<script src=\"capture.js\"></script>\n<script src=\"CharacterController.js\"></script>\n</head>\n<body>\n  <canvas id=\"stage\" width=\"1280\" height=\"720\"></canvas>\n  <script>\n{BABYLON_GAME_JS}\n  </script>\n</body>\n</html>\n"
+    );
+    (html, STARTER_GAME_CSS.to_string())
+}
+
+fn game_readme(title: &str) -> String {
+    format!(
+        "# {title} — Game / 3D\n\nA self-contained 3D project on **Babylon.js** — a real engine (scene graph, PBR, soft shadows, ACES tone mapping, and a **seekable** animation timeline), all bundled (no CDN, no install). Works offline and on IPFS.\n\n> **Building with an AI assistant?** This project is **already staged** — `index.html`, `babylon.js`, `webm-muxer.js`, `capture.js`, `CharacterController.js`, `style.css`. **Build by EDITING the scene `<script>` in `index.html`.** Do NOT re-scaffold or re-add the engine files. (Via MCP: `concierge.list_site`, then `concierge.write_asset` with `path='index.html'`.)\n\n## One scene, three modes\n- **3D scene** — model + light the world (PBR materials, soft shadows, ACES tone mapping are set up).\n- **Movie** — keep a PAUSED `AnimationGroup` and drive it from `window.__seek(t)` via `goToFrame`. On Save/Publish the Concierge renders every frame to a real video (any length, no ffmpeg). MUST be deterministic: a function of `t`, never a clock or live physics.\n- **Game** — put input + logic in `engine.runRenderLoop`. For a walk/run/jump character, use the bundled `CharacterController.js` (attach it to a rigged glTF character with named animation ranges idle/walk/run/jump).\n\n## Physics\nLive physics is great for games but is **not** seek-deterministic — for MOVIES use keyframe/AnimationGroup animation, not physics.\n"
+    )
+}
+
+const STARTER_GAME_CSS: &str = r#"html,body{height:100%;margin:0;overflow:hidden;background:#0a0b1a}
+#stage{display:block;width:100vw;height:100vh;outline:none;touch-action:none}
+"#;
+
+/// The starter scene: cinematic defaults (ACES tone mapping, soft shadows, PBR) + the deterministic
+/// SEEKABLE contract (a paused AnimationGroup driven by `goToFrame`). The same scene serves a movie
+/// (recorded) or a game (interactive). No double quotes inside, so it concatenates cleanly.
+const BABYLON_GAME_JS: &str = r#"  const canvas = document.getElementById('stage');
+  const engine = new BABYLON.Engine(canvas, true, { preserveDrawingBuffer: true, stencil: true });
+  const scene = new BABYLON.Scene(engine);
+  scene.clearColor = new BABYLON.Color4(0.04, 0.045, 0.10, 1);
+
+  // Cinematic default: ACES filmic tone mapping (not flat).
+  const ip = scene.imageProcessingConfiguration;
+  ip.toneMappingEnabled = true; ip.toneMappingType = BABYLON.ImageProcessingConfiguration.TONEMAPPING_ACES; ip.exposure = 1.1;
+
+  const camera = new BABYLON.ArcRotateCamera('cam', Math.PI/3, Math.PI/2.6, 9, BABYLON.Vector3.Zero(), scene);
+  camera.attachControl(canvas, true);
+
+  // Hemispheric ambient (sky/ground tint) + a key directional with SOFT shadows.
+  const hemi = new BABYLON.HemisphericLight('hemi', new BABYLON.Vector3(0,1,0), scene);
+  hemi.intensity = 0.55; hemi.diffuse = new BABYLON.Color3(0.55,0.6,0.78); hemi.groundColor = new BABYLON.Color3(0.08,0.09,0.16);
+  const key = new BABYLON.DirectionalLight('key', new BABYLON.Vector3(-1,-2,-1.2), scene);
+  key.position = new BABYLON.Vector3(8,12,8); key.intensity = 2.2;
+  const shadow = new BABYLON.ShadowGenerator(2048, key); shadow.useBlurExponentialShadowMap = true; shadow.blurKernel = 32;
+
+  // Ground catches the shadow.
+  const ground = BABYLON.MeshBuilder.CreateGround('ground', { width:60, height:60 }, scene);
+  const gmat = new BABYLON.PBRMaterial('gmat', scene); gmat.albedoColor = new BABYLON.Color3(0.05,0.06,0.13); gmat.metallic = 0; gmat.roughness = 1;
+  ground.material = gmat; ground.receiveShadows = true; ground.position.y = -1;
+
+  // PBR hero — metalness/roughness matched to the surface.
+  const hero = BABYLON.MeshBuilder.CreatePolyhedron('hero', { type:2, size:1 }, scene);
+  const hmat = new BABYLON.PBRMaterial('hmat', scene); hmat.albedoColor = new BABYLON.Color3(0.54,0.36,1.0); hmat.metallic = 0.3; hmat.roughness = 0.25;
+  hero.material = hmat; shadow.addShadowCaster(hero);
+
+  // MOVIE: a SEEKABLE keyframe timeline (deterministic). Extend it; its length = the video length.
+  const fps = 30, dur = 6;
+  const spin = new BABYLON.Animation('spin','rotation.y',fps,BABYLON.Animation.ANIMATIONTYPE_FLOAT,BABYLON.Animation.ANIMATIONLOOPMODE_CYCLE);
+  spin.setKeys([{frame:0,value:0},{frame:fps*dur,value:Math.PI*2}]);
+  const bob = new BABYLON.Animation('bob','position.y',fps,BABYLON.Animation.ANIMATIONTYPE_FLOAT,BABYLON.Animation.ANIMATIONLOOPMODE_CYCLE);
+  bob.setKeys([{frame:0,value:0},{frame:fps*dur/2,value:0.5},{frame:fps*dur,value:0}]);
+  const timeline = new BABYLON.AnimationGroup('timeline', scene);
+  timeline.addTargetedAnimation(spin, hero); timeline.addTargetedAnimation(bob, hero);
+  timeline.normalize(0, fps*dur); timeline.pause();
+
+  // The Concierge's deterministic export drives this per frame on Save/Publish:
+  window.__canvas = canvas; window.__fps = fps; window.__duration = dur;
+  window.__seek = (t) => { timeline.goToFrame(Math.min(t, dur) * fps); scene.render(); };
+
+  // Live preview loops by wall clock; capture stops it and calls __seek directly (deterministic).
+  const preview = () => window.__seek((performance.now()/1000) % dur);
+  engine.runRenderLoop(preview);
+  window.__beginRender = () => engine.stopRenderLoop();
+  window.__endRender   = () => engine.runRenderLoop(preview);
+  window.addEventListener('resize', () => engine.resize());
+
+  // GAME instead? Skip __seek; put input + logic in runRenderLoop. CharacterController.js is loaded —
+  // attach it to a rigged glTF character (named animations idle/walk/run/jump) for walk/run/jump."#;
 
 const MOVIE_ANIMATION_JS: &str = r#"// Build your movie by EXTENDING this timeline — its length sets the video length, and the
 // Concierge renders every frame deterministically on Save/Publish (seconds or 30 minutes).

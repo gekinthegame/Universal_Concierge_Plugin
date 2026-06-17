@@ -744,6 +744,26 @@ mod tests {
         let mhtml = std::fs::read_to_string(movie_path.join("index.html")).unwrap();
         assert!(mhtml.contains("<canvas id=\"stage\"") && mhtml.contains("webm-muxer.js"));
 
+        // A Game / 3D project ships the Babylon engine + the character controller + the seekable,
+        // capturable scene — one substrate for a scene, a game, OR a movie.
+        let game = body(&mutation_canvas_new(
+            &mem,
+            &serde_json::json!({ "name": "Voxel World", "kind": "game" }).to_string(),
+        ));
+        let game: serde_json::Value = serde_json::from_str(&game).unwrap();
+        let game_path = std::path::PathBuf::from(game["path"].as_str().unwrap());
+        assert!(
+            std::fs::metadata(game_path.join("babylon.js")).unwrap().len() > 1_000_000,
+            "Game project must bundle the full Babylon engine"
+        );
+        assert!(game_path.join("CharacterController.js").is_file());
+        assert!(game_path.join("capture.js").is_file() && game_path.join("webm-muxer.js").is_file());
+        let ghtml = std::fs::read_to_string(game_path.join("index.html")).unwrap();
+        // Cinematic + deterministic-seekable scene wired to the video exporter.
+        assert!(ghtml.contains("BABYLON.Engine") && ghtml.contains("babylon.js"));
+        assert!(ghtml.contains("window.__seek") && ghtml.contains("goToFrame"));
+        assert!(ghtml.contains("TONEMAPPING_ACES"));
+
         // A duplicate name is refused (no silent overwrite).
         let dup = mutation_canvas_new(
             &mem,
