@@ -19,6 +19,7 @@ use serde::{Deserialize, Serialize};
 use crate::binding::{Cid, MemCli};
 use crate::error::{Error, Result};
 use crate::messaging::RoomPolicy;
+use crate::update::RulesChannel;
 
 fn now_secs() -> u64 {
     std::time::SystemTime::now()
@@ -166,6 +167,55 @@ pub fn verify_block(claimed: &Cid, block_bytes: &[u8]) -> bool {
     mem::cid::compute(block_bytes).to_string() == claimed.0
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct YaraMatch {
+    pub namespace: String,
+    pub rule: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct YaraScanReport {
+    pub matches: Vec<YaraMatch>,
+}
+
+impl YaraScanReport {
+    pub fn clean(&self) -> bool {
+        self.matches.is_empty()
+    }
+}
+
+/// Compiled YARA-X rules loaded from the updater's active ruleset.
+pub struct YaraScanner {
+    rules: yara_x::Rules,
+}
+
+impl YaraScanner {
+    pub fn from_rules_text(text: &str) -> Result<Self> {
+        let rules = yara_x::compile(text)
+            .map_err(|e| Error::SecurityPolicy(format!("active YARA rules do not compile: {e}")))?;
+        Ok(Self { rules })
+    }
+
+    pub fn scan_bytes(&self, bytes: &[u8]) -> Result<YaraScanReport> {
+        let mut scanner = yara_x::Scanner::new(&self.rules);
+        scanner
+            .set_timeout(std::time::Duration::from_secs(10))
+            .max_matches_per_pattern(32)
+            .fast_scan(true);
+        let results = scanner
+            .scan(bytes)
+            .map_err(|e| Error::SecurityPolicy(format!("YARA scan failed: {e}")))?;
+        let matches = results
+            .matching_rules()
+            .map(|rule| YaraMatch {
+                namespace: rule.namespace().to_string(),
+                rule: rule.identifier().to_string(),
+            })
+            .collect();
+        Ok(YaraScanReport { matches })
+    }
+}
+
 /// Store-backed quarantine registry persisted at `<store>/quarantine.json`.
 impl MemCli {
     fn quarantine_path(&self) -> Result<std::path::PathBuf> {
@@ -201,6 +251,22 @@ impl MemCli {
     /// The full local quarantine registry (for listing / the GUI).
     pub fn quarantine_registry(&self) -> Result<QuarantineRegistry> {
         Ok(QuarantineRegistry::load(&self.quarantine_path()?))
+    }
+
+    /// Load the active YARA-X ruleset selected by the autoupdater. First launch lays
+    /// down the baked baseline, so this works offline before the rules channel updates.
+    pub fn active_yara_scanner(&self) -> Result<YaraScanner> {
+        let store = self.store_dir()?;
+        let cfg = self.config()?;
+        let channel = RulesChannel::new(&store, cfg.update.freshness_secs());
+        channel.ensure_baseline()?;
+        let text = std::fs::read_to_string(channel.active_rules_path())
+            .map_err(|e| Error::Io(format!("read active YARA rules: {e}")))?;
+        YaraScanner::from_rules_text(&text)
+    }
+
+    pub fn scan_bytes_with_active_rules(&self, bytes: &[u8]) -> Result<YaraScanReport> {
+        self.active_yara_scanner()?.scan_bytes(bytes)
     }
 }
 
@@ -352,6 +418,19 @@ mod tests {
             Verdict::Block(_)
         ));
         assert_eq!(Guardian::screen_file(&policy, "design.fig"), Verdict::Allow);
+    }
+
+    #[test]
+    fn yara_scanner_detects_eicar_from_baked_baseline() {
+        let rules = String::from_utf8(crate::update::baseline::BAKED_RULES.to_vec()).unwrap();
+        let scanner = YaraScanner::from_rules_text(&rules).unwrap();
+        let report = scanner
+            .scan_bytes(b"prefix X5O!P%@AP[4\\PZX54(P^)7CC)7}$EICAR-STANDARD-ANTIVIRUS-TEST-FILE!$H+H* suffix")
+            .unwrap();
+        assert!(report
+            .matches
+            .iter()
+            .any(|m| m.rule == "UCP_EICAR_Test_File"));
     }
 
     #[test]

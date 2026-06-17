@@ -24,7 +24,8 @@ jobs:
         run: |
           test -z "$(git ls-files '3mail-main/**' 'Planet-main/**')"
           test -z "$(git ls-files | grep -E '(^|/)\.env($|\.)' || true)"
-          test "$(du -sk crates/mcp/src/engines | cut -f1)" -le 4096
+          test "$(du -sk crates/mcp/src/engines | cut -f1)" -le 25600
+          test "$(du -sk crates/gui/src/engines | cut -f1)" -le 25600
           cargo metadata --locked --no-deps --format-version 1 >/dev/null
       - run: cargo fmt --all -- --check
       - run: cargo clippy --locked --workspace --all-targets -- -D warnings

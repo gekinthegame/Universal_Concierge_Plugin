@@ -84,6 +84,21 @@ COMMANDS:
     sidekick <status|enable|disable>
                          Enable the on-node Sidekick (embedding model) + its
                          private Kubo node (they enable together)        [Phase 8]
+    update <check|apply> Binary self-update: check the release channel, or download +
+                         verify + stage the latest (applies on next launch) [Autoupdate]
+    rules <status|refresh|source <ipns>|pin <key>|pause|resume>
+                         YARA-X rules channel: show epoch/freshness/publisher, force a
+                         signed refresh over IPNS, set the IPNS source, pin a key, or
+                         pause/resume automatic updates (kill switch)    [Autoupdate]
+    brain <status|model <id>>
+                         Brain tab: show the connected local LLM (oMLX/OpenAI-compatible)
+                         + embedder status, or set the model to route to     [Brain]
+    youtube <status|connect|disconnect|receipts|upload <file> [flags]>
+                         Upload a rendered canvas video to YouTube (official API).
+                         upload flags: --title --description --tags a,b --privacy
+                         private|unlisted|public --category N --made-for-kids
+                         --synthetic --notify --playlist ID --thumbnail F
+                         --caption F --caption-lang L                    [YouTube]
     export-car <name|cid> [out.car] [--dry-run|--confirm-plaintext-export]
                          Review, then explicitly export plaintext CARv1       [Privacy]
     import-car <file.car> <name> [--agent-id ID --signature SIG]
@@ -689,6 +704,474 @@ fn cmd_quarantine(args: &[String]) -> ExitCode {
             ExitCode::from(2)
         }
     }
+}
+
+/// `concierge-plugin update <check|apply>` — the app (binary) self-update channel.
+fn cmd_update(args: &[String]) -> ExitCode {
+    let mem = MemCli::new(workdir());
+    match args.get(1).map(String::as_str) {
+        Some("check") | None => match mem.update_check() {
+            Ok(Some(release)) => {
+                println!(
+                    "update available: {} → {}",
+                    env!("CARGO_PKG_VERSION"),
+                    release.version
+                );
+                match release.asset_name {
+                    Some(name) => println!("  asset: {name}"),
+                    None => println!("  (no prebuilt asset for this platform)"),
+                }
+                ExitCode::SUCCESS
+            }
+            Ok(None) => {
+                println!("up to date (running {})", env!("CARGO_PKG_VERSION"));
+                ExitCode::SUCCESS
+            }
+            Err(e) => {
+                eprintln!("update check failed: {e}");
+                ExitCode::FAILURE
+            }
+        },
+        Some("apply") => match mem.update_apply() {
+            Ok(Some(staged)) => {
+                println!(
+                    "staged {} — verified and ready; it will apply on next launch.",
+                    staged.version
+                );
+                ExitCode::SUCCESS
+            }
+            Ok(None) => {
+                println!("already up to date — nothing to apply");
+                ExitCode::SUCCESS
+            }
+            Err(e) => {
+                eprintln!("update apply failed: {e}");
+                ExitCode::FAILURE
+            }
+        },
+        Some(other) => {
+            eprintln!("unknown update subcommand `{other}` — use check|apply");
+            ExitCode::from(2)
+        }
+    }
+}
+
+/// `concierge-plugin rules <status|refresh|source|pin|pause|resume>` — the YARA-X rules channel.
+fn cmd_rules(args: &[String]) -> ExitCode {
+    let mem = MemCli::new(workdir());
+    match args.get(1).map(String::as_str) {
+        Some("status") | None => match mem.rules_status() {
+            Ok(s) => {
+                let age = if s.age_secs == 0 {
+                    "fresh (baked baseline)".to_string()
+                } else {
+                    format!("{} day(s) old", s.age_secs / 86_400)
+                };
+                println!(
+                    "rules epoch {} — {} ({} rules)",
+                    s.epoch, s.version, s.rule_count
+                );
+                println!("  cid:        {}", s.cid);
+                println!("  publisher:  {}", s.publisher_fpr);
+                println!(
+                    "  freshness:  {age}{}",
+                    if s.fresh {
+                        ""
+                    } else {
+                        " — may be stale; enable your node to refresh"
+                    }
+                );
+                println!(
+                    "  auto-rules: {}",
+                    if s.paused {
+                        "PAUSED (kill switch on)"
+                    } else {
+                        "on"
+                    }
+                );
+                ExitCode::SUCCESS
+            }
+            Err(e) => {
+                eprintln!("rules status failed: {e}");
+                ExitCode::FAILURE
+            }
+        },
+        Some("refresh") => match mem.rules_refresh() {
+            Ok(out) => {
+                if out.updated {
+                    println!("updated to epoch {} ({})", out.epoch, out.version);
+                    if out.stale_publisher {
+                        println!(
+                            "  note: publisher has been quiet for {} day(s)",
+                            out.age_secs / 86_400
+                        );
+                    }
+                } else {
+                    println!("already current at epoch {}", out.epoch);
+                }
+                ExitCode::SUCCESS
+            }
+            Err(e) => {
+                eprintln!("rules refresh failed: {e}");
+                ExitCode::FAILURE
+            }
+        },
+        Some("source") => {
+            let Some(ipns) = args.get(2) else {
+                eprintln!("usage: concierge-plugin rules source <ipns-name>");
+                return ExitCode::from(2);
+            };
+            match mem.rules_set_source(ipns) {
+                Ok(()) => {
+                    println!("rules IPNS source set to {ipns}");
+                    ExitCode::SUCCESS
+                }
+                Err(e) => {
+                    eprintln!("rules source failed: {e}");
+                    ExitCode::FAILURE
+                }
+            }
+        }
+        Some("pin") => {
+            let Some(key) = args.get(2) else {
+                eprintln!("usage: concierge-plugin rules pin <ed25519-pubkey-hex>");
+                return ExitCode::from(2);
+            };
+            match mem.rules_pin(key) {
+                Ok(()) => {
+                    println!("pinned publisher key {key}");
+                    ExitCode::SUCCESS
+                }
+                Err(e) => {
+                    eprintln!("rules pin failed: {e}");
+                    ExitCode::FAILURE
+                }
+            }
+        }
+        Some(state @ ("pause" | "resume")) => {
+            let paused = state == "pause";
+            match mem.rules_set_paused(paused) {
+                Ok(()) => {
+                    println!(
+                        "automatic rules updates {}",
+                        if paused { "paused" } else { "resumed" }
+                    );
+                    ExitCode::SUCCESS
+                }
+                Err(e) => {
+                    eprintln!("rules {state} failed: {e}");
+                    ExitCode::FAILURE
+                }
+            }
+        }
+        Some(other) => {
+            eprintln!(
+                "unknown rules subcommand `{other}` — use status|refresh|source|pin|pause|resume"
+            );
+            ExitCode::from(2)
+        }
+    }
+}
+
+/// `concierge-plugin youtube <status|connect|disconnect|receipts|upload …>`.
+/// `concierge-plugin brain <status|model <id>>` — the connected sovereign LLM + embedder.
+fn cmd_brain(args: &[String]) -> ExitCode {
+    let mem = MemCli::new(workdir());
+    match args.get(1).map(String::as_str) {
+        Some("status") | None => match mem.brain_metrics() {
+            Ok(m) => {
+                if m.baseline.up {
+                    println!(
+                        "engine: {} @ {} ({} model(s){})",
+                        m.baseline.engine,
+                        m.baseline.base_url,
+                        m.baseline.models.len(),
+                        m.baseline
+                            .active_model
+                            .map(|a| format!(", active: {a}"))
+                            .unwrap_or_default()
+                    );
+                    if !m.baseline.models.is_empty() {
+                        println!("  models: {}", m.baseline.models.join(", "));
+                    }
+                    match &m.rich {
+                        Some(_) => println!("  rich metrics: available (oMLX)"),
+                        None => println!("  rich metrics: not available for this engine"),
+                    }
+                } else {
+                    println!(
+                        "engine: not detected at {} — start a local engine (e.g. oMLX)",
+                        m.baseline.base_url
+                    );
+                }
+                println!(
+                    "embedder: {} / {}{}",
+                    m.embedder.backend,
+                    m.embedder.model,
+                    if m.embedder.shares_engine {
+                        " (shares the connected engine)"
+                    } else {
+                        ""
+                    }
+                );
+                ExitCode::SUCCESS
+            }
+            Err(e) => {
+                eprintln!("brain status failed: {e}");
+                ExitCode::FAILURE
+            }
+        },
+        Some("model") => {
+            let Some(id) = args.get(2) else {
+                eprintln!("usage: concierge-plugin brain model <model-id>");
+                return ExitCode::from(2);
+            };
+            match mem.brain_set_model(id) {
+                Ok(()) => {
+                    println!("routing to model: {id}");
+                    ExitCode::SUCCESS
+                }
+                Err(e) => {
+                    eprintln!("brain model failed: {e}");
+                    ExitCode::FAILURE
+                }
+            }
+        }
+        Some(other) => {
+            eprintln!("unknown brain subcommand `{other}` — use status|model");
+            ExitCode::from(2)
+        }
+    }
+}
+
+fn cmd_youtube(args: &[String]) -> ExitCode {
+    let mem = MemCli::new(workdir());
+    match args.get(1).map(String::as_str) {
+        Some("status") | None => match mem.youtube_status() {
+            Ok(s) => {
+                if s.connected {
+                    println!(
+                        "YouTube: connected{}",
+                        s.channel.map(|c| format!(" ({c})")).unwrap_or_default()
+                    );
+                } else {
+                    println!("YouTube: not connected — run `concierge-plugin youtube connect`");
+                }
+                ExitCode::SUCCESS
+            }
+            Err(e) => {
+                eprintln!("youtube status failed: {e}");
+                ExitCode::FAILURE
+            }
+        },
+        Some("connect") => yt_connect(&mem),
+        Some("disconnect") => match mem.youtube_disconnect() {
+            Ok(()) => {
+                println!("YouTube disconnected — tokens removed");
+                ExitCode::SUCCESS
+            }
+            Err(e) => {
+                eprintln!("youtube disconnect failed: {e}");
+                ExitCode::FAILURE
+            }
+        },
+        Some("receipts") => match mem.youtube_receipts() {
+            Ok(rs) => {
+                if rs.is_empty() {
+                    println!("no uploads yet");
+                } else {
+                    for r in rs {
+                        println!(
+                            "{}  {}  [{}]  {}",
+                            r.video_url, r.title, r.privacy_status, r.source_rel
+                        );
+                    }
+                }
+                ExitCode::SUCCESS
+            }
+            Err(e) => {
+                eprintln!("youtube receipts failed: {e}");
+                ExitCode::FAILURE
+            }
+        },
+        Some("upload") => yt_upload(&mem, args),
+        Some(other) => {
+            eprintln!(
+                "unknown youtube subcommand `{other}` — use status|connect|disconnect|receipts|upload"
+            );
+            ExitCode::from(2)
+        }
+    }
+}
+
+/// Drive a Google Desktop OAuth login over an ephemeral loopback redirect.
+fn yt_connect(mem: &MemCli) -> ExitCode {
+    use std::io::{Read, Write};
+    if !concierge_core::youtube::oauth_configured() {
+        eprintln!(
+            "this build has no Google OAuth client — rebuild with UCP_YT_CLIENT_ID / \
+             UCP_YT_CLIENT_SECRET (see crates/core/src/youtube/SETUP.md)"
+        );
+        return ExitCode::FAILURE;
+    }
+    let listener = match std::net::TcpListener::bind("127.0.0.1:0") {
+        Ok(l) => l,
+        Err(e) => {
+            eprintln!("could not bind loopback for OAuth: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let port = listener.local_addr().map(|a| a.port()).unwrap_or(0);
+    let redirect = format!("http://127.0.0.1:{port}");
+    let start = mem.youtube_oauth_start(&redirect);
+    println!(
+        "Authorize YouTube in your browser:\n{}",
+        start.authorize_url
+    );
+    let _ = concierge_gui::open_app(&start.authorize_url);
+
+    let (mut stream, _) = match listener.accept() {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("OAuth redirect not received: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let mut buf = [0u8; 4096];
+    let n = stream.read(&mut buf).unwrap_or(0);
+    let request = String::from_utf8_lossy(&buf[..n]);
+    let target = request
+        .lines()
+        .next()
+        .and_then(|l| l.split_whitespace().nth(1))
+        .unwrap_or("");
+    let query = target.split_once('?').map(|(_, q)| q).unwrap_or("");
+    let mut code = String::new();
+    let mut state = String::new();
+    for pair in query.split('&') {
+        if let Some(v) = pair.strip_prefix("code=") {
+            code = urldecode(v);
+        } else if let Some(v) = pair.strip_prefix("state=") {
+            state = urldecode(v);
+        }
+    }
+    let body = "<html><body>YouTube connected — you can close this tab.</body></html>";
+    let _ = stream.write_all(
+        format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\n\r\n{body}",
+            body.len()
+        )
+        .as_bytes(),
+    );
+    if state != start.state || code.is_empty() {
+        eprintln!("OAuth state mismatch or missing code — aborting");
+        return ExitCode::FAILURE;
+    }
+    let token = match concierge_core::youtube::oauth_exchange(&code, &start.verifier, &redirect) {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("token exchange failed: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    match mem.youtube_save_oauth(token, None) {
+        Ok(()) => {
+            println!("YouTube connected.");
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("could not save credentials: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn yt_upload(mem: &MemCli, args: &[String]) -> ExitCode {
+    let Some(file) = args.get(2) else {
+        eprintln!(
+            "usage: concierge-plugin youtube upload <file> [--title T] [--privacy private|unlisted|public] …"
+        );
+        return ExitCode::from(2);
+    };
+    let meta = concierge_core::VideoMetadata {
+        title: flag_value(args, "--title").unwrap_or_else(|| "Untitled".to_string()),
+        description: flag_value(args, "--description").unwrap_or_default(),
+        tags: flag_value(args, "--tags")
+            .map(|t| {
+                t.split(',')
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .collect()
+            })
+            .unwrap_or_default(),
+        category_id: flag_value(args, "--category").unwrap_or_else(|| "22".to_string()),
+        privacy_status: flag_value(args, "--privacy").unwrap_or_else(|| "private".to_string()),
+        made_for_kids: args.iter().any(|a| a == "--made-for-kids"),
+        contains_synthetic_media: args.iter().any(|a| a == "--synthetic"),
+        publish_at: flag_value(args, "--publish-at"),
+        notify_subscribers: args.iter().any(|a| a == "--notify"),
+    };
+    let req = concierge_core::UploadRequest {
+        file_path: file.clone(),
+        metadata: meta,
+        thumbnail_path: flag_value(args, "--thumbnail"),
+        caption_path: flag_value(args, "--caption"),
+        caption_language: flag_value(args, "--caption-lang").unwrap_or_default(),
+        playlist_id: flag_value(args, "--playlist"),
+    };
+    let mut last_pct = u64::MAX;
+    let mut progress = |sent: u64, total: u64| {
+        let pct = sent.saturating_mul(100).checked_div(total).unwrap_or(0);
+        if pct != last_pct {
+            last_pct = pct;
+            eprint!("\ruploading… {pct}%");
+        }
+    };
+    match mem.youtube_upload(&req, &mut progress) {
+        Ok(receipt) => {
+            eprintln!();
+            println!("uploaded: {}", receipt.video_url);
+            for x in &receipt.extras {
+                println!("  {x}");
+            }
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("\nyoutube upload failed: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// Minimal percent-decoding for OAuth redirect query values.
+fn urldecode(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'%' if i + 2 < bytes.len() => {
+                let hi = (bytes[i + 1] as char).to_digit(16);
+                let lo = (bytes[i + 2] as char).to_digit(16);
+                if let (Some(hi), Some(lo)) = (hi, lo) {
+                    out.push((hi * 16 + lo) as u8);
+                    i += 3;
+                    continue;
+                }
+                out.push(bytes[i]);
+                i += 1;
+            }
+            b'+' => {
+                out.push(b' ');
+                i += 1;
+            }
+            b => {
+                out.push(b);
+                i += 1;
+            }
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
 }
 
 /// `synthesis <candidates [--threshold N] | assemble <room> | record <room> <summary…>>`
@@ -1396,6 +1879,44 @@ fn maybe_connect_claude(mem: &MemCli) {
     }
 }
 
+fn spawn_rules_autoupdater(mem: MemCli) {
+    std::thread::spawn(move || loop {
+        match mem.rules_auto_refresh_if_due() {
+            Ok(Some(out)) if out.updated => {
+                println!(
+                    "auto-rules updated to epoch {} ({})",
+                    out.epoch, out.version
+                );
+            }
+            Ok(_) => {}
+            Err(e) => eprintln!("note: auto-rules refresh skipped: {e}"),
+        }
+        let sleep_secs = mem
+            .config()
+            .map(|cfg| (cfg.update.poll_interval_secs / 4).clamp(60, 3_600))
+            .unwrap_or(15 * 60);
+        std::thread::sleep(std::time::Duration::from_secs(sleep_secs));
+    });
+}
+
+fn spawn_app_update_checker(mem: MemCli) {
+    std::thread::spawn(move || loop {
+        match mem.update_poll_cache() {
+            Ok(status) => {
+                if let Some(release) = status.release {
+                    println!("app update available: {}", release.version);
+                }
+            }
+            Err(e) => eprintln!("note: app update check skipped: {e}"),
+        }
+        let sleep_secs = mem
+            .config()
+            .map(|cfg| cfg.update.poll_interval_secs.clamp(60, 21_600))
+            .unwrap_or(6 * 60 * 60);
+        std::thread::sleep(std::time::Duration::from_secs(sleep_secs));
+    });
+}
+
 fn cmd_gui(args: &[String]) -> ExitCode {
     let preferred = args
         .iter()
@@ -1412,6 +1933,15 @@ fn cmd_gui(args: &[String]) -> ExitCode {
         .and_then(|i| args.get(i + 1))
         .and_then(|p| p.parse::<u32>().ok());
     let mem = MemCli::new(workdir());
+
+    // Apply-on-relaunch (autoupdater §4): if a verified binary update was staged on a
+    // previous run, swap it in now, before serving. Best-effort — a failed swap must
+    // never block the app from starting, so we only surface it.
+    match mem.update_apply_on_launch() {
+        Ok(Some(v)) => println!("applied staged update → {v} (restart to run it)"),
+        Ok(None) => {}
+        Err(e) => eprintln!("note: could not apply staged update: {e}"),
+    }
 
     // First launch (any install path): connect to Claude Code as an MCP server.
     maybe_connect_claude(&mem);
@@ -1433,6 +1963,8 @@ fn cmd_gui(args: &[String]) -> ExitCode {
     let port = concierge_gui::pick_free_port(preferred);
     let addr = format!("127.0.0.1:{port}");
     let store_label = workdir().display().to_string();
+    spawn_rules_autoupdater(mem.clone());
+    spawn_app_update_checker(mem.clone());
     println!("Concierge Data Platter → http://{addr}  (loopback-only; Ctrl-C to stop)");
     match concierge_gui::serve_with_options(
         mem,
@@ -1486,6 +2018,10 @@ fn main() -> ExitCode {
         Some("sync") => cmd_sync(&args),
         Some("actor") => cmd_actor(&args),
         Some("sidekick") => cmd_sidekick(&args),
+        Some("update") => cmd_update(&args),
+        Some("rules") => cmd_rules(&args),
+        Some("youtube") => cmd_youtube(&args),
+        Some("brain") => cmd_brain(&args),
         Some("backend") => cmd_backend(&args),
         Some("id") => cmd_id(),
         Some("follow") => cmd_follow(&args),

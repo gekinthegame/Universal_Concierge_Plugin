@@ -1,5 +1,5 @@
 use super::*;
-use concierge_core::{cid_link, Node};
+use concierge_core::{cid_link, Node, YaraScanner};
 use concierge_net::content_message_id;
 
 /// A one-shot callback that completes an OAuth exchange from the returned code.
@@ -22,6 +22,13 @@ pub(super) fn handle_mutation(
         "/api/claude-code/detach" => mutation_claude_code_attach(mem, false),
         "/api/sidekick/enable" => mutation_sidekick(mem, true),
         "/api/sidekick/disable" => mutation_sidekick(mem, false),
+        "/api/update/check" => mutation_update_check(mem),
+        "/api/update/apply" => mutation_update_apply(mem),
+        "/api/update/rules/refresh" => mutation_update_rules_refresh(mem),
+        "/api/update/rules/pause" => mutation_update_rules_pause(mem, body),
+        "/api/update/rules/pin" => mutation_update_rules_pin(mem, body),
+        "/api/update/rules/source" => mutation_update_rules_source(mem, body),
+        "/api/brain/model" => mutation_brain_model(mem, body),
         "/api/set-password" => mutation_set_password(mem, body),
         "/api/authorize-publish" => mutation_authorize_publish(mem, options, body),
         "/api/convert-private" => mutation_convert_private(mem, options, body),
@@ -33,6 +40,9 @@ pub(super) fn handle_mutation(
         "/api/deploy/test" => mutation_deploy_test(mem, body),
         "/api/deploy/cloudflare/oauth-start" => mutation_cf_oauth_start(mem),
         "/api/deploy/firebase/oauth-start" => mutation_fb_oauth_start(mem),
+        "/api/youtube/oauth-start" => mutation_yt_oauth_start(mem),
+        "/api/youtube/disconnect" => mutation_yt_disconnect(mem),
+        "/api/youtube/upload" => mutation_yt_upload(mem, body),
         "/api/pin/credentials" => mutation_pin_credentials(mem, body),
         "/api/pin/test" => mutation_pin_test(mem, body),
         "/api/site/pin" => mutation_pin_site(mem, body),
@@ -97,6 +107,13 @@ fn mutation_label(path: &str) -> Option<&'static str> {
         "/api/claude-code/detach" => "detached the Claude Code adapter",
         "/api/sidekick/enable" => "enabling Sidekick (private Kubo node + on-node embedder)",
         "/api/sidekick/disable" => "disabled Sidekick",
+        "/api/update/check" => "checked for an app update",
+        "/api/update/apply" => "downloaded & staged an app update",
+        "/api/update/rules/refresh" => "refreshed the signed safety rules",
+        "/api/update/rules/pause" => "toggled the auto-rules kill switch",
+        "/api/update/rules/pin" => "pinned a rules publisher key",
+        "/api/update/rules/source" => "updated the rules IPNS source",
+        "/api/brain/model" => "selected the Brain's active model",
         "/api/set-password" => "set the store password",
         "/api/authorize-publish" => "authorized a public publish (egress)",
         "/api/convert-private" => "converted a node to private (encrypted)",
@@ -106,6 +123,9 @@ fn mutation_label(path: &str) -> Option<&'static str> {
         "/api/deploy/test" => "tested a publishing connection",
         "/api/deploy/cloudflare/oauth-start" => "started Cloudflare one-click login",
         "/api/deploy/firebase/oauth-start" => "started Firebase one-click login",
+        "/api/youtube/oauth-start" => "started YouTube one-click login",
+        "/api/youtube/disconnect" => "disconnected YouTube uploads",
+        "/api/youtube/upload" => "started a YouTube upload (sends the video to YouTube)",
         "/api/pin/credentials" => "saved pinning-service credentials (0600, on-device)",
         "/api/pin/test" => "tested a pinning-service connection",
         "/api/site/pin" => "pinned a website to a pinning service",
@@ -293,6 +313,117 @@ fn mutation_mcp_write(mem: &MemCli, body: &str) -> Response {
     }
 }
 
+/// `POST /api/update/check`: query the release feed for a newer app build (network).
+/// Returns the `ReleaseInfo` if one is available, or `null` when already current.
+fn mutation_update_check(mem: &MemCli) -> Response {
+    match mem.update_check() {
+        Ok(release) => match serde_json::to_string(&serde_json::json!({ "release": release })) {
+            Ok(body) => Response::json(body),
+            Err(e) => Response::error(e.to_string()),
+        },
+        Err(error) => Response::error(error.to_string()),
+    }
+}
+
+/// `POST /api/update/apply`: download + stage the newer build (network). The staged
+/// binary is swapped in on next launch. Returns the `StagedUpdate`, or `null` if none.
+fn mutation_update_apply(mem: &MemCli) -> Response {
+    match mem.update_apply() {
+        Ok(staged) => match serde_json::to_string(&serde_json::json!({ "staged": staged })) {
+            Ok(body) => Response::json(body),
+            Err(e) => Response::error(e.to_string()),
+        },
+        Err(error) => Response::error(error.to_string()),
+    }
+}
+
+/// `POST /api/update/rules/refresh`: refresh the signed safety-rule set over IPNS
+/// from the pinned publisher (network). Returns the `RefreshOutcome`.
+fn mutation_update_rules_refresh(mem: &MemCli) -> Response {
+    match mem.rules_refresh() {
+        Ok(outcome) => match serde_json::to_string(&outcome) {
+            Ok(body) => Response::json(body),
+            Err(e) => Response::error(e.to_string()),
+        },
+        Err(error) => Response::error(error.to_string()),
+    }
+}
+
+/// `POST /api/update/rules/pause`: the kill switch — freeze (or resume) automatic
+/// rule refreshes. Body: `{ "paused": bool }`.
+fn mutation_update_rules_pause(mem: &MemCli, body: &str) -> Response {
+    let value = match parse_body(body) {
+        Ok(value) => value,
+        Err(response) => return response,
+    };
+    let paused = value
+        .get("paused")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    match mem.rules_set_paused(paused) {
+        Ok(()) => Response::json(serde_json::json!({ "ok": true, "paused": paused }).to_string()),
+        Err(error) => Response::error(error.to_string()),
+    }
+}
+
+/// `POST /api/update/rules/pin`: trust only signatures from this publisher key.
+/// Body: `{ "key": "<hex>" }`.
+fn mutation_update_rules_pin(mem: &MemCli, body: &str) -> Response {
+    let value = match parse_body(body) {
+        Ok(value) => value,
+        Err(response) => return response,
+    };
+    let key = match body_str(&value, "key") {
+        Ok(k) => k.trim(),
+        Err(response) => return response,
+    };
+    if key.is_empty() {
+        return Response::bad_request("publisher key is required");
+    }
+    match mem.rules_pin(key) {
+        Ok(()) => Response::json(serde_json::json!({ "ok": true }).to_string()),
+        Err(error) => Response::error(error.to_string()),
+    }
+}
+
+/// `POST /api/update/rules/source`: set the IPNS latest pointer used for rules.
+/// Body: `{ "ipns": "<k51...>" }`.
+fn mutation_update_rules_source(mem: &MemCli, body: &str) -> Response {
+    let value = match parse_body(body) {
+        Ok(value) => value,
+        Err(response) => return response,
+    };
+    let ipns = match body_str(&value, "ipns") {
+        Ok(k) => k.trim(),
+        Err(response) => return response,
+    };
+    if ipns.is_empty() {
+        return Response::bad_request("rules IPNS name is required");
+    }
+    match mem.rules_set_source(ipns) {
+        Ok(()) => Response::json(serde_json::json!({ "ok": true }).to_string()),
+        Err(error) => Response::error(error.to_string()),
+    }
+}
+
+/// `POST /api/brain/model`: persist which model the Brain routes to. Body:
+/// `{ "model": "<id>" }`. An empty string clears the selection, so we read the field
+/// directly (not via `body_str`, which rejects empty strings).
+fn mutation_brain_model(mem: &MemCli, body: &str) -> Response {
+    let value = match parse_body(body) {
+        Ok(value) => value,
+        Err(response) => return response,
+    };
+    let model = match value.get("model").and_then(|item| item.as_str()) {
+        Some(model) => model,
+        None => return Response::bad_request("missing required field"),
+    };
+    match mem.brain_set_model(model) {
+        Ok(()) => Response::json(serde_json::json!({ "ok": true }).to_string()),
+        Err(error) => Response::error(error.to_string()),
+    }
+}
+
 /// `/api/sites`: the user's published websites (the Planet Pattern registry).
 pub(super) fn sites_json(mem: &MemCli) -> CoreResult<String> {
     let sites: Vec<serde_json::Value> = mem
@@ -338,6 +469,26 @@ pub(super) fn deploy_status_json(mem: &MemCli) -> CoreResult<String> {
 /// Tokens are NEVER serialized to the GUI.
 pub(super) fn pin_status_json(mem: &MemCli) -> CoreResult<String> {
     Ok(mem.pin_status()?.to_string())
+}
+
+/// Non-secret YouTube connection state (connected/channel/expiry — never a token).
+/// Also reports whether this build can upload at all, so the GUI can show a clear
+/// "uploads aren't configured in this build" state instead of a dead Connect button.
+pub(super) fn youtube_status_json(mem: &MemCli) -> CoreResult<String> {
+    let status = mem.youtube_status()?;
+    Ok(serde_json::json!({
+        "configured": concierge_core::youtube::oauth_configured(),
+        "connected": status.connected,
+        "channel": status.channel,
+        "expires_at": status.expires_at,
+    })
+    .to_string())
+}
+
+/// The local upload history (newest last). Receipts carry no secrets.
+pub(super) fn youtube_receipts_json(mem: &MemCli) -> CoreResult<String> {
+    let receipts = mem.youtube_receipts()?;
+    serde_json::to_string(&receipts).map_err(|e| Error::Io(format!("serialize receipts: {e}")))
 }
 
 /// Store (or clear) the credentials for one external host. The token/password
@@ -522,6 +673,160 @@ fn mutation_fb_oauth_start(mem: &MemCli) -> Response {
         start.state,
         finish,
     )
+}
+
+// ── YouTube uploads (Google PKCE) ───────────────────────────────────────────────
+// Connect mirrors the Firebase ephemeral-loopback OAuth flow exactly (it reuses the
+// generic `oauth_run`/`oauth_listen` helpers with a YouTube-specific `finish`). Upload
+// is long-running, so it follows the spawn-thread + in-memory progress-map + poll
+// pattern (cloned from `oauth_progress`) instead of blocking the request thread.
+
+/// Begin the YouTube one-click login. Returns `{ authorize_url }` for the GUI to open;
+/// the loopback listener then exchanges the code and saves the token off-thread.
+fn mutation_yt_oauth_start(mem: &MemCli) -> Response {
+    if !concierge_core::youtube::oauth_configured() {
+        return Response::error(
+            "YouTube uploads aren't configured in this build (no Google client baked in)."
+                .to_string(),
+        );
+    }
+    // Google "Desktop" clients allow a loopback redirect on any port — bind an ephemeral one.
+    let listener = match std::net::TcpListener::bind("127.0.0.1:0") {
+        Ok(listener) => listener,
+        Err(error) => {
+            return Response::error(format!("couldn't open the local login listener: {error}"))
+        }
+    };
+    let port = listener.local_addr().map(|a| a.port()).unwrap_or(0);
+    let redirect = format!("http://127.0.0.1:{port}");
+    let start = mem.youtube_oauth_start(&redirect);
+    let mem = mem.clone();
+    let verifier = start.verifier.clone();
+    let finish = Box::new(move |code: &str| -> Result<String, String> {
+        let token = concierge_core::youtube::oauth_exchange(code, &verifier, &redirect)?;
+        mem.youtube_save_oauth(token, None)
+            .map_err(|e| e.to_string())?;
+        let channel = mem
+            .youtube_status()
+            .ok()
+            .and_then(|s| s.channel)
+            .unwrap_or_default();
+        Ok(if channel.is_empty() {
+            "connected".to_string()
+        } else {
+            channel
+        })
+    });
+    oauth_run(
+        "youtube",
+        start.authorize_url,
+        listener,
+        start.state,
+        finish,
+    )
+}
+
+/// `POST /api/youtube/disconnect`: forget the saved Google token on this device.
+fn mutation_yt_disconnect(mem: &MemCli) -> Response {
+    match mem.youtube_disconnect() {
+        Ok(()) => Response::json(serde_json::json!({ "ok": true }).to_string()),
+        Err(error) => Response::error(error.to_string()),
+    }
+}
+
+/// In-memory progress for the (single) active upload, polled by the modal. Carries no
+/// secrets — cloned from `oauth_progress`'s OnceLock<Mutex<HashMap>> pattern.
+#[derive(Clone, Default)]
+struct UploadProgress {
+    status: String, // "idle" | "uploading" | "complete" | "error"
+    percent: u8,
+    bytes_sent: u64,
+    bytes_total: u64,
+    message: String,
+    video_url: String,
+}
+fn youtube_progress() -> &'static std::sync::Mutex<HashMap<String, UploadProgress>> {
+    static PROGRESS: std::sync::OnceLock<std::sync::Mutex<HashMap<String, UploadProgress>>> =
+        std::sync::OnceLock::new();
+    PROGRESS.get_or_init(|| std::sync::Mutex::new(HashMap::new()))
+}
+fn youtube_progress_set(p: UploadProgress) {
+    if let Ok(mut map) = youtube_progress().lock() {
+        map.insert("upload".to_string(), p);
+    }
+}
+
+/// Non-secret upload progress for the active job, polled by the modal.
+pub(super) fn youtube_upload_status_json() -> String {
+    let p = youtube_progress()
+        .lock()
+        .ok()
+        .and_then(|m| m.get("upload").cloned())
+        .unwrap_or_default();
+    let status = if p.status.is_empty() {
+        "idle".to_string()
+    } else {
+        p.status
+    };
+    serde_json::json!({
+        "status": status,
+        "percent": p.percent,
+        "bytes_sent": p.bytes_sent,
+        "bytes_total": p.bytes_total,
+        "message": p.message,
+        "video_url": p.video_url,
+    })
+    .to_string()
+}
+
+/// `POST /api/youtube/upload`: parse the review-screen body as an `UploadRequest`,
+/// then spawn a thread that runs the (long) upload while updating the progress map.
+/// Returns immediately with `{ started: true }` — the request thread never blocks on
+/// the transfer. The GUI polls `/api/youtube/upload-status` for progress.
+fn mutation_yt_upload(mem: &MemCli, body: &str) -> Response {
+    let req: concierge_core::UploadRequest = match serde_json::from_str(body) {
+        Ok(req) => req,
+        Err(error) => return Response::bad_request(&format!("invalid upload request: {error}")),
+    };
+    youtube_progress_set(UploadProgress {
+        status: "uploading".to_string(),
+        message: "Starting upload…".to_string(),
+        ..Default::default()
+    });
+    let mem = mem.clone();
+    std::thread::spawn(move || {
+        let mut progress = |sent: u64, total: u64| {
+            let percent = if total > 0 {
+                ((sent.min(total) as u128 * 100) / total as u128) as u8
+            } else {
+                0
+            };
+            youtube_progress_set(UploadProgress {
+                status: "uploading".to_string(),
+                percent,
+                bytes_sent: sent,
+                bytes_total: total,
+                message: format!("Uploading… {percent}%"),
+                video_url: String::new(),
+            });
+        };
+        match mem.youtube_upload(&req, &mut progress) {
+            Ok(receipt) => youtube_progress_set(UploadProgress {
+                status: "complete".to_string(),
+                percent: 100,
+                bytes_sent: 0,
+                bytes_total: 0,
+                message: "Upload complete.".to_string(),
+                video_url: receipt.video_url,
+            }),
+            Err(error) => youtube_progress_set(UploadProgress {
+                status: "error".to_string(),
+                message: error.to_string(),
+                ..Default::default()
+            }),
+        }
+    });
+    Response::json(serde_json::json!({ "started": true }).to_string())
 }
 
 /// Wait (up to 5 min) for the browser to redirect to the localhost callback, capture
@@ -1625,6 +1930,14 @@ struct PathIngest {
     entries: Vec<serde_json::Value>,
 }
 
+fn remember_ignored(acc: &mut PathIngest, rel: &str, reason: impl AsRef<str>) {
+    acc.ignored += 1;
+    if acc.ignored_examples.len() < 10 {
+        acc.ignored_examples
+            .push(format!("{rel}: {}", reason.as_ref()));
+    }
+}
+
 /// Extension → media type, covering the documents/images/video/audio the user
 /// is likely to ingest. Unknown types fall back to `application/octet-stream`.
 fn guess_media_type_path(path: &str) -> &'static str {
@@ -1674,6 +1987,7 @@ fn guess_media_type_path(path: &str) -> &'static str {
 /// very large files amplify on-disk storage accordingly.
 fn ingest_one_file(
     mem: &MemCli,
+    scanner: &YaraScanner,
     abs: &std::path::Path,
     rel: &str,
     acc: &mut PathIngest,
@@ -1681,10 +1995,21 @@ fn ingest_one_file(
     let bytes = match std::fs::read(abs) {
         Ok(bytes) => bytes,
         Err(_) => {
-            acc.ignored += 1;
+            remember_ignored(acc, rel, "unreadable");
             return Ok(None);
         }
     };
+    let report = scanner.scan_bytes(&bytes)?;
+    if !report.clean() {
+        let rules = report
+            .matches
+            .iter()
+            .map(|m| m.rule.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        remember_ignored(acc, rel, format!("blocked by YARA rule(s): {rules}"));
+        return Ok(None);
+    }
     let media_type = guess_media_type_path(rel);
     let blob = mem.put_blob(&bytes, media_type)?;
     let fields = serde_json::json!({
@@ -1708,6 +2033,7 @@ fn ingest_one_file(
 /// `INGEST_SKIP_DIRS` denylist. Paths in the manifest are relative to `base`.
 fn walk_dir(
     mem: &MemCli,
+    scanner: &YaraScanner,
     dir: &std::path::Path,
     base: &std::path::Path,
     acc: &mut PathIngest,
@@ -1732,14 +2058,14 @@ fn walk_dir(
             if INGEST_SKIP_DIRS.contains(&name.as_str()) {
                 continue;
             }
-            walk_dir(mem, &path, base, acc)?;
+            walk_dir(mem, scanner, &path, base, acc)?;
         } else if file_type.is_file() {
             let rel = path
                 .strip_prefix(base)
                 .unwrap_or(&path)
                 .to_string_lossy()
                 .replace('\\', "/");
-            ingest_one_file(mem, &path, &rel, acc)?;
+            ingest_one_file(mem, scanner, &path, &rel, acc)?;
         }
     }
     Ok(())
@@ -1793,7 +2119,11 @@ fn mutation_ingest_path(mem: &MemCli, body: &str) -> Response {
 
     if meta.is_dir() {
         let mut acc = PathIngest::default();
-        if let Err(error) = walk_dir(mem, &path, &path, &mut acc) {
+        let scanner = match mem.active_yara_scanner() {
+            Ok(scanner) => scanner,
+            Err(error) => return mutation_error(&error),
+        };
+        if let Err(error) = walk_dir(mem, &scanner, &path, &path, &mut acc) {
             return mutation_error(&error);
         }
         if acc.entries.is_empty() {
@@ -1878,10 +2208,20 @@ fn mutation_ingest_path(mem: &MemCli, body: &str) -> Response {
         .map(|name| name.to_string_lossy().to_string())
         .unwrap_or_else(|| raw.to_string());
     let mut acc = PathIngest::default();
-    let file_ref = match ingest_one_file(mem, &path, &rel, &mut acc) {
+    let scanner = match mem.active_yara_scanner() {
+        Ok(scanner) => scanner,
+        Err(error) => return mutation_error(&error),
+    };
+    let file_ref = match ingest_one_file(mem, &scanner, &path, &rel, &mut acc) {
         Ok(Some(cid)) => cid,
         Ok(None) => {
-            return Response::bad_request(&format!("skipped {raw}: unreadable"));
+            return Response::bad_request(&format!(
+                "skipped {raw}: {}",
+                acc.ignored_examples
+                    .first()
+                    .map(String::as_str)
+                    .unwrap_or("unreadable or blocked")
+            ));
         }
         Err(error) => return mutation_error(&error),
     };

@@ -1305,6 +1305,10 @@ const BABYLON_GAME_JS: &str = r#"  const canvas = document.getElementById('stage
   const camera = new BABYLON.ArcRotateCamera('cam', Math.PI/3, Math.PI/2.6, 9, BABYLON.Vector3.Zero(), scene);
   camera.attachControl(canvas, true);
 
+  // IBL: image-based lighting so PBR metal/roughness surfaces have a real environment to reflect.
+  // createDefaultEnvironment sets scene.environmentTexture (a built-in studio .env) + a skybox/ground.
+  const env = scene.createDefaultEnvironment({ createSkybox: true, skyboxSize: 150, groundColor: new BABYLON.Color3(0.2,0.2,0.25), enableGroundShadow: true });
+
   // Hemispheric ambient (sky/ground tint) + a key directional with SOFT shadows.
   const hemi = new BABYLON.HemisphericLight('hemi', new BABYLON.Vector3(0,1,0), scene);
   hemi.intensity = 0.55; hemi.diffuse = new BABYLON.Color3(0.55,0.6,0.78); hemi.groundColor = new BABYLON.Color3(0.08,0.09,0.16);
@@ -1671,6 +1675,76 @@ pub(super) fn canvas_projects_get(mem: &MemCli) -> Response {
     });
     Response::json(
         serde_json::json!({ "root": canvas.to_string_lossy(), "projects": projects }).to_string(),
+    )
+}
+
+/// `GET /api/youtube/videos`: every rendered video (.webm/.mp4/.mov/.mkv) under the
+/// canvas root, with its **absolute** path — so the YouTube upload picker can hand a
+/// path the core's `validate_upload_source` accepts (it must sit inside the canvas
+/// output). Mirrors `canvas_projects_get`; read-only; newest-modified first.
+pub(super) fn canvas_videos_get(mem: &MemCli) -> Response {
+    let empty = || serde_json::json!({ "root": "", "videos": [] }).to_string();
+    let canvas = match canvas_root(mem) {
+        Ok(canvas) => canvas,
+        Err(_) => return Response::json(empty()),
+    };
+    let is_video = |name: &str| {
+        let lower = name.to_ascii_lowercase();
+        lower.ends_with(".webm")
+            || lower.ends_with(".mp4")
+            || lower.ends_with(".mov")
+            || lower.ends_with(".mkv")
+    };
+    let mut videos: Vec<serde_json::Value> = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(&canvas) {
+        for entry in entries.flatten() {
+            let dir = entry.path();
+            let Ok(metadata) = std::fs::symlink_metadata(&dir) else {
+                continue;
+            };
+            if metadata.file_type().is_symlink() || !metadata.is_dir() {
+                continue;
+            }
+            let project = entry.file_name().to_string_lossy().to_string();
+            if project.starts_with('.') {
+                continue;
+            }
+            for rel in folder_files(&dir) {
+                if !is_video(&rel) {
+                    continue;
+                }
+                let abs = dir.join(&rel);
+                let mtime = std::fs::symlink_metadata(&abs)
+                    .ok()
+                    .and_then(|m| m.modified().ok())
+                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0);
+                let size = std::fs::symlink_metadata(&abs)
+                    .map(|m| m.len())
+                    .unwrap_or(0);
+                videos.push(serde_json::json!({
+                    "project": project,
+                    "rel": rel,
+                    "path": abs.to_string_lossy(),
+                    "size": size,
+                    "mtime": mtime,
+                }));
+            }
+        }
+    }
+    videos.sort_by(|a, b| {
+        b.get("mtime")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0)
+            .cmp(
+                &a.get("mtime")
+                    .and_then(serde_json::Value::as_u64)
+                    .unwrap_or(0),
+            )
+    });
+    Response::json(
+        serde_json::json!({ "root": canvas.to_string_lossy(), "videos": videos }).to_string(),
     )
 }
 

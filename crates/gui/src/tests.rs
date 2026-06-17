@@ -486,6 +486,48 @@ mod tests {
     }
 
     #[test]
+    fn ingest_path_blocks_yara_matches_before_storing_files() {
+        let (_dir, mem) = store();
+        let folder = tempfile::tempdir().unwrap();
+        std::fs::write(folder.path().join("clean.txt"), "ordinary notes").unwrap();
+        std::fs::write(
+            folder.path().join("eicar.txt"),
+            "X5O!P%@AP[4\\PZX54(P^)7CC)7}$EICAR-STANDARD-ANTIVIRUS-TEST-FILE!$H+H*",
+        )
+        .unwrap();
+
+        let response = handle_mutation(
+            &mem,
+            &GuiOptions::default(),
+            "/api/ingest-path",
+            &serde_json::json!({ "path": folder.path().to_string_lossy() }).to_string(),
+        );
+        assert_eq!(response.status, 200, "{}", body(&response));
+        let parsed: serde_json::Value = serde_json::from_str(&body(&response)).unwrap();
+        assert_eq!(parsed["files"], 1);
+        assert_eq!(parsed["ignored"], 1);
+        assert!(
+            parsed["ignored_examples"]
+                .to_string()
+                .contains("UCP_EICAR_Test_File"),
+            "blocked rule surfaced: {parsed}"
+        );
+    }
+
+    #[test]
+    fn update_rules_source_persists_ipns_name() {
+        let (_dir, mem) = store();
+        let response = handle_mutation(
+            &mem,
+            &GuiOptions::default(),
+            "/api/update/rules/source",
+            r#"{"ipns":"/ipns/k51rulespublisher"}"#,
+        );
+        assert_eq!(response.status, 200, "{}", body(&response));
+        assert_eq!(mem.config().unwrap().update.rules_ipns, "k51rulespublisher");
+    }
+
+    #[test]
     fn socket_responses_use_correct_reason_phrases_and_bound_headers() {
         let (_dir, mem) = store();
         let options = GuiOptions::default();
@@ -522,10 +564,11 @@ mod tests {
         )
         .expect("write preview");
         let token = preview_token(&site.canonicalize().expect("canonical site"));
-        options.preview_dirs.lock().expect("preview lock").insert(
-            token.clone(),
-            site.canonicalize().expect("canonical site"),
-        );
+        options
+            .preview_dirs
+            .lock()
+            .expect("preview lock")
+            .insert(token.clone(), site.canonicalize().expect("canonical site"));
 
         let preview = canvas_preview_serve(&mem, &options, &format!("{token}/index.html"));
         assert_eq!(preview.status, 200);
@@ -662,7 +705,11 @@ mod tests {
             .unwrap()
             .to_string();
 
-        let resp = mutation_canvas_pwa(&mem, &options, &serde_json::json!({ "token": token }).to_string());
+        let resp = mutation_canvas_pwa(
+            &mem,
+            &options,
+            &serde_json::json!({ "token": token }).to_string(),
+        );
         assert_eq!(resp.status, 200);
 
         // Manifest + service worker + (non-empty) icons are written.
@@ -721,7 +768,12 @@ mod tests {
         assert!(app_path.join("manifest.json").is_file());
         assert!(app_path.join("service-worker.js").is_file());
         assert!(app_path.join("app.js").is_file());
-        assert!(std::fs::metadata(app_path.join("icon-512.png")).unwrap().len() > 100);
+        assert!(
+            std::fs::metadata(app_path.join("icon-512.png"))
+                .unwrap()
+                .len()
+                > 100
+        );
         let ahtml = std::fs::read_to_string(app_path.join("index.html")).unwrap();
         assert!(ahtml.contains("rel=\"manifest\"") && ahtml.contains("serviceWorker"));
 
@@ -732,11 +784,26 @@ mod tests {
         ));
         let movie: serde_json::Value = serde_json::from_str(&movie).unwrap();
         let movie_path = std::path::PathBuf::from(movie["path"].as_str().unwrap());
-        assert!(std::fs::metadata(movie_path.join("gsap.min.js")).unwrap().len() > 1000);
-        assert!(std::fs::metadata(movie_path.join("lottie.min.js")).unwrap().len() > 1000);
+        assert!(
+            std::fs::metadata(movie_path.join("gsap.min.js"))
+                .unwrap()
+                .len()
+                > 1000
+        );
+        assert!(
+            std::fs::metadata(movie_path.join("lottie.min.js"))
+                .unwrap()
+                .len()
+                > 1000
+        );
         assert!(movie_path.join("animation.js").is_file());
         assert!(movie_path.join("capture.js").is_file());
-        assert!(std::fs::metadata(movie_path.join("webm-muxer.js")).unwrap().len() > 1000);
+        assert!(
+            std::fs::metadata(movie_path.join("webm-muxer.js"))
+                .unwrap()
+                .len()
+                > 1000
+        );
         assert!(movie_path.join("README.md").is_file());
         let ajs = std::fs::read_to_string(movie_path.join("animation.js")).unwrap();
         // Deterministic, seekable, full-length rendering (not a fixed-time clip).
@@ -753,16 +820,22 @@ mod tests {
         let game: serde_json::Value = serde_json::from_str(&game).unwrap();
         let game_path = std::path::PathBuf::from(game["path"].as_str().unwrap());
         assert!(
-            std::fs::metadata(game_path.join("babylon.js")).unwrap().len() > 1_000_000,
+            std::fs::metadata(game_path.join("babylon.js"))
+                .unwrap()
+                .len()
+                > 1_000_000,
             "Game project must bundle the full Babylon engine"
         );
         assert!(game_path.join("CharacterController.js").is_file());
-        assert!(game_path.join("capture.js").is_file() && game_path.join("webm-muxer.js").is_file());
+        assert!(
+            game_path.join("capture.js").is_file() && game_path.join("webm-muxer.js").is_file()
+        );
         let ghtml = std::fs::read_to_string(game_path.join("index.html")).unwrap();
         // Cinematic + deterministic-seekable scene wired to the video exporter.
         assert!(ghtml.contains("BABYLON.Engine") && ghtml.contains("babylon.js"));
         assert!(ghtml.contains("window.__seek") && ghtml.contains("goToFrame"));
         assert!(ghtml.contains("TONEMAPPING_ACES"));
+        assert!(ghtml.contains("createDefaultEnvironment"));
 
         // A duplicate name is refused (no silent overwrite).
         let dup = mutation_canvas_new(
@@ -778,7 +851,8 @@ mod tests {
         );
         assert_eq!(escape.status, 400);
         assert!(web_path.is_dir());
-        let del = mutation_canvas_delete(&mem, &serde_json::json!({ "name": "My-Site" }).to_string());
+        let del =
+            mutation_canvas_delete(&mem, &serde_json::json!({ "name": "My-Site" }).to_string());
         assert_eq!(del.status, 200);
         assert!(!web_path.exists());
     }
@@ -866,7 +940,11 @@ mod tests {
         assert_eq!(write.status, 403);
         assert_eq!(std::fs::read_to_string(&outside_index).unwrap(), "original");
 
-        let pwa = mutation_canvas_pwa(&mem, &options, &serde_json::json!({ "token": token }).to_string());
+        let pwa = mutation_canvas_pwa(
+            &mem,
+            &options,
+            &serde_json::json!({ "token": token }).to_string(),
+        );
         assert!(pwa.status >= 400);
         assert_eq!(std::fs::read_to_string(&outside_index).unwrap(), "original");
     }

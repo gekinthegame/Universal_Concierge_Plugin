@@ -587,6 +587,57 @@ pub fn ipns_publish(repo: &Path, cid: &str, site: &str) -> Result<String> {
     Ok(name)
 }
 
+/// Resolve an IPNS name (`k51…` or `/ipns/<name>`) to the `/ipfs/<cid>` path it
+/// currently points to, returning the bare CID. This is the consumer side of the
+/// rules channel (autoupdater §5b): the node resolves the publisher's signed
+/// "latest" pointer before fetching and verifying the manifest it names.
+pub fn ipns_resolve(repo: &Path, name: &str) -> Result<String> {
+    let arg = if name.starts_with("/ipns/") {
+        name.to_string()
+    } else {
+        format!("/ipns/{name}")
+    };
+    let out = ipfs(repo)
+        .args(["name", "resolve", "--nocache", &arg])
+        .stdin(Stdio::null())
+        .output()
+        .map_err(|e| Error::Io(format!("ipfs name resolve: {e}")))?;
+    if !out.status.success() {
+        return Err(Error::BackendDown(format!(
+            "ipfs name resolve failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        )));
+    }
+    // Output: "/ipfs/<cid>"
+    let path = String::from_utf8_lossy(&out.stdout);
+    let cid = path.trim().trim_start_matches("/ipfs/").trim().to_string();
+    if cid.is_empty() {
+        return Err(Error::BackendDown(
+            "ipfs name resolve returned an empty pointer".to_string(),
+        ));
+    }
+    Ok(cid)
+}
+
+/// Fetch the raw bytes of a content-addressed object by CID (`ipfs cat`). Because
+/// the bytes are content-addressed, Kubo verifies that what it returns hashes to
+/// `cid` — so a malicious gateway/peer cannot substitute different bytes for a
+/// given CID. Used to pull the rules manifest and bundle in the consumer path.
+pub fn ipfs_cat(repo: &Path, cid: &str) -> Result<Vec<u8>> {
+    let out = ipfs(repo)
+        .args(["cat", cid])
+        .stdin(Stdio::null())
+        .output()
+        .map_err(|e| Error::Io(format!("ipfs cat: {e}")))?;
+    if !out.status.success() {
+        return Err(Error::BackendDown(format!(
+            "ipfs cat failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        )));
+    }
+    Ok(out.stdout)
+}
+
 /// Announce to the public DHT that this node provides `cid`, so gateways can find a
 /// provider. `ipfs add` only *queues* a provide (it runs asynchronously and can lag
 /// minutes behind), which is exactly why a freshly published site reads as "no

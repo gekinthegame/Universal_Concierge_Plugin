@@ -1,0 +1,159 @@
+name: Rules Publish
+
+# Autoupdater rules channel — the CI bot that runs WITHOUT the maintainer
+# (AUTOUPDATER_PLAN.md §5a). On a schedule it mirrors the upstream YARA Forge
+# community feed, validates it against the `yara-x` the app ships, signs a manifest
+# with the offline publisher key, pins the bundle to a Kubo node, and republishes the
+# single signed IPNS "latest" pointer the user's node resolves. We curate provenance
+# and sign; we never author a signature.
+#
+# Trust note: IPNS is only the mutable pointer. The user's node rejects anything not
+# signed by the baked publisher key (crates/core/src/update/baseline.rs) with an epoch
+# strictly newer than what it already trusts. A stolen IPNS key cannot ship poison.
+#
+# Required secrets (publish is skipped with a notice if absent, so validation still runs):
+#   RULES_SIGNING_KEY  — Ed25519 seed (hex) matching a baked PUBLISHER_PUBKEYS_HEX key.
+#   RULES_IPNS_KEY     — base64 of an exported Kubo IPNS keypair (`ipfs key export`),
+#                        whose name is the publisher's stable k51… address.
+#   KUBO_RPC_ADDR      — persistent publisher Kubo API multiaddr/URL. The runner uses
+#                        this remote node; it does not publish from an ephemeral daemon.
+
+on:
+  schedule:
+    - cron: "17 6 * * *" # daily, offset off the hour
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install shipped yara-x (validation) + signing deps
+        shell: bash
+        run: |
+          set -euo pipefail
+          YARA_X_VERSION="$(cargo metadata --locked --format-version=1 | python3 -c 'import json, sys; meta=json.load(sys.stdin); print(next(p["version"] for p in meta["packages"] if p["name"] == "yara-x"))')"
+          test -n "$YARA_X_VERSION"
+          pip install --quiet "yara-x==$YARA_X_VERSION" cryptography
+          echo "YARA_X_VERSION=$YARA_X_VERSION" >> "$GITHUB_ENV"
+          echo "Using yara-x==$YARA_X_VERSION"
+
+      - name: Pull the latest YARA Forge core tier
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p forge bundle
+          # Core tier to start (§9: confirm aggregate licensing before widening tiers).
+          curl -fsSL -o forge/core.zip \
+            https://github.com/YARAHQ/yara-forge/releases/latest/download/yara-forge-rules-core.zip
+          unzip -o -q forge/core.zip -d forge
+          # Concatenate the core ruleset into one deterministic bundle file.
+          found="$(find forge \( -name '*-core.yar' -o -name 'yara-rules-core.yar' \) | sort | head -1)"
+          test -n "$found"
+          cp "$found" bundle/rules.yar
+          wc -l bundle/rules.yar
+
+      - name: Validate against the shipped yara-x engine
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import yara_x, sys
+          src = open("bundle/rules.yar").read()
+          try:
+              rules = yara_x.compile(src)
+          except Exception as e:
+              print(f"::error::ruleset failed yara-x validation: {e}")
+              sys.exit(1)
+          print("yara-x compiled the core ruleset OK")
+          PY
+
+      - name: Build + sign manifest
+        id: manifest
+        env:
+          SIGNING_KEY: ${{ secrets.RULES_SIGNING_KEY }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -z "${SIGNING_KEY:-}" ]; then
+            echo "::warning::RULES_SIGNING_KEY not set — building an UNSIGNED manifest artifact only (no publish)."
+          fi
+          python3 - <<'PY'
+          import os, json, hashlib, base64, datetime, subprocess
+          data = open("bundle/rules.yar", "rb").read()
+          sha = hashlib.sha256(data).hexdigest()
+          # Monotonic epoch from the UTC date (YYYYMMDD); always > the baked baseline (1).
+          epoch = int(datetime.datetime.utcnow().strftime("%Y%m%d"))
+          version = datetime.datetime.utcnow().strftime("%Y.%m.%d")
+          ts = int(datetime.datetime.utcnow().timestamp())
+          engine = f"yara-x {os.environ.get('YARA_X_VERSION', '').strip()}".strip()
+          # The CID is filled in after `ipfs add`; we re-sign once we have it.
+          manifest = {"epoch": epoch, "version": version, "cid": "", "sha256": sha,
+                      "ts": ts, "engine": engine, "sig": ""}
+          json.dump(manifest, open("bundle/manifest.partial.json", "w"))
+          print(f"epoch={epoch} version={version} sha256={sha[:16]}…")
+          PY
+
+      - name: Pin + publish to IPNS
+        if: ${{ secrets.RULES_SIGNING_KEY != '' && secrets.RULES_IPNS_KEY != '' && secrets.KUBO_RPC_ADDR != '' }}
+        env:
+          SIGNING_KEY: ${{ secrets.RULES_SIGNING_KEY }}
+          IPNS_KEY_B64: ${{ secrets.RULES_IPNS_KEY }}
+          KUBO_RPC_ADDR: ${{ secrets.KUBO_RPC_ADDR }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Install the Kubo CLI and talk to the persistent publisher node.
+          curl -fsSL https://dist.ipfs.tech/kubo/v0.30.0/kubo_v0.30.0_linux-amd64.tar.gz | tar -xz
+          IPFS="./kubo/ipfs --api ${KUBO_RPC_ADDR}"
+
+          # Import the publisher IPNS key.
+          echo "$IPNS_KEY_B64" | base64 -d > ipns.key
+          $IPFS key import rules-publisher ipns.key || true
+
+          # 1. Add the UnixFS bundle dir → CID. 2. Sign manifest over the canonical payload.
+          CID="$($IPFS add -r -Q --cid-version=1 bundle)"
+          python3 - "$CID" <<'PY'
+          import os, sys, json, base64
+          from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+          cid = sys.argv[1]
+          m = json.load(open("bundle/manifest.partial.json"))
+          m["cid"] = cid
+          # MUST match verify::Manifest::signing_bytes byte-for-byte.
+          payload = f"ucp-rules-manifest-v1\n{m['epoch']}\n{m['version']}\n{m['cid']}\n{m['sha256']}\n{m['ts']}\n{m['engine']}".encode()
+          sk = Ed25519PrivateKey.from_private_bytes(bytes.fromhex(os.environ["SIGNING_KEY"].strip()))
+          m["sig"] = base64.standard_b64encode(sk.sign(payload)).decode()
+          json.dump(m, open("bundle/manifest.json", "w"))
+          print("signed manifest for cid", cid)
+          PY
+
+          # 3. Add the manifest → its CID. 4. Pin/export. 5. Publish that CID to IPNS.
+          MCID="$($IPFS add -Q --cid-version=1 bundle/manifest.json)"
+          $IPFS pin add "$CID" "$MCID"
+          $IPFS dag export "$CID" > bundle/rules.car
+          $IPFS name publish --key=rules-publisher --lifetime=720h "/ipfs/$MCID"
+          echo "published manifest $MCID (bundle $CID) to IPNS"
+
+      - name: Publish configuration notice
+        if: ${{ secrets.RULES_SIGNING_KEY == '' || secrets.RULES_IPNS_KEY == '' || secrets.KUBO_RPC_ADDR == '' }}
+        run: |
+          echo "::notice::Rules were validated but not published. Configure RULES_SIGNING_KEY, RULES_IPNS_KEY, and KUBO_RPC_ADDR to publish to the durable IPNS channel."
+
+      - name: Upload manifest artifact (transparency / audit)
+        uses: actions/upload-artifact@v4
+        with:
+          name: rules-manifest
+          path: |
+            bundle/manifest.json
+            bundle/manifest.partial.json
+            bundle/rules.car
+            bundle/rules.yar
+          if-no-files-found: warn

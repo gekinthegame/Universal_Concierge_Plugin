@@ -39,15 +39,16 @@ use canvas::preview_token;
 use canvas::{
     approved_agent_matches_peer, approved_contact_card_author, canvas_draft_get, canvas_file_get,
     canvas_files_get, canvas_mtime_get, canvas_preview_serve, canvas_projects_get,
-    canvas_signal_get, mutation_canvas_delete, mutation_canvas_new, mutation_canvas_open,
-    mutation_canvas_pwa, mutation_canvas_signal, mutation_canvas_snapshot, mutation_canvas_write,
-    mutation_save_checkpoint, parse_canvas_signal, parse_contact_card, queue_canvas_signal,
-    record_site_checkpoint, site_checkpoint_response, site_checkpoints_json,
+    canvas_signal_get, canvas_videos_get, mutation_canvas_delete, mutation_canvas_new,
+    mutation_canvas_open, mutation_canvas_pwa, mutation_canvas_signal, mutation_canvas_snapshot,
+    mutation_canvas_write, mutation_save_checkpoint, parse_canvas_signal, parse_contact_card,
+    queue_canvas_signal, record_site_checkpoint, site_checkpoint_response, site_checkpoints_json,
 };
 use mutations::{
     body_str, contacts_json, deploy_status_json, handle_mutation, mcp_status_json,
     oauth_status_json, parse_body, pin_status_json, profile_json, reachability_json, requests_json,
     resolve_response, sites_json, valid_site_name, wallet_json, wallet_proposals_json,
+    youtube_receipts_json, youtube_status_json, youtube_upload_status_json,
 };
 use read_routes::{
     activity_response, blob_response, checkpoints_json, egress_plan_response, graph_response,
@@ -704,9 +705,16 @@ pub fn handle_with_options(
         "/api/search" => search_response(mem, options, query),
         "/api/sidekick/status" => to_response(sidekick_status_json(mem)),
         "/api/claude-code/status" => to_response(claude_code_status_json(mem)),
+        "/api/update/status" => to_response(update_status_json(mem)),
+        "/api/brain/metrics" => to_response(brain_metrics_json(mem)),
         "/api/deploy/credentials" => to_response(deploy_status_json(mem)),
         "/api/deploy/cloudflare/oauth-status" => Response::json(oauth_status_json("cloudflare")),
         "/api/deploy/firebase/oauth-status" => Response::json(oauth_status_json("firebase")),
+        "/api/youtube/status" => to_response(youtube_status_json(mem)),
+        "/api/youtube/oauth-status" => Response::json(oauth_status_json("youtube")),
+        "/api/youtube/upload-status" => Response::json(youtube_upload_status_json()),
+        "/api/youtube/receipts" => to_response(youtube_receipts_json(mem)),
+        "/api/youtube/videos" => canvas_videos_get(mem),
         "/api/pin/credentials" => to_response(pin_status_json(mem)),
         "/api/wallet" => to_response(wallet_json(mem)),
         "/api/wallet/proposals" => to_response(wallet_proposals_json(mem)),
@@ -723,6 +731,36 @@ fn to_response(result: CoreResult<String>) -> Response {
         Ok(body) => Response::json(body),
         Err(error) => Response::error(error.to_string()),
     }
+}
+
+/// `GET /api/update/status`: the running app version plus the signed-rules status
+/// (epoch, version, freshness, publisher, kill-switch). Read-only — no network is
+/// touched here (refresh/check are explicit POSTs); this is just current state.
+fn update_status_json(mem: &MemCli) -> CoreResult<String> {
+    let cfg = mem.config()?;
+    let configured_ipns = cfg.update.rules_ipns.trim();
+    let baked_ipns = concierge_core::update::baseline::default_rules_ipns().unwrap_or("");
+    let rules_ipns = if configured_ipns.is_empty() {
+        baked_ipns
+    } else {
+        configured_ipns
+    };
+    let body = serde_json::json!({
+        "app_version": env!("CARGO_PKG_VERSION"),
+        "app_update": mem.update_cached_status()?,
+        "rules_ipns": rules_ipns,
+        "rules_source_configured": !rules_ipns.is_empty(),
+        "rules": mem.rules_status()?,
+    });
+    serde_json::to_string(&body).map_err(|e| Error::Io(format!("serialize update status: {e}")))
+}
+
+/// `GET /api/brain/metrics`: a full Brain snapshot — engine baseline (+ rich when the
+/// provider has it) and the on-node embedder status. Core does any short network probes
+/// behind 1.5s timeouts and never errors when the engine is down (baseline.up = false).
+fn brain_metrics_json(mem: &MemCli) -> CoreResult<String> {
+    serde_json::to_string(&mem.brain_metrics()?)
+        .map_err(|e| Error::Io(format!("serialize brain metrics: {e}")))
 }
 
 /// A username is the hex-encoded 32-byte Ed25519 public key (the AgentID): 64

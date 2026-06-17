@@ -1861,6 +1861,190 @@ async function loadPeers() {
 function startDiscPoll() { stopDiscPoll(); safely(loadPeers); discPoll = setInterval(() => quietly(loadPeers), 4000); }
 function stopDiscPoll() { if (discPoll) { clearInterval(discPoll); discPoll = null; } }
 
+// ── Updates tab: app binary + signed safety rules ────────────────────────────────
+function updateRow(key, value) {
+  const row = node("div", "wallet-row");
+  row.append(node("span", "wallet-k", key), node("span", "wallet-v", value));
+  return row;
+}
+let rulesPaused = false;
+async function loadUpdateStatus() {
+  const data = await getJson("/api/update/status");
+  const rules = data.rules || {};
+  rulesPaused = !!rules.paused;
+  const card = byId("update-status"); clear(card);
+  card.append(
+    updateRow("App version", data.app_version || "—"),
+    updateRow("Rules version", rules.version || "—"),
+      updateRow("Rules epoch", String(rules.epoch ?? "—")),
+      updateRow("Rules in force", String(rules.rule_count ?? "—")),
+      updateRow("Rules source", data.rules_source_configured ? (data.rules_ipns || "—") : "not configured"),
+      updateRow("Freshness", rules.fresh ? "fresh" : "stale"),
+      updateRow("Auto-rules", rules.paused ? "paused (kill switch on)" : "live"),
+    );
+    const appUpdate = data.app_update || {};
+    byId("update-app").textContent = appUpdate.release && appUpdate.release.version
+      ? "Running version " + (data.app_version || "—") + ". Update " + appUpdate.release.version + " is available."
+      : "Running version " + (data.app_version || "—") + ". Check the release feed for a newer build.";
+    const fpr = rules.publisher_fpr || "";
+    byId("update-rules").textContent = fpr
+      ? (fpr === "baked" ? "Baked baseline rules are active." : "Publisher " + fpr + " signed the active rules.")
+      : "No publisher key recorded yet — pin a key to trust its signed rules.";
+    byId("rules-ipns").value = data.rules_ipns || "";
+    byId("rules-toggle").textContent = rules.paused ? "Resume auto-rules" : "Pause auto-rules";
+  }
+byId("update-check").addEventListener("click", () => safely(async () => {
+  const { release } = await postJson("/api/update/check", {});
+  notice(release && release.version ? "Update available: " + release.version : "You're on the latest version.");
+  await loadUpdateStatus();
+}));
+byId("update-apply").addEventListener("click", () => safely(async () => {
+  const { staged } = await postJson("/api/update/apply", {});
+  notice(staged && staged.version ? "Staged " + staged.version + " — applies on next launch." : "No update to stage.");
+  await loadUpdateStatus();
+}));
+byId("rules-refresh").addEventListener("click", () => safely(async () => {
+  const outcome = await postJson("/api/update/rules/refresh", {});
+  notice(outcome && outcome.updated ? "Rules updated to " + outcome.version + "." : "Rules already current.");
+  await loadUpdateStatus();
+}));
+  byId("rules-toggle").addEventListener("click", () => safely(async () => {
+    await postJson("/api/update/rules/pause", { paused: !rulesPaused });
+    await loadUpdateStatus();
+  }));
+  byId("rules-source").addEventListener("click", () => safely(async () => {
+    const ipns = byId("rules-ipns").value.trim();
+    if (!ipns) { notice("Enter a rules IPNS source."); return; }
+    await postJson("/api/update/rules/source", { ipns });
+    notice("Rules IPNS source saved.");
+    await loadUpdateStatus();
+  }));
+  byId("rules-pin").addEventListener("click", () => safely(async () => {
+  const key = byId("rules-pin-key").value.trim();
+  if (!key) { notice("Enter a publisher key (hex)."); return; }
+  await postJson("/api/update/rules/pin", { key });
+  byId("rules-pin-key").value = "";
+  notice("Publisher key pinned.");
+  await loadUpdateStatus();
+}));
+
+// ── Brain tab: the sovereign LLM engine + the on-node embedder ───────────────────
+// A compact collapsible <pre> of raw JSON — used wherever a metric provider's exact
+// schema isn't known, so we never invent a bar/number for a field that isn't there.
+function brainRaw(label, value) {
+  const details = node("details", "brain-raw");
+  details.append(node("summary", "eyebrow", label));
+  const pre = node("pre", "cv-src");
+  pre.style.whiteSpace = "pre-wrap";
+  pre.textContent = JSON.stringify(value, null, 2);
+  details.append(pre);
+  return details;
+}
+function brainRow(key, value) {
+  const row = node("div", "wallet-row");
+  row.append(node("span", "wallet-k", key), node("span", "wallet-v", value));
+  return row;
+}
+async function loadBrainMetrics() {
+  let data; try { data = await getJson("/api/brain/metrics"); } catch (e) { return; }
+  const baseline = data.baseline || {};
+  // Panel A — engine status card: connection dot + engine name + base_url.
+  const dot = document.querySelector("#brain-engine .dot");
+  if (dot) {
+    dot.style.background = baseline.up ? "var(--patina)" : "rgb(var(--vermilion-rgb))";
+    dot.style.boxShadow = baseline.up ? "0 0 8px var(--patina)" : "none";
+  }
+  byId("brain-engine-name").textContent = baseline.up
+    ? (baseline.engine || "engine") + " · connected"
+    : "No local engine detected";
+  byId("brain-engine-url").textContent = baseline.up
+    ? (baseline.base_url || "")
+    : "No local engine detected at " + (baseline.base_url || "—") + " — start a local engine (e.g. oMLX)";
+  // Model picker — populated from baseline.models, current selection marked.
+  const select = byId("brain-model"); clear(select);
+  const models = Array.isArray(baseline.models) ? baseline.models : [];
+  if (!models.length) {
+    const opt = node("option", "", "— no models reported —"); opt.value = ""; select.append(opt);
+    select.disabled = true; byId("brain-model-apply").disabled = true;
+  } else {
+    select.disabled = false; byId("brain-model-apply").disabled = false;
+    models.forEach(id => {
+      const opt = node("option", "", id); opt.value = id;
+      if (id === baseline.active_model) opt.selected = true;
+      select.append(opt);
+    });
+  }
+  // Rich metrics — rendered defensively: only fields that exist, else raw JSON.
+  renderBrainRich(data.rich);
+  // Panel B — embedder.
+  renderBrainEmbedder(data.embedder || {});
+}
+function renderBrainRich(rich) {
+  const wrap = byId("brain-rich"); clear(wrap);
+  const macmon = rich && rich.macmon;
+  const omlx = rich && rich.omlx_stats;
+  if (!rich || (macmon == null && omlx == null)) {
+    wrap.style.display = "block";
+    wrap.append(node("div", "eyebrow", "Rich metrics not available for this engine."));
+    return;
+  }
+  wrap.style.display = "block";
+  if (macmon != null) {
+    wrap.append(node("div", "eyebrow", "System (macmon)"));
+    const mapped = [];
+    // Attempt a few optional fields; macmon's exact schema varies by version, so
+    // every read is optional and unmapped data falls through to the raw <pre>.
+    const cpu = macmon?.cpu_usage ?? macmon?.cpu_percent ?? macmon?.ecpu_usage;
+    if (cpu != null) mapped.push(brainRow("CPU", typeof cpu === "number" ? cpu.toFixed(0) + "%" : String(cpu)));
+    const gpu = macmon?.gpu_usage ?? macmon?.gpu_percent;
+    if (gpu != null) mapped.push(brainRow("GPU", typeof gpu === "number" ? gpu.toFixed(0) + "%" : String(gpu)));
+    const memUsed = macmon?.memory?.ram_usage ?? macmon?.mem_used ?? macmon?.memory_used;
+    const memTotal = macmon?.memory?.ram_total ?? macmon?.mem_total ?? macmon?.memory_total;
+    if (memUsed != null && memTotal != null) {
+      mapped.push(brainRow("Memory", formatBytes(memUsed) + " / " + formatBytes(memTotal)));
+    } else if (memUsed != null) {
+      mapped.push(brainRow("Memory used", formatBytes(memUsed)));
+    }
+    const swap = macmon?.memory?.swap_usage ?? macmon?.swap_used;
+    if (swap != null) mapped.push(brainRow("Swap", formatBytes(swap)));
+    mapped.forEach(row => wrap.append(row));
+    wrap.append(brainRaw(mapped.length ? "Raw macmon JSON" : "macmon JSON (unrecognized schema)", macmon));
+  }
+  if (omlx != null) {
+    wrap.append(node("div", "eyebrow", "Engine (oMLX)"));
+    const mapped = [];
+    const weights = omlx?.model_weights ?? omlx?.weights;
+    if (weights != null) mapped.push(brainRow("Model weights", typeof weights === "number" ? formatBytes(weights) : String(weights)));
+    const hotKv = omlx?.hot_kv_cache ?? omlx?.kv_cache_hot ?? omlx?.kv_cache;
+    if (hotKv != null) mapped.push(brainRow("Hot KV cache", typeof hotKv === "number" ? formatBytes(hotKv) : String(hotKv)));
+    const pp = omlx?.prompt_tps ?? omlx?.pp;
+    if (pp != null) mapped.push(brainRow("Prompt (PP)", typeof pp === "number" ? pp.toFixed(1) + " tok/s" : String(pp)));
+    const tg = omlx?.generation_tps ?? omlx?.tg;
+    if (tg != null) mapped.push(brainRow("Generation (TG)", typeof tg === "number" ? tg.toFixed(1) + " tok/s" : String(tg)));
+    mapped.forEach(row => wrap.append(row));
+    wrap.append(brainRaw(mapped.length ? "Raw oMLX stats JSON" : "oMLX stats JSON (unrecognized schema)", omlx));
+  }
+}
+function renderBrainEmbedder(embedder) {
+  const wrap = byId("brain-embedder"); clear(wrap);
+  wrap.append(brainRow("Backend", embedder.backend || "—"));
+  wrap.append(brainRow("Model", embedder.model || "—"));
+  if (embedder.shares_engine) wrap.append(node("div", "eyebrow", "Shares the connected engine."));
+  wrap.append(brainRow("Indexed nodes", embedder.indexed_nodes == null ? "—" : String(embedder.indexed_nodes)));
+  wrap.append(brainRow("Queue depth", embedder.queue_depth == null ? "—" : String(embedder.queue_depth)));
+  wrap.append(brainRow("Last latency", embedder.last_latency_ms == null ? "—" : embedder.last_latency_ms + " ms"));
+}
+byId("brain-model-apply").addEventListener("click", () => safely(async () => {
+  const model = byId("brain-model").value;
+  await postJson("/api/brain/model", { model });
+  notice(model ? "Active model set to " + model + "." : "Model selection cleared.");
+  await loadBrainMetrics();
+}));
+// Poll the Brain metrics only while its tab is open (same gating as the discovery map).
+let brainPoll = null;
+function startBrainPoll() { stopBrainPoll(); safely(loadBrainMetrics); brainPoll = setInterval(() => quietly(loadBrainMetrics), 2000); }
+function stopBrainPoll() { if (brainPoll) { clearInterval(brainPoll); brainPoll = null; } }
+
 document.querySelectorAll("[data-view]").forEach(button => button.addEventListener("click", () => {
   // Clicking the Graph tab while focused on one root returns to the whole-store forest.
   if (button.dataset.view === "graph" && state.rootMode === "fixed") {
@@ -1869,7 +2053,7 @@ document.querySelectorAll("[data-view]").forEach(button => button.addEventListen
     safely(async () => { await Promise.all([loadGraph(), loadStats(), refreshPrivacy()]); });
   }
   showView(button.dataset.view);
-  stopDiscPoll(); walletStopPoll(); // only poll these while their tab is open
+  stopDiscPoll(); walletStopPoll(); stopBrainPoll(); // only poll these while their tab is open
   // The graph is drawn while hidden at boot (Studio is the landing view), so fit it
   // to the real viewport the first time it's actually shown.
   if (button.dataset.view === "graph" && !state.graphShown) { state.graphShown = true; safely(fitView); }
@@ -1878,4 +2062,6 @@ document.querySelectorAll("[data-view]").forEach(button => button.addEventListen
   if (button.dataset.view === "canvas") safely(cvLoadSites);
   if (button.dataset.view === "messenger") { safely(loadProfile); safely(loadContacts); }
   if (button.dataset.view === "wallet") { safely(walletInit); walletStartPoll(); }
+  if (button.dataset.view === "updates") safely(loadUpdateStatus);
+  if (button.dataset.view === "brain") startBrainPoll();
 }));

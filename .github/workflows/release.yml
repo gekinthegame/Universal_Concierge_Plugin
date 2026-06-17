@@ -40,6 +40,46 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Bake update trust anchors
+        env:
+          APP_SIGNING_KEY: ${{ secrets.APP_SIGNING_KEY }}
+          RULES_SIGNING_KEY: ${{ secrets.RULES_SIGNING_KEY }}
+          APP_PUBKEYS: ${{ vars.UCP_APP_PUBKEYS_HEX }}
+          RULES_PUBKEYS: ${{ vars.UCP_RULES_PUBKEYS_HEX }}
+          RULES_IPNS: ${{ vars.UCP_RULES_IPNS }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          pip install --quiet cryptography
+          python3 - <<'PY' >> "$GITHUB_ENV"
+          import os
+          from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+          from cryptography.hazmat.primitives import serialization
+
+          def pub_from_seed(name):
+              seed = os.environ.get(name, "").strip()
+              if not seed:
+                  return ""
+              key = Ed25519PrivateKey.from_private_bytes(bytes.fromhex(seed))
+              return key.public_key().public_bytes(
+                  encoding=serialization.Encoding.Raw,
+                  format=serialization.PublicFormat.Raw,
+              ).hex()
+
+          app = os.environ.get("APP_PUBKEYS", "").strip() or pub_from_seed("APP_SIGNING_KEY")
+          rules = os.environ.get("RULES_PUBKEYS", "").strip() or pub_from_seed("RULES_SIGNING_KEY")
+          if app:
+              print(f"UCP_APP_PUBKEYS_HEX={app}")
+          if rules:
+              print(f"UCP_RULES_PUBKEYS_HEX={rules}")
+          if os.environ.get("RULES_IPNS", "").strip():
+              print(f"UCP_RULES_IPNS={os.environ['RULES_IPNS'].strip()}")
+          PY
+
       - name: Build (release)
         run: cargo build --release --locked -p concierge-plugin --target ${{ matrix.target }}
 
@@ -163,6 +203,35 @@ jobs:
           cd dist
           sha256sum concierge-plugin-* Universal-Concierge-macos.dmg Universal-Concierge-windows-setup.exe > SHASUMS256.txt
           cat SHASUMS256.txt
+
+      # Autoupdater app channel (AUTOUPDATER_PLAN.md §2/§4): a detached Ed25519
+      # signature over SHASUMS256.txt, verified by the running binary against the key
+      # baked into `crates/core/src/update/baseline.rs` (APP_PUBKEYS_HEX). SHASUMS
+      # hosted next to the file proves nothing against a host compromise — the
+      # signature is the trust anchor. Skipped (with a loud notice) if no signing
+      # secret is configured, so unsigned first-cut releases still build.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Sign checksums (detached Ed25519)
+        env:
+          SIGNING_KEY: ${{ secrets.APP_SIGNING_KEY }}
+        shell: bash
+        run: |
+          if [ -z "${SIGNING_KEY:-}" ]; then
+            echo "::warning::APP_SIGNING_KEY not set — publishing UNSIGNED SHASUMS (autoupdate apply will refuse this release)."
+            exit 0
+          fi
+          pip install --quiet cryptography
+          python3 - <<'PY'
+          import os, base64
+          from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+          seed = bytes.fromhex(os.environ["SIGNING_KEY"].strip())
+          sk = Ed25519PrivateKey.from_private_bytes(seed)
+          data = open("dist/SHASUMS256.txt", "rb").read()
+          open("dist/SHASUMS256.txt.sig", "wb").write(sk.sign(data))  # raw 64-byte sig
+          print("wrote dist/SHASUMS256.txt.sig")
+          PY
 
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2

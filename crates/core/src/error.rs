@@ -89,7 +89,20 @@ pub enum Error {
     #[error("capability encryption error: {0}")]
     Encryption(String),
 
+    /// An autoupdater operation failed: signature/epoch/freshness verification,
+    /// ruleset compile/swap, or a binary self-update stage. The string carries the
+    /// specific [`crate::update::UpdateError`] that was rejected (the verify ladder
+    /// keeps each failure distinct internally; this is the boundary surface).
+    #[error("update failed: {0}")]
+    Update(String),
+
     /// Wraps the underlying `mem` invocation or I/O failure.
     #[error("core binding I/O error: {0}")]
     Io(String),
+}
+
+impl From<crate::update::UpdateError> for Error {
+    fn from(e: crate::update::UpdateError) -> Self {
+        Error::Update(e.to_string())
+    }
 }

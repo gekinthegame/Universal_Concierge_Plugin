@@ -112,6 +112,10 @@ const BABYLON_SNIPPET: &str = r#"A medium 3D ENGINE. One scene = a SCENE, a GAME
   const camera = new BABYLON.ArcRotateCamera('cam', Math.PI/3, Math.PI/2.6, 9, BABYLON.Vector3.Zero(), scene);
   camera.attachControl(canvas, true);
 
+  // IBL: image-based lighting so PBR metal/roughness surfaces have a real environment to reflect.
+  // createDefaultEnvironment sets scene.environmentTexture (a built-in studio .env) + a skybox/ground.
+  const env = scene.createDefaultEnvironment({ createSkybox: true, skyboxSize: 150, groundColor: new BABYLON.Color3(0.2,0.2,0.25), enableGroundShadow: true });
+
   // Studio lighting: hemispheric ambient (sky/ground tint) + a key directional with SOFT shadows.
   const hemi = new BABYLON.HemisphericLight('hemi', new BABYLON.Vector3(0,1,0), scene);
   hemi.intensity = 0.55; hemi.diffuse = new BABYLON.Color3(0.55,0.6,0.78); hemi.groundColor = new BABYLON.Color3(0.08,0.09,0.16);
@@ -1885,6 +1889,7 @@ mod tests {
             "window.__seek",
             "TONEMAPPING_ACES",
             "ShadowGenerator",
+            "createDefaultEnvironment",
         ] {
             assert!(
                 text.contains(token),

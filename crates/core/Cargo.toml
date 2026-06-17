@@ -44,6 +44,15 @@ zeroize = { workspace = true }
 # model on the node, never a generative LLM). Off by default so the base build
 # stays light and ONNX-free; enable with `--features semantic-embed`.
 fastembed = { version = "4", optional = true }
+# Autoupdater rules channel (AUTOUPDATER_PLAN.md §5): the YARA-X engine that compiles
+# and validates incoming rule bundles. Pure-Rust (no native libyara) — the engine
+# rides into the next app release via `cargo update`; we never hand-touch it.
+yara-x = "1"
+# App channel (§4): semver comparison of the running version vs the latest release.
+semver = "1"
+# App channel apply-on-relaunch: unpack the verified `.tar.gz` release archive to
+# extract the new binary (`.zip` reuses the existing `zip` dependency on Windows).
+tar = "0.4"
 
 [features]
 default = []

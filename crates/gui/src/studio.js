@@ -804,7 +804,11 @@ function depRender() {
       inp = document.createElement("input");
       inp.type = f.type;
       inp.className = "input";
-      inp.autocomplete = f.type === "password" ? "new-password" : "off";
+      if (f.type === "password") {
+        inp.autocomplete = "new-password";
+      } else {
+        inp.setAttribute("autocomplete", "off");
+      }
       // Prefill only the public (non-secret) fields from saved status — never a secret.
       if (f.type !== "password" && known && known[f.k] != null) inp.value = known[f.k];
     }
@@ -904,6 +908,255 @@ byId("dep-save").addEventListener("click", () => safely(() => depSave(false)));
 byId("dep-clear").addEventListener("click", () => safely(() => depSave(true)));
 byId("deploy-modal").addEventListener("click", e => { if (e.target === byId("deploy-modal")) depClose(); });
 
+// ── YouTube uploads ─────────────────────────────────────────────────────────────
+// A destination that SENDS the rendered video to YouTube (vs the host-publish flows
+// above, which deploy a site). Six states are rendered into #yt-body:
+//   disconnected → connect (clone of the Firebase one-click OAuth flow)
+//   connected    → show channel + pick a video + metadata review
+//   review       → title/description/tags/category/privacy/kids/synthetic/notify
+//   uploading    → live percent from /api/youtube/upload-status polling
+//   complete     → the watch URL
+//   failed       → the error + a Retry button (re-POSTs the same request)
+// Categories are the common YouTube IDs; default is 22 (People & Blogs), private.
+const YT_CATEGORIES = [
+  ["22", "People & Blogs"], ["24", "Entertainment"], ["27", "Education"],
+  ["28", "Science & Technology"], ["20", "Gaming"], ["10", "Music"],
+  ["1", "Film & Animation"], ["23", "Comedy"], ["26", "Howto & Style"], ["25", "News & Politics"],
+];
+let ytStatus = { configured: true, connected: false };
+let ytPoll = null;       // OAuth connect poll
+let ytUploadPoll = null; // upload-progress poll
+let ytPickedVideo = null;  // { project, rel, path }
+let ytLastRequest = null;  // last upload body, for Retry
+let ytView = "auto";       // "auto" | "review" | "uploading" | "complete" | "failed"
+let ytFailMessage = "";    // last error, shown in the failed state
+let ytCompleteUrl = "";    // watch URL, shown in the complete state
+
+function ytStopPolls() {
+  if (ytPoll) { clearInterval(ytPoll); ytPoll = null; }
+  if (ytUploadPoll) { clearInterval(ytUploadPoll); ytUploadPoll = null; }
+}
+function ytOpen() {
+  byId("yt-modal").style.display = "flex";
+  ytView = "auto"; ytPickedVideo = null;
+  safely(ytLoad);
+}
+function ytClose() { ytStopPolls(); byId("yt-modal").style.display = "none"; }
+async function ytLoad() {
+  try { ytStatus = await getJson("/api/youtube/status"); } catch (e) { ytStatus = { configured: true, connected: false }; }
+  ytRender();
+}
+// Decide which of the six states to paint from the live status + the local view flag.
+function ytRender() {
+  const wrap = byId("yt-body"); clear(wrap);
+  if (ytStatus.configured === false) { ytRenderUnconfigured(wrap); return; }
+  if (!ytStatus.connected) { ytRenderDisconnected(wrap); return; }
+  if (ytView === "uploading") { ytRenderUploading(wrap); return; }
+  if (ytView === "complete") { ytRenderComplete(wrap); return; }
+  if (ytView === "failed") { ytRenderFailed(wrap); return; }
+  if (ytView === "review" && ytPickedVideo) { ytRenderReview(wrap); return; }
+  ytRenderConnected(wrap);
+}
+function ytRenderUnconfigured(wrap) {
+  wrap.append(node("div", "wallet-card", "YouTube uploads aren’t configured in this build — it ships without a Google client, so there’s no way to authorize an upload. Nothing to connect here."));
+}
+function ytRenderDisconnected(wrap) {
+  const card = node("div", "wallet-card");
+  card.append(node("div", "eyebrow", "Connect your Google/YouTube account to enable uploads. One click — approve in your browser, nothing to paste."));
+  const btn = node("button", "tool-button cf-oauth-btn", "⚡ Connect YouTube in one click");
+  btn.type = "button";
+  btn.addEventListener("click", () => safely(ytConnect));
+  card.append(btn);
+  card.append(node("div", "yt-status eyebrow", ""));
+  wrap.append(card);
+}
+// Clone of oauthConnect(): open the authorize page, poll oauth-status until connected.
+async function ytConnect() {
+  ytStopPolls();
+  const st = byId("yt-body").querySelector(".yt-status") || byId("yt-body");
+  clear(st);
+  let res;
+  try { res = await postJson("/api/youtube/oauth-start", {}); }
+  catch (e) { st.appendChild(node("span", "dep-test-bad", "✗ " + (e.message || "couldn't start login"))); return; }
+  if (!res.authorize_url) { st.appendChild(node("span", "dep-test-bad", "✗ couldn't start login")); return; }
+  window.open(res.authorize_url, "_blank", "noopener");
+  st.appendChild(node("span", "", "Approve the YouTube login in your browser…"));
+  let ticks = 0;
+  ytPoll = setInterval(() => quietly(async () => {
+    ticks++;
+    let s; try { s = await getJson("/api/youtube/oauth-status"); } catch (e) { return; }
+    if (s.status === "connected") {
+      clearInterval(ytPoll); ytPoll = null;
+      notice("YouTube connected — you can upload a video now.");
+      await ytLoad();
+    } else if (s.status === "error") {
+      clearInterval(ytPoll); ytPoll = null;
+      clear(st); st.appendChild(node("span", "dep-test-bad", "✗ " + (s.message || "login failed")));
+    } else if (ticks > 200) { clearInterval(ytPoll); ytPoll = null; }
+  }), 1500);
+}
+function ytRenderConnected(wrap) {
+  const head = node("div", "wallet-card");
+  const row = node("div", "msg-section");
+  row.append(node("span", "dep-test-ok", "✓ Connected" + (ytStatus.channel ? " — " + String(ytStatus.channel).slice(0, 40) : "")));
+  const disc = node("button", "tool-button", "Disconnect");
+  disc.style.marginLeft = "auto";
+  disc.addEventListener("click", () => safely(ytDisconnect));
+  row.style.display = "flex"; row.style.alignItems = "center"; row.style.gap = "8px";
+  row.append(disc);
+  head.append(row);
+  wrap.append(head);
+  // Video picker — rendered videos under the canvas root (.webm/.mp4/.mov/.mkv).
+  wrap.append(node("div", "eyebrow", "Pick a rendered video to upload — these are the video files under your Studio canvas folder:"));
+  const list = node("div", "yt-videos"); list.style.maxHeight = "240px"; list.style.overflow = "auto";
+  list.append(node("div", "empty", "Loading videos…"));
+  wrap.append(list);
+  safely(async () => {
+    let data; try { data = await getJson("/api/youtube/videos"); } catch (e) { clear(list); list.append(node("div", "empty", "Couldn’t list videos.")); return; }
+    clear(list);
+    if (!data.videos || !data.videos.length) {
+      list.append(node("div", "empty", "No .webm/.mp4/.mov/.mkv files found under your canvas folder. Render a video in Studio first."));
+      return;
+    }
+    data.videos.forEach(v => {
+      const card = node("button", "menu-item");
+      card.style.width = "100%"; card.style.textAlign = "left";
+      card.append(node("b", "", v.project + " / " + v.rel));
+      card.append(node("span", "limit", formatBytes(v.size) + " · " + fmtWhen(v.mtime)));
+      card.addEventListener("click", () => { ytPickedVideo = v; ytView = "review"; ytRender(); });
+      list.append(card);
+    });
+  });
+}
+function ytRenderReview(wrap) {
+  const v = ytPickedVideo;
+  wrap.append(node("div", "wallet-card", "Uploading: " + v.project + " / " + v.rel + " — review the details, then send it to YouTube."));
+  const form = node("div", "profile-editor");
+  const field = (label, el) => { const r = node("label", "profile-row"); r.append(node("span", "profile-label", label)); r.append(el); form.append(r); return el; };
+  const inp = (id, ph) => { const e = document.createElement("input"); e.className = "input"; e.id = id; if (ph) e.placeholder = ph; e.setAttribute("autocomplete", "off"); return e; };
+  const title = field("Title", inp("yt-title", "video title")); title.value = v.rel.replace(/\.[^.]+$/, "");
+  const desc = field("Description", (() => { const t = document.createElement("textarea"); t.className = "input"; t.id = "yt-desc"; t.rows = 4; t.spellcheck = false; return t; })());
+  field("Tags (comma-separated)", inp("yt-tags", "e.g. demo, studio, animation"));
+  const cat = field("Category", (() => { const s = document.createElement("select"); s.className = "input"; s.id = "yt-cat"; YT_CATEGORIES.forEach(([id, name]) => { const o = document.createElement("option"); o.value = id; o.textContent = name; s.append(o); }); return s; })());
+  cat.value = "22";
+  // Privacy — default private; public is an explicit, separate choice.
+  const priv = field("Privacy", (() => { const s = document.createElement("select"); s.className = "input"; s.id = "yt-priv";
+    [["private", "🔒 Private (only you)"], ["unlisted", "🔗 Unlisted (anyone with the link)"], ["public", "🌐 Public (anyone can find it)"]].forEach(([val, name]) => { const o = document.createElement("option"); o.value = val; o.textContent = name; s.append(o); }); return s; })());
+  priv.value = "private";
+  const checkRow = (id, labelText) => { const r = node("label", "profile-row"); const cb = document.createElement("input"); cb.type = "checkbox"; cb.id = id; r.append(cb); r.append(node("span", "profile-label", labelText)); form.append(r); return cb; };
+  const kids = checkRow("yt-kids", "Made for kids (COPPA — required by YouTube)");
+  const synth = checkRow("yt-synth", "Contains altered/synthetic media (AI/realistic — disclose)");
+  const notify = checkRow("yt-notify", "Notify my subscribers");
+  wrap.append(form);
+  const actions = node("div", "modal-actions");
+  const back = node("button", "tool-button", "← Pick another");
+  back.addEventListener("click", () => { ytView = "auto"; ytPickedVideo = null; ytRender(); });
+  const go = node("button", "tool-button main-publish", "▶ Upload to YouTube");
+  go.style.flex = "1";
+  go.addEventListener("click", () => safely(ytStartUpload));
+  actions.append(back, go);
+  wrap.append(actions);
+  wrap.append(node("div", "eyebrow", "This sends the video file to YouTube. " + (priv.value === "public" ? "" : "") + "Default privacy is Private — change it above only if you intend to share."));
+}
+// Build the UploadRequest body (VideoMetadata is flattened to the top level by core).
+function ytBuildRequest() {
+  const tags = byId("yt-tags").value.split(",").map(s => s.trim()).filter(Boolean);
+  return {
+    file_path: ytPickedVideo.path,
+    title: byId("yt-title").value.trim() || ytPickedVideo.rel,
+    description: byId("yt-desc").value,
+    tags,
+    category_id: byId("yt-cat").value,
+    privacy_status: byId("yt-priv").value,
+    made_for_kids: byId("yt-kids").checked,
+    contains_synthetic_media: byId("yt-synth").checked,
+    notify_subscribers: byId("yt-notify").checked,
+    caption_language: "en",
+  };
+}
+async function ytStartUpload() {
+  ytLastRequest = ytBuildRequest();
+  try { await postJson("/api/youtube/upload", ytLastRequest); }
+  catch (e) { ytView = "failed"; ytFailMessage = e.message || "couldn't start upload"; ytRender(); return; }
+  ytView = "uploading"; ytRender();
+  ytWatchUpload();
+}
+function ytRenderUploading(wrap) {
+  const card = node("div", "wallet-card");
+  card.append(node("div", "msg-section", "Uploading to YouTube…"));
+  const bar = node("div", "yt-bar"); bar.style.cssText = "height:10px;border-radius:6px;background:var(--line);overflow:hidden;margin:8px 0;";
+  const fill = node("div", "yt-bar-fill"); fill.id = "yt-bar-fill"; fill.style.cssText = "height:100%;width:0%;background:var(--gold);transition:width .3s;";
+  bar.append(fill); card.append(bar);
+  card.append(node("div", "eyebrow yt-pct", "0%"));
+  card.append(node("div", "eyebrow", "Keep this window open until it finishes. Large videos take a while."));
+  wrap.append(card);
+}
+function ytWatchUpload() {
+  if (ytUploadPoll) { clearInterval(ytUploadPoll); ytUploadPoll = null; }
+  ytUploadPoll = setInterval(() => quietly(async () => {
+    let s; try { s = await getJson("/api/youtube/upload-status"); } catch (e) { return; }
+    if (s.status === "uploading") {
+      const fill = byId("yt-bar-fill"); const pct = byId("yt-body").querySelector(".yt-pct");
+      if (fill) fill.style.width = (s.percent || 0) + "%";
+      if (pct) pct.textContent = (s.percent || 0) + "%" + (s.bytes_total ? " · " + formatBytes(s.bytes_sent) + " / " + formatBytes(s.bytes_total) : "");
+    } else if (s.status === "complete") {
+      clearInterval(ytUploadPoll); ytUploadPoll = null;
+      ytCompleteUrl = s.video_url || ""; ytView = "complete"; ytRender();
+      notice("Upload complete — your video is on YouTube.");
+    } else if (s.status === "error") {
+      clearInterval(ytUploadPoll); ytUploadPoll = null;
+      ytFailMessage = s.message || "upload failed"; ytView = "failed"; ytRender();
+    }
+  }), 1500);
+}
+function ytRenderComplete(wrap) {
+  const card = node("div", "wallet-card");
+  card.append(node("div", "dep-test-ok", "✓ Uploaded to YouTube"));
+  if (ytCompleteUrl) {
+    const a = document.createElement("a");
+    a.href = ytCompleteUrl; a.target = "_blank"; a.rel = "noopener"; a.textContent = "Watch on YouTube ↗";
+    a.className = "tool-button"; a.style.display = "inline-block"; a.style.marginTop = "8px";
+    card.append(a);
+    card.append(node("div", "eyebrow", ytCompleteUrl));
+  }
+  const more = node("button", "tool-button", "Upload another");
+  more.style.marginTop = "8px";
+  more.addEventListener("click", () => { ytView = "auto"; ytPickedVideo = null; ytRender(); });
+  card.append(more);
+  wrap.append(card);
+}
+function ytRenderFailed(wrap) {
+  const card = node("div", "wallet-card");
+  card.append(node("div", "dep-test-bad", "✗ Upload failed"));
+  card.append(node("div", "eyebrow", ytFailMessage || "Something went wrong."));
+  const actions = node("div", "modal-actions");
+  const retry = node("button", "tool-button main-publish", "↻ Retry");
+  retry.style.flex = "1";
+  retry.addEventListener("click", () => safely(ytRetry));
+  const back = node("button", "tool-button", "Back");
+  back.addEventListener("click", () => { ytView = ytPickedVideo ? "review" : "auto"; ytRender(); });
+  actions.append(back, retry);
+  card.append(actions);
+  wrap.append(card);
+}
+async function ytRetry() {
+  if (!ytLastRequest) { ytView = "auto"; ytRender(); return; }
+  try { await postJson("/api/youtube/upload", ytLastRequest); }
+  catch (e) { ytFailMessage = e.message || "couldn't start upload"; ytView = "failed"; ytRender(); return; }
+  ytView = "uploading"; ytRender();
+  ytWatchUpload();
+}
+async function ytDisconnect() {
+  await postJson("/api/youtube/disconnect", {});
+  notice("Disconnected YouTube.");
+  ytView = "auto"; ytPickedVideo = null;
+  await ytLoad();
+}
+byId("cv-pub-youtube").addEventListener("click", () => safely(ytOpen));
+byId("yt-close").addEventListener("click", ytClose);
+byId("yt-modal").addEventListener("click", e => { if (e.target === byId("yt-modal")) ytClose(); });
+document.addEventListener("keydown", e => { if (e.key === "Escape" && byId("yt-modal").style.display === "flex") ytClose(); });
+
 // ── Pin settings: per-service {endpoint, token}, stored on-device (0600). All four
 // speak the standard IPFS Pinning Services API, so one form covers them; the endpoint
 // is prefilled per service. ──
@@ -970,7 +1223,11 @@ function pinRender() {
     row.appendChild(node("span", "profile-label", f.label));
     const inp = document.createElement("input");
     inp.type = f.type; inp.className = "input";
-    inp.autocomplete = f.type === "password" ? "new-password" : "off";
+    if (f.type === "password") {
+      inp.autocomplete = "new-password";
+    } else {
+      inp.setAttribute("autocomplete", "off");
+    }
     inp.autocapitalize = "off"; inp.autocorrect = "off"; inp.spellcheck = false;
     // Prefill only non-secret fields — never a token. Endpoint: saved value, else default.
     if (f.type !== "password") inp.value = (known && known[f.k]) || f.default || "";

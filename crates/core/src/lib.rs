@@ -17,6 +17,7 @@
 
 pub mod actor;
 pub mod binding;
+pub mod brain;
 pub mod browser;
 pub mod capability;
 pub mod car;
@@ -55,21 +56,24 @@ pub mod social;
 pub(crate) mod state;
 pub mod sync;
 pub mod synthesis;
+pub mod update;
 pub mod wallet;
+pub mod youtube;
 
 pub use actor::{verify_actor_certificate, ActorCertificate, ActorError, ACTOR_CERT_VERSION};
 pub use binding::{
     cid_from_link, cid_link, utc_date, utc_today, Cid, CidOrName, CoreBinding, GcPolicy, GcReport,
     MemCli, Node, PublishReceipt, Record, StoreStats,
 };
+pub use brain::{BaselineStatus, BrainMetrics, BrainMetricsProvider, EmbedderStatus, RichMetrics};
 pub use capability::{
     verify_capability, verify_capability_with_logs, Capability, CapabilityError, Namespace,
     NamespaceScope, Operation, CAPABILITY_VERSION,
 };
 pub use compiler::{ContextCompiler, TrustedAuthority};
 pub use config::{
-    CheckpointConfig, Config, HostConfig, IdentityConfig, InjectionConfig, LibrarianConfig,
-    StoreConfig, CONFIG_PATH,
+    BrainConfig, CheckpointConfig, Config, HostConfig, IdentityConfig, InjectionConfig,
+    LibrarianConfig, StoreConfig, UpdateConfig, CONFIG_PATH,
 };
 pub use connectors::{
     federate, ConnectorRegistry, ExternalConnector, ExternalHit, ExternalSource,
@@ -95,7 +99,7 @@ pub use merge::{
 pub use messaging::{message_order, MessageEnvelope, RoomBook, RoomPolicy};
 pub use moderation::{
     verify_block, ExtensionPolicy, Guardian, QuarantineRecord, QuarantineRegistry, Verdict,
-    DEFAULT_BLOCKED_EXTENSIONS,
+    YaraMatch, YaraScanReport, YaraScanner, DEFAULT_BLOCKED_EXTENSIONS,
 };
 pub use node::{
     kubo_binary, kubo_installed, launch_private_node, SidekickStatus, SIDEKICK_DISCLAIMER,
@@ -132,4 +136,11 @@ pub use sync::{
 pub use synthesis::{
     assemble_thread, record_synthesis, synthesis_candidates, SynthesisCandidate,
     SYNTHESIS_THRESHOLD,
+};
+pub use update::{
+    AppUpdateStatus, Freshness, Manifest, RefreshOutcome, ReleaseInfo, RulesChannel, RulesStatus,
+    StagedUpdate, UpdateError,
+};
+pub use youtube::{
+    UploadRequest, VideoMetadata, YouTubeCreds, YouTubeStatus, YouTubeUploadReceipt, YtError,
 };

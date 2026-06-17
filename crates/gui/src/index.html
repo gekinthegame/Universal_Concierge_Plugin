@@ -44,7 +44,9 @@
       <button class="tab" data-view="network">Network</button>
       <button class="tab" data-view="graph">Graph</button>
       <button class="tab" data-view="names">Records</button>
+      <button class="tab" data-view="brain">Brain</button>
       <button class="tab" data-view="wallet">Wallet</button>
+      <button class="tab" data-view="updates">Updates</button>
     </div>
   </div>
 </header>
@@ -101,6 +103,16 @@
           <button id="dep-save" class="tool-button" style="flex:1;">Save on this device</button>
           <button id="dep-clear" class="tool-button">Clear</button>
         </div>
+      </div>
+    </div>
+    <div id="yt-modal" class="modal-overlay record-modal" style="display:none;" role="dialog" aria-label="Upload to YouTube">
+      <div class="modal-card">
+        <div style="display:flex;align-items:center;justify-content:space-between;">
+          <div class="modal-title">▶ Upload to YouTube</div>
+          <button id="yt-close" class="record-close" title="Close (Esc)" aria-label="Close">✕</button>
+        </div>
+        <div class="eyebrow">Unlike IPFS/host publishing, this <b>sends the video file itself to YouTube</b> using your connected Google account. The token stays on this device (0600); nothing else is shared. Defaults to a <b>private</b> upload — public is an explicit choice.</div>
+        <div id="yt-body"></div>
       </div>
     </div>
     <div id="new-modal" class="modal-overlay record-modal" style="display:none;" role="dialog" aria-label="New project">
@@ -192,6 +204,24 @@
       <div id="search-results"></div>
       <div id="names" class="names-tree"></div>
     </div></div>
+    <div id="brain-view" class="view"><div class="content">
+      <div class="msg-section">Sovereign LLM</div>
+      <div class="eyebrow">The Concierge is your sidekick; the Brain is your inference engine. Connect to your local oMLX (Mac) or any OpenAI-compatible server for 100% private, on-device intelligence. Metrics refresh while this tab is open.</div>
+      <div id="brain-engine" class="wallet-card">
+        <div class="model"><span class="dot"></span><span id="brain-engine-name">Scanning for a local engine…</span></div>
+        <div id="brain-engine-url" class="eyebrow" style="color:var(--faint);"></div>
+      </div>
+      <div class="wallet-card">
+        <label class="wallet-field"><span class="wallet-k">Active model</span>
+          <select id="brain-model" class="input"></select>
+        </label>
+        <button id="brain-model-apply" class="tool-button" style="width:100%;">Apply model</button>
+      </div>
+      <div id="brain-rich" class="wallet-card" style="display:none;"></div>
+      <div class="msg-section">Embedder</div>
+      <div class="eyebrow">The on-node embedding model — the only model that runs on your node (never a generative LLM). It indexes your memory so search stays semantic and private.</div>
+      <div id="brain-embedder" class="wallet-card"></div>
+    </div></div>
     <div id="messenger-view" class="view"><div class="content">
       <div class="messenger-tools">
         <input id="room" class="input" list="room-list" placeholder="Room name">
@@ -254,6 +284,7 @@
             <button id="cv-pub-vercel" class="menu-item">Vercel <span class="limit">free tier</span></button>
             <button id="cv-pub-cloudflare" class="menu-item">Cloudflare Pages <span class="limit">25 MB / file</span></button>
             <button id="cv-pub-firebase" class="menu-item">Firebase Hosting <span class="limit">free tier · ~10 GB</span></button>
+            <button id="cv-pub-youtube" class="menu-item" style="border-top:1px solid var(--line);">▶ YouTube — upload a video <span class="limit">sends to YouTube</span></button>
             <button id="cv-deploy-settings" class="menu-item" style="border-top:1px solid var(--line);color:var(--gold);">🔌 Connect accounts (tokens)</button>
           </div>
         </div>
@@ -331,6 +362,33 @@
           <button id="wallet-save" class="tool-button" style="width:100%;">Save settings</button>
         </div>
       </div>
+    </div></div>
+    <div id="updates-view" class="view"><div class="content">
+      <div class="msg-section">Updates</div>
+      <div class="eyebrow">Your node keeps itself current — the app binary and the signed safety rules. App updates are staged here; rules refresh automatically from the configured IPNS publisher, and the kill switch pauses auto-rules entirely.</div>
+      <div id="update-status" class="wallet-card">Loading…</div>
+      <div class="msg-section">Application</div>
+      <div class="eyebrow">Check the release feed for a newer Concierge build, then download and stage it. The staged binary is swapped in on next launch.</div>
+      <div class="wallet-card">
+        <div id="update-app" class="eyebrow"></div>
+        <div class="modal-actions">
+          <button id="update-check" class="tool-button" style="flex:1;">Check for app update</button>
+          <button id="update-apply" class="tool-button">Download &amp; stage update</button>
+        </div>
+      </div>
+      <div class="msg-section">Safety rules</div>
+        <div class="eyebrow">The signed rule set the node enforces, refreshed over IPNS from the configured publisher. Pause to freeze auto-refresh; pin publisher keys to trust only their signatures.</div>
+        <div class="wallet-card">
+          <div id="update-rules" class="eyebrow"></div>
+          <div class="modal-actions">
+            <button id="rules-refresh" class="tool-button" style="flex:1;">Refresh rules now</button>
+            <button id="rules-toggle" class="tool-button">Pause auto-rules</button>
+          </div>
+          <label class="wallet-field"><span class="wallet-k">Rules IPNS source</span><input id="rules-ipns" class="input" placeholder="k51…" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false"></label>
+          <button id="rules-source" class="tool-button" style="width:100%;">Save IPNS source</button>
+          <label class="wallet-field"><span class="wallet-k">Publisher key (hex)</span><input id="rules-pin-key" class="input" placeholder="publisher public key (hex)" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false"></label>
+          <button id="rules-pin" class="tool-button" style="width:100%;">Pin publisher key</button>
+        </div>
     </div></div>
     <form id="chat-bar" class="chat-bar" aria-label="Direct private chat">
       <button type="button" id="chat-id" class="chat-id" title="Your username — click to copy. Share it so other Concierge users can message you.">

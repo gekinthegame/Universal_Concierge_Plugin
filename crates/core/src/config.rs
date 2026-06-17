@@ -21,6 +21,8 @@ pub struct Config {
     pub identity: IdentityConfig,
     pub injection: InjectionConfig,
     pub librarian: LibrarianConfig,
+    pub update: UpdateConfig,
+    pub brain: BrainConfig,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -172,6 +174,65 @@ impl Default for IdentityConfig {
     }
 }
 
+/// Autoupdater settings (AUTOUPDATER_PLAN.md §3, §6). The defaults encode the plan's
+/// guardrails: rules auto-refresh on (the one scoped silent-egress exception), a ~6h
+/// jittered poll, and a 14-day freshness window before the "rules may be stale" notice.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default)]
+pub struct UpdateConfig {
+    /// The publisher's rules IPNS name (`k51…`). Empty = use the baked default.
+    pub rules_ipns: String,
+    /// Poll interval for the rules channel, seconds. Default ~6h.
+    pub poll_interval_secs: u64,
+    /// Freshness window before the GUI shows "rules may be stale", days.
+    pub freshness_days: u64,
+    /// Master switch for automatic rules updates (the kill switch's persisted form).
+    pub auto_rules: bool,
+    /// `owner/repo` the app channel polls for binary releases.
+    pub app_repo: String,
+}
+
+impl Default for UpdateConfig {
+    fn default() -> Self {
+        Self {
+            rules_ipns: String::new(),
+            poll_interval_secs: 6 * 60 * 60,
+            freshness_days: 14,
+            auto_rules: true,
+            app_repo: "gekinthegame/Universal_Concierge_Plugin".to_string(),
+        }
+    }
+}
+
+impl UpdateConfig {
+    /// The freshness window in seconds.
+    pub fn freshness_secs(&self) -> u64 {
+        self.freshness_days.saturating_mul(86_400)
+    }
+}
+
+/// The "Brain" tab (brain-tab.md): the connected sovereign LLM Concierge talks to.
+/// The engine itself is user-run and external; this only records which local endpoint
+/// to probe and which model to route to.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default)]
+pub struct BrainConfig {
+    /// Base URL of the local OpenAI-compatible engine (oMLX default `:8000`).
+    pub engine_base_url: String,
+    /// The model the Brain tab routes requests to (the OpenAI `model` field). Empty =
+    /// none selected yet.
+    pub active_model: Option<String>,
+}
+
+impl Default for BrainConfig {
+    fn default() -> Self {
+        Self {
+            engine_base_url: "http://localhost:8000".to_string(),
+            active_model: None,
+        }
+    }
+}
+
 impl Config {
     pub fn load_from_project_root(project_root: &Path) -> std::result::Result<Self, String> {
         let path = project_root.join(CONFIG_PATH);
@@ -218,6 +279,13 @@ mod tests {
         assert_eq!(cfg.checkpoint.keep_checkpoints, 10);
         assert_eq!(cfg.publishing.backend, "ipfs");
         assert_eq!(cfg.publishing.ipfs_api, "http://127.0.0.1:5001/api/v0");
+        assert!(cfg.update.auto_rules);
+        assert_eq!(cfg.update.poll_interval_secs, 6 * 60 * 60);
+        assert_eq!(cfg.update.freshness_days, 14);
+        assert_eq!(
+            cfg.update.app_repo,
+            "gekinthegame/Universal_Concierge_Plugin"
+        );
     }
 
     #[test]
