@@ -40,6 +40,13 @@ const ENGINE_THREE: &[u8] = include_bytes!("engines/three.module.min.js");
 // non-module AI code works and there is no CORS/importmap to fail in the sandboxed preview iframe.
 const ENGINE_THREE_GLOBAL: &[u8] = include_bytes!("engines/three.min.js");
 const ENGINE_PHASER: &[u8] = include_bytes!("engines/phaser.min.js");
+// Babylon.js (Apache-2.0) — the medium ENGINE: scene graph + PBR + a seekable animation timeline, so
+// one substrate serves 3D scenes, games (interactive), AND movies (the same timeline recorded by our
+// frame-by-frame capture). Official prebuilt UMD (global window.BABYLON) — classic <script>, no CORS.
+const ENGINE_BABYLON: &[u8] = include_bytes!("engines/babylon.js");
+// 3rd/1st-person character controller (Apache-2.0) — animated movement (idle/walk/run/jump/strafe),
+// no physics engine needed. Drop-in for games; depends on the BABYLON global.
+const ENGINE_CHARACTER_CONTROLLER: &[u8] = include_bytes!("engines/CharacterController.js");
 const ENGINE_AFRAME: &[u8] = include_bytes!("engines/aframe.min.js");
 const ENGINE_AFRAME_ENV: &[u8] = include_bytes!("engines/aframe-environment-component.min.js");
 // The motion/animation skill bundles two libs together. GSAP © GreenSock (no-charge
@@ -80,6 +87,65 @@ const AFRAME_SNIPPET: &str = r##"A-Frame is declarative (HTML). TWO MUST-DOs or 
   </div>
 </body>
 </html>"##;
+const BABYLON_SNIPPET: &str = r#"A medium 3D ENGINE. One scene = a SCENE, a GAME (interactive), or a MOVIE (the same timeline recorded). For VIDEO it must be DETERMINISTIC: window.__seek(t) draws the IDENTICAL frame every time — animate with a PAUSED AnimationGroup driven by goToFrame, NEVER a real-time clock or live physics. Load Babylon with a plain <script> (global BABYLON). index.html:
+<canvas id="stage" width="1280" height="720" style="width:100vw;height:100vh;display:block"></canvas>
+<script src="./babylon.js"></script>
+<script src="./webm-muxer.js"></script>
+<script src="./capture.js"></script>   <!-- the deterministic video exporter, written for you -->
+<script>
+  const canvas = document.getElementById('stage');
+  const engine = new BABYLON.Engine(canvas, true, { preserveDrawingBuffer: true, stencil: true });
+  const scene = new BABYLON.Scene(engine);
+  scene.clearColor = new BABYLON.Color4(0.04, 0.045, 0.10, 1);
+
+  // Cinematic default: ACES filmic tone mapping (not flat).
+  const ip = scene.imageProcessingConfiguration;
+  ip.toneMappingEnabled = true; ip.toneMappingType = BABYLON.ImageProcessingConfiguration.TONEMAPPING_ACES; ip.exposure = 1.1;
+
+  const camera = new BABYLON.ArcRotateCamera('cam', Math.PI/3, Math.PI/2.6, 9, BABYLON.Vector3.Zero(), scene);
+  camera.attachControl(canvas, true);
+
+  // Studio lighting: hemispheric ambient (sky/ground tint) + a key directional with SOFT shadows.
+  const hemi = new BABYLON.HemisphericLight('hemi', new BABYLON.Vector3(0,1,0), scene);
+  hemi.intensity = 0.55; hemi.diffuse = new BABYLON.Color3(0.55,0.6,0.78); hemi.groundColor = new BABYLON.Color3(0.08,0.09,0.16);
+  const key = new BABYLON.DirectionalLight('key', new BABYLON.Vector3(-1,-2,-1.2), scene);
+  key.position = new BABYLON.Vector3(8,12,8); key.intensity = 2.2;
+  const shadow = new BABYLON.ShadowGenerator(2048, key); shadow.useBlurExponentialShadowMap = true; shadow.blurKernel = 32;
+
+  // Ground catches the shadow (without a receiver, shadows do nothing).
+  const ground = BABYLON.MeshBuilder.CreateGround('ground', { width:60, height:60 }, scene);
+  const gmat = new BABYLON.PBRMaterial('gmat', scene); gmat.albedoColor = new BABYLON.Color3(0.05,0.06,0.13); gmat.metallic = 0; gmat.roughness = 1;
+  ground.material = gmat; ground.receiveShadows = true; ground.position.y = -1;
+
+  // PBR hero — metalness/roughness matched to the surface.
+  const hero = BABYLON.MeshBuilder.CreatePolyhedron('hero', { type:2, size:1 }, scene);
+  const hmat = new BABYLON.PBRMaterial('hmat', scene); hmat.albedoColor = new BABYLON.Color3(0.54,0.36,1.0); hmat.metallic = 0.3; hmat.roughness = 0.25;
+  hero.material = hmat; shadow.addShadowCaster(hero);
+
+  // ---- MOVIE: a SEEKABLE keyframe timeline (deterministic). Extend it; its length = the video length. ----
+  const fps = 30, dur = 6;
+  const spin = new BABYLON.Animation('spin','rotation.y',fps,BABYLON.Animation.ANIMATIONTYPE_FLOAT,BABYLON.Animation.ANIMATIONLOOPMODE_CYCLE);
+  spin.setKeys([{frame:0,value:0},{frame:fps*dur,value:Math.PI*2}]);
+  const bob = new BABYLON.Animation('bob','position.y',fps,BABYLON.Animation.ANIMATIONTYPE_FLOAT,BABYLON.Animation.ANIMATIONLOOPMODE_CYCLE);
+  bob.setKeys([{frame:0,value:0},{frame:fps*dur/2,value:0.5},{frame:fps*dur,value:0}]);
+  const timeline = new BABYLON.AnimationGroup('timeline', scene);
+  timeline.addTargetedAnimation(spin, hero); timeline.addTargetedAnimation(bob, hero);
+  timeline.normalize(0, fps*dur); timeline.pause();
+
+  // The Concierge's deterministic export drives this per frame on Save/Publish:
+  window.__canvas = canvas; window.__fps = fps; window.__duration = dur;
+  window.__seek = (t) => { timeline.goToFrame(Math.min(t, dur) * fps); scene.render(); };
+
+  // Live preview loops by wall clock; capture stops it and calls __seek directly (deterministic).
+  const preview = () => window.__seek((performance.now()/1000) % dur);
+  engine.runRenderLoop(preview);
+  window.__beginRender = () => engine.stopRenderLoop();
+  window.__endRender   = () => engine.runRenderLoop(preview);
+  window.addEventListener('resize', () => engine.resize());
+
+  // ---- GAME instead? Skip __seek; put input + logic in runRenderLoop. For a walk/run/jump character,
+  //      call concierge.scaffold_engine(engine='game') to add the CharacterController. ----
+</script>"#;
 const MOTION_SNIPPET: &str = r#"Draw to a <canvas> from a SEEKABLE timeline; the Concierge renders every frame to video on Save/Publish (any length, no ffmpeg). index.html:
 <canvas id="stage"></canvas>
 <script src="./gsap.min.js"></script>
@@ -463,15 +529,17 @@ concierge.scaffold_engine to drop in a vendored renderer; the user previews and 
         tools.push(tool_def(
             "concierge.scaffold_engine",
             "Drop a proven, vendored web renderer into a site folder so a game/3D scene/animation \
-stays self-contained (no CDN, works offline + on IPFS): 'aframe' (A-Frame, 3D — DECLARATIVE HTML, \
-best for AI world-building), 'three' (Three.js, 3D — ships CINEMATIC PBR defaults; seekable for \
-video export), 'phaser' (Phaser, 2D), or 'motion' (GSAP + Lottie). Returns the filenames + a \
-ready-to-use snippet. Call concierge.list_site FIRST — if the renderer is already staged, do \
-NOT call this. Pair with design_guide(topic='art_direction'). STAGING ONLY — never publishes.",
+stays self-contained (no CDN, works offline + on IPFS): 'babylon' (Babylon.js — a medium ENGINE: \
+scene graph + PBR + a SEEKABLE timeline, so one scene is a 3D scene, a game, OR a movie; the premium \
+3D/game/movie path), 'game' (Babylon + a drop-in walk/run/jump CharacterController), 'aframe' \
+(A-Frame, declarative 3D HTML), 'three' (Three.js, low-level 3D JS — cinematic PBR defaults), \
+'phaser' (Phaser, 2D), or 'motion' (GSAP + Lottie). Returns the filenames + a ready-to-use snippet. \
+Call concierge.list_site FIRST — if the renderer is already staged, do NOT call this. Pair with \
+design_guide(topic='art_direction'). STAGING ONLY — never publishes.",
             json!({
                 "type": "object",
                 "properties": {
-                    "engine": { "type": "string", "enum": ["aframe", "three", "phaser", "motion"], "description": "'aframe' (3D HTML), 'three' (3D JS), 'phaser' (2D), or 'motion' (GSAP + Lottie animation)" },
+                    "engine": { "type": "string", "enum": ["babylon", "game", "aframe", "three", "phaser", "motion"], "description": "'babylon' (medium 3D engine: scene/game/movie), 'game' (Babylon + character controller), 'aframe' (3D HTML), 'three' (low-level 3D JS), 'phaser' (2D), or 'motion' (GSAP + Lottie)" },
                     "site": { "type": "string", "description": "Optional site name (folder); defaults to 'draft'" },
                 },
                 "required": ["engine"],
@@ -1085,6 +1153,60 @@ fn tool_scaffold_engine(mem: &MemCli, args: &Value) -> Result<String, String> {
         ));
     }
 
+    if matches!(
+        engine.as_str(),
+        "babylon" | "babylonjs" | "engine" | "game3d" | "scene3d" | "game"
+    ) {
+        // The engine + the deterministic video exporter (same capture.js as the motion path), so a
+        // Babylon scene is a SCENE, a GAME, or a MOVIE out of the box — self-contained, offline.
+        let is_game = matches!(engine.as_str(), "game" | "game3d");
+        write_canvas_file(
+            &root,
+            &folder,
+            std::path::Path::new("babylon.js"),
+            ENGINE_BABYLON,
+        )
+        .map_err(|e| format!("write babylon: {e}"))?;
+        write_canvas_file(
+            &root,
+            &folder,
+            std::path::Path::new("webm-muxer.js"),
+            ENGINE_WEBM_MUXER,
+        )
+        .map_err(|e| format!("write webm-muxer: {e}"))?;
+        write_canvas_file(
+            &root,
+            &folder,
+            std::path::Path::new("capture.js"),
+            MOTION_CAPTURE.as_bytes(),
+        )
+        .map_err(|e| format!("write capture.js: {e}"))?;
+        // Game projects also get the drop-in character controller (walk/run/jump, no physics engine).
+        if is_game {
+            write_canvas_file(
+                &root,
+                &folder,
+                std::path::Path::new("CharacterController.js"),
+                ENGINE_CHARACTER_CONTROLLER,
+            )
+            .map_err(|e| format!("write character controller: {e}"))?;
+        }
+        let game_note = if is_game {
+            " CharacterController.js is included (3rd/1st-person walk/run/jump, no physics engine): load it AFTER babylon.js, attach it to a rigged glTF character whose animation ranges are named idle/walk/run/jump, and drive it from input in runRenderLoop — see its README API."
+        } else {
+            ""
+        };
+        return Ok(format!(
+            "Vendored Babylon.js ({} MB){} + webm-muxer + capture.js into site '{}' — a medium 3D ENGINE, self-contained (no CDN, works offline + on IPFS).\n\nUse it:\n{}\n\nOne scene serves a SCENE, a GAME (interactive), or a MOVIE (the same seekable timeline recorded — video is AUTOMATIC and FULL-LENGTH on Save/Publish, any length, no ffmpeg). MOVIES must stay DETERMINISTIC: animate with a paused AnimationGroup + goToFrame, never a clock or live physics (physics is for games).{} Design guidance: concierge.design_guide(topic='art_direction'). Stage with concierge.write_asset, preview ({}) live, then publish. Nothing has been published.",
+            ENGINE_BABYLON.len() / (1024 * 1024),
+            if is_game { " + CharacterController" } else { "" },
+            safe_site(site),
+            BABYLON_SNIPPET,
+            game_note,
+            folder.display()
+        ));
+    }
+
     if matches!(engine.as_str(), "aframe" | "vr" | "ar") {
         write_canvas_file(
             &root,
@@ -1669,6 +1791,70 @@ mod tests {
             !text.contains("import * as THREE"),
             "snippet must use the global THREE, not an ES-module import: {text}"
         );
+    }
+
+    #[test]
+    fn scaffold_engine_babylon_is_a_seekable_engine_for_scene_game_and_movie() {
+        let (_dir, mem) = store();
+        let res = call(
+            &mem,
+            true,
+            "tools/call",
+            json!({
+                "name": "concierge.scaffold_engine",
+                "arguments": { "engine": "babylon", "site": "world" }
+            }),
+        );
+        assert_eq!(res["result"]["isError"], false);
+        let text = res["result"]["content"][0]["text"].as_str().unwrap();
+        // The engine substrate + the SEEKABLE, deterministic movie contract + cinematic defaults.
+        for token in [
+            "BABYLON.Engine",
+            "preserveDrawingBuffer",
+            "AnimationGroup",
+            "goToFrame",
+            "window.__seek",
+            "TONEMAPPING_ACES",
+            "ShadowGenerator",
+        ] {
+            assert!(
+                text.contains(token),
+                "babylon snippet must include `{token}`: {text}"
+            );
+        }
+        // Engine + the video exporter are staged so a scene is a movie out of the box.
+        let dir = mem.store_dir().unwrap().join("canvas/world");
+        assert!(
+            std::fs::metadata(dir.join("babylon.js")).unwrap().len() > 1_000_000,
+            "the full Babylon engine must be vendored"
+        );
+        assert!(dir.join("webm-muxer.js").is_file() && dir.join("capture.js").is_file());
+        // A plain 'babylon' scene is NOT a game — no character controller unless asked.
+        assert!(!dir.join("CharacterController.js").is_file());
+
+        // The 'game' variant adds the drop-in character controller.
+        let game = call(
+            &mem,
+            true,
+            "tools/call",
+            json!({
+                "name": "concierge.scaffold_engine",
+                "arguments": { "engine": "game", "site": "platformer" }
+            }),
+        );
+        assert_eq!(game["result"]["isError"], false);
+        let gdir = mem.store_dir().unwrap().join("canvas/platformer");
+        assert!(
+            std::fs::metadata(gdir.join("CharacterController.js"))
+                .unwrap()
+                .len()
+                > 1000,
+            "the 'game' scaffold must stage the CharacterController"
+        );
+        assert!(game["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("CharacterController"));
     }
 
     #[test]
