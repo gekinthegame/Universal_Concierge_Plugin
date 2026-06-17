@@ -37,12 +37,30 @@ const GUIDE_ART_DIRECTION: &str = include_str!("guides/art_direction.md");
 // Proven renderers, vendored so published media stays self-contained/offline (MIT).
 const ENGINE_THREE: &[u8] = include_bytes!("engines/three.module.min.js");
 const ENGINE_PHASER: &[u8] = include_bytes!("engines/phaser.min.js");
+const ENGINE_AFRAME: &[u8] = include_bytes!("engines/aframe.min.js");
+const ENGINE_AFRAME_ENV: &[u8] = include_bytes!("engines/aframe-environment-component.min.js");
 // The motion/animation skill bundles two libs together. GSAP © GreenSock (no-charge
 // license); Lottie © Airbnb (MIT).
 const ENGINE_GSAP: &[u8] = include_bytes!("engines/gsap.min.js");
 const ENGINE_LOTTIE: &[u8] = include_bytes!("engines/lottie.min.js");
 // webm-muxer (© Vanilla, MIT) — turns WebCodecs frames into a real .webm in the browser.
 const ENGINE_WEBM_MUXER: &[u8] = include_bytes!("engines/webm-muxer.js");
+const AFRAME_SNIPPET: &str = r##"A-Frame is declarative (HTML). Build worlds by nesting entities. In index.html:
+<script src="./aframe.min.js"></script>
+<script src="./aframe-environment-component.min.js"></script>
+<a-scene>
+  <!-- 1 line = a full 3D world (forest, volcano, egypt, contact, dream, ... ) -->
+  <a-entity environment="preset: forest; shadow: true"></a-entity>
+
+  <a-entity id="player" position="0 1.6 4">
+    <a-camera></a-camera>
+  </a-entity>
+
+  <!-- High-level assets: AI writes <a-entity> tags better than JS code -->
+  <a-box position="-1 0.5 -3" rotation="0 45 0" color="#4CC3D9" shadow></a-box>
+  <a-sphere position="0 1.25 -5" radius="1.25" color="#EF2D5E" shadow></a-sphere>
+  <a-cylinder position="1 0.75 -3" radius="0.5" height="1.5" color="#FFC65D" shadow></a-cylinder>
+</a-scene>"##;
 const MOTION_SNIPPET: &str = r#"Draw to a <canvas> from a SEEKABLE timeline; the Concierge renders every frame to video on Save/Publish (any length, no ffmpeg). index.html:
 <canvas id="stage"></canvas>
 <script src="./gsap.min.js"></script>
@@ -426,17 +444,15 @@ concierge.scaffold_engine to drop in a vendored renderer; the user previews and 
         tools.push(tool_def(
             "concierge.scaffold_engine",
             "Drop a proven, vendored web renderer into a site folder so a game/3D scene/animation \
-stays self-contained (no CDN, works offline + on IPFS): 'three' (Three.js, 3D — ships CINEMATIC \
-PBR defaults: env-map reflections, soft shadows, ACES tone mapping; seekable, so it exports video \
-like the 2D path — use this for any 3D in a movie OR a website), 'phaser' (Phaser, 2D), or 'motion' \
-(GSAP + Lottie — animation/motion-graphics that record to video in-browser, no ffmpeg). Returns the \
-filenames + a ready-to-use snippet. Call concierge.list_site FIRST — if the renderer is already \
-staged (a 'New' Movie project already includes it), do NOT call this; just EDIT animation.js. Pair \
-with design_guide(topic='motion'). STAGING ONLY — never publishes.",
+stays self-contained (no CDN, works offline + on IPFS): 'aframe' (A-Frame, 3D — DECLARATIVE HTML, \
+best for AI world-building), 'three' (Three.js, 3D — ships CINEMATIC PBR defaults; seekable for \
+video export), 'phaser' (Phaser, 2D), or 'motion' (GSAP + Lottie). Returns the filenames + a \
+ready-to-use snippet. Call concierge.list_site FIRST — if the renderer is already staged, do \
+NOT call this. Pair with design_guide(topic='art_direction'). STAGING ONLY — never publishes.",
             json!({
                 "type": "object",
                 "properties": {
-                    "engine": { "type": "string", "enum": ["three", "phaser", "motion"], "description": "'three' (3D), 'phaser' (2D), or 'motion' (GSAP + Lottie animation)" },
+                    "engine": { "type": "string", "enum": ["aframe", "three", "phaser", "motion"], "description": "'aframe' (3D HTML), 'three' (3D JS), 'phaser' (2D), or 'motion' (GSAP + Lottie animation)" },
                     "site": { "type": "string", "description": "Optional site name (folder); defaults to 'draft'" },
                 },
                 "required": ["engine"],
@@ -1050,6 +1066,30 @@ fn tool_scaffold_engine(mem: &MemCli, args: &Value) -> Result<String, String> {
         ));
     }
 
+    if matches!(engine.as_str(), "aframe" | "vr" | "ar") {
+        write_canvas_file(
+            &root,
+            &folder,
+            std::path::Path::new("aframe.min.js"),
+            ENGINE_AFRAME,
+        )
+        .map_err(|e| format!("write aframe: {e}"))?;
+        write_canvas_file(
+            &root,
+            &folder,
+            std::path::Path::new("aframe-environment-component.min.js"),
+            ENGINE_AFRAME_ENV,
+        )
+        .map_err(|e| format!("write aframe-env: {e}"))?;
+        return Ok(format!(
+            "Vendored A-Frame ({} KB) + Environment Component into site '{}' — self-contained (no CDN, works offline + on IPFS).\n\nUse it:\n{}\n\nFor 3D world-building guidance call concierge.design_guide(topic='art_direction'). Stage with concierge.write_asset, preview ({}) live, then publish. Nothing has been published.",
+            ENGINE_AFRAME.len() / 1024,
+            safe_site(site),
+            AFRAME_SNIPPET,
+            folder.display()
+        ));
+    }
+
     let (file, bytes, snippet): (&str, &[u8], String) = match engine.as_str() {
         "three" | "threejs" | "three.js" => (
             "three.module.min.js",
@@ -1124,7 +1164,7 @@ clock.getDelta() / requestAnimationFrame lerp (those desync the frame-by-frame e
 <script src=\"./phaser.min.js\"></script>\n\
 <script>\n  const game = new Phaser.Game({ type: Phaser.AUTO, width: 800, height: 600, scene: { preload(){}, create(){}, update(){} } });\n</script>".to_string(),
         ),
-        other => return Err(format!("unknown engine '{other}'. Use 'three' (3D), 'phaser' (2D), or 'motion' (GSAP + Lottie animation).")),
+        other => return Err(format!("unknown engine '{other}'. Use 'aframe' (3D HTML), 'three' (3D), 'phaser' (2D), or 'motion' (GSAP + Lottie animation).")),
     };
     write_canvas_file(&root, &folder, std::path::Path::new(file), bytes)
         .map_err(|e| format!("write engine: {e}"))?;
@@ -1584,6 +1624,71 @@ mod tests {
             .unwrap()
             .len()
                 > 1000
+        );
+    }
+
+    #[test]
+    fn scaffold_engine_aframe_bundles_declarative_world_engine() {
+        let (_dir, mem) = store();
+        let res = call(
+            &mem,
+            true,
+            "tools/call",
+            json!({
+                "name": "concierge.scaffold_engine",
+                "arguments": { "engine": "aframe", "site": "world" }
+            }),
+        );
+        assert_eq!(res["result"]["isError"], false);
+        let text = res["result"]["content"][0]["text"].as_str().unwrap();
+        for token in [
+            "A-Frame",
+            "aframe.min.js",
+            "aframe-environment-component.min.js",
+            "<a-scene>",
+            "environment=\"preset: forest; shadow: true\"",
+            "design_guide(topic='art_direction')",
+        ] {
+            assert!(
+                text.contains(token),
+                "aframe scaffold should include `{token}` in the usage guidance: {text}"
+            );
+        }
+
+        let folder = mem.store_dir().unwrap().join("canvas/world");
+        assert!(
+            std::fs::metadata(folder.join("aframe.min.js"))
+                .unwrap()
+                .len()
+                > 1000
+        );
+        assert!(
+            std::fs::metadata(folder.join("aframe-environment-component.min.js"))
+                .unwrap()
+                .len()
+                > 1000
+        );
+        // STAGING ONLY — nothing published.
+        assert!(mem.publish_receipts().unwrap().is_empty());
+    }
+
+    #[test]
+    fn scaffold_engine_unknown_engine_lists_aframe() {
+        let (_dir, mem) = store();
+        let res = call(
+            &mem,
+            true,
+            "tools/call",
+            json!({
+                "name": "concierge.scaffold_engine",
+                "arguments": { "engine": "unity", "site": "world" }
+            }),
+        );
+        assert_eq!(res["result"]["isError"], true);
+        let text = res["result"]["content"][0]["text"].as_str().unwrap();
+        assert!(
+            text.contains("'aframe'") && text.contains("'three'") && text.contains("'phaser'"),
+            "unknown-engine error should list supported renderers: {text}"
         );
     }
 }

@@ -33,3 +33,22 @@ Avoid the "AI-slop" tells (flat cards, safe neutrals, generic buttons).
 - **Mood Drenching**: The surface should BE the brand color, not just a tinted neutral.
 - **Juice**: Add particles, motion blurs, and ambient movement to static screens.
 - **Reference-Driven**: Generate a "Seed Asset" first and derive the whole style from it.
+
+---
+
+## 🌍 3D World Building (A-Frame)
+
+For rapid 3D prototyping, use **A-Frame** (`scaffold_engine('aframe')`). It allows you to build worlds using declarative HTML tags, which is more reliable for AI than imperative JS.
+
+### Environment Presets
+Use the `environment` component to instantly set the mood. One line defines the sky, lighting, ground, and distant assets:
+- `<a-entity environment="preset: forest"></a-entity>` (Standard nature)
+- `<a-entity environment="preset: volcano"></a-entity>` (Aggressive, high-contrast)
+- `<a-entity environment="preset: egypt"></a-entity>` (Warm, sandy, historical)
+- `<a-entity environment="preset: contact"></a-entity>` (Sci-fi, cold, blue)
+- `<a-entity environment="preset: dream"></a-entity>` (Soft, pastel, surreal)
+
+### Composing the Scene
+- **Entities over Code**: Use `<a-entity>` with components for everything.
+- **Juice via Animation**: Use the `animation` component for movement: `<a-entity animation="property: rotation; to: 0 360 0; loop: true"></a-entity>`.
+- **Assets**: Reference GLB models via `<a-asset-item>` for performance and consistency.
