@@ -1035,9 +1035,11 @@ fn tool_scaffold_engine(mem: &MemCli, args: &Value) -> Result<String, String> {
         "three" | "threejs" | "three.js" => (
             "three.module.min.js",
             ENGINE_THREE,
-            "Three.js is ESM. To EXPORT VIDEO it must render into the SAME <canvas id=\"stage\"> \
-the Concierge captures, with preserveDrawingBuffer:true, and expose a SEEKABLE contract (deterministic — \
-no clock / Math.random; seeking to time t must always draw the same frame). In your index.html:\n\
+            "Three.js is ESM. Build CINEMATIC 3D, not flat: PBR materials with a studio ENVIRONMENT MAP \
+(reflections), three-point lighting with SOFT SHADOWS, ACES tone mapping, and EASED motion. To export \
+video it must render into the SAME <canvas id=\"stage\"> the Concierge captures (preserveDrawingBuffer) \
+and be DETERMINISTIC: seeking to time t always draws the same frame — easing is a function of t, NEVER \
+clock.getDelta() / requestAnimationFrame lerp (those desync the frame-by-frame export). In index.html:\n\
 <canvas id=\"stage\" width=\"1280\" height=\"720\"></canvas>\n\
 <script type=\"importmap\">{\"imports\":{\"three\":\"./three.module.min.js\"}}</script>\n\
 <script type=\"module\">\n\
@@ -1045,17 +1047,55 @@ no clock / Math.random; seeking to time t must always draw the same frame). In y
   const stage = document.getElementById('stage');\n\
   const renderer = new THREE.WebGLRenderer({ canvas: stage, antialias: true, preserveDrawingBuffer: true });\n\
   renderer.setSize(stage.width, stage.height, false);\n\
+  renderer.outputColorSpace = THREE.SRGBColorSpace;            // correct color, not washed out\n\
+  renderer.toneMapping = THREE.ACESFilmicToneMapping;          // filmic grade\n\
+  renderer.toneMappingExposure = 1.1;\n\
+  renderer.shadowMap.enabled = true;\n\
+  renderer.shadowMap.type = THREE.PCFSoftShadowMap;            // soft, not jagged, shadows\n\
+\n\
   const scene = new THREE.Scene();\n\
-  const camera = new THREE.PerspectiveCamera(50, stage.width / stage.height, 0.1, 100); camera.position.z = 5;\n\
-  scene.add(new THREE.AmbientLight(0xffffff, 0.8));\n\
-  const dir = new THREE.DirectionalLight(0xffffff, 1); dir.position.set(3, 4, 5); scene.add(dir);\n\
-  const cube = new THREE.Mesh(new THREE.BoxGeometry(), new THREE.MeshStandardMaterial({ color: 0x66ccff }));\n\
-  scene.add(cube);\n\
+  scene.background = new THREE.Color(0x0a0b1a);\n\
+  const camera = new THREE.PerspectiveCamera(45, stage.width / stage.height, 0.1, 100);\n\
+\n\
+  // Studio environment generated OFFLINE (no HDR/CDN): a soft gradient so PBR reflections have\n\
+  // something to bounce off — the single biggest upgrade over flat materials.\n\
+  const pmrem = new THREE.PMREMGenerator(renderer);\n\
+  const gc = document.createElement('canvas'); gc.width = 16; gc.height = 256;\n\
+  const g2 = gc.getContext('2d'); const grad = g2.createLinearGradient(0, 0, 0, 256);\n\
+  grad.addColorStop(0, '#7e8ec6'); grad.addColorStop(0.5, '#2a2f4a'); grad.addColorStop(1, '#0a0b1a');\n\
+  g2.fillStyle = grad; g2.fillRect(0, 0, 16, 256);\n\
+  const envTex = new THREE.CanvasTexture(gc); envTex.mapping = THREE.EquirectangularReflectionMapping;\n\
+  scene.environment = pmrem.fromEquirectangular(envTex).texture; envTex.dispose();\n\
+\n\
+  // Three-point lighting (key / fill / rim). The env map carries soft ambient — no flat AmbientLight.\n\
+  const key = new THREE.DirectionalLight(0xffffff, 2.4); key.position.set(5, 8, 6);\n\
+  key.castShadow = true; key.shadow.mapSize.set(2048, 2048);\n\
+  key.shadow.camera.near = 1; key.shadow.camera.far = 40; key.shadow.bias = -0.0002; scene.add(key);\n\
+  const fill = new THREE.DirectionalLight(0x99bbff, 0.6); fill.position.set(-6, 2, 4); scene.add(fill);\n\
+  const rim = new THREE.DirectionalLight(0xffffff, 1.2); rim.position.set(-3, 5, -6); scene.add(rim);\n\
+\n\
+  // A ground catches the shadow — without a receiver, castShadow does nothing.\n\
+  const ground = new THREE.Mesh(new THREE.PlaneGeometry(60, 60),\n\
+    new THREE.MeshStandardMaterial({ color: 0x0d0f22, roughness: 1, metalness: 0 }));\n\
+  ground.rotation.x = -Math.PI / 2; ground.position.y = -1; ground.receiveShadow = true; scene.add(ground);\n\
+\n\
+  // PBR hero — metalness/roughness MATCHED to the surface (not chrome-everything).\n\
+  const hero = new THREE.Mesh(new THREE.IcosahedronGeometry(1, 0),\n\
+    new THREE.MeshPhysicalMaterial({ color: 0x8a5cff, metalness: 0.3, roughness: 0.25, clearcoat: 0.6, clearcoatRoughness: 0.2 }));\n\
+  hero.castShadow = true; scene.add(hero);\n\
+\n\
   window.__canvas = stage; window.__fps = 30; window.__duration = 6;\n\
-  // The Concierge calls __seek(t) for every frame on Save/Publish; it MUST render synchronously.\n\
-  window.__seek = (t) => { cube.rotation.y = t * 1.2; cube.rotation.x = t * 0.6; renderer.render(scene, camera); };\n\
-  // Live preview while you edit (loops the timeline):\n\
+  const easeInOut = (x) => x < 0.5 ? 4 * x * x * x : 1 - Math.pow(-2 * x + 2, 3) / 2;\n\
+  // SEEKABLE + EASED: motion is a pure function of t (deterministic), with acceleration/deceleration.\n\
+  window.__seek = (t) => {\n\
+    const loop = window.__duration, k = easeInOut((t % loop) / loop), a = k * Math.PI * 2;\n\
+    hero.rotation.y = a; hero.position.y = Math.sin(a) * 0.15;\n\
+    camera.position.set(Math.sin(a) * 4.5, 2.2, Math.cos(a) * 4.5); camera.lookAt(0, 0, 0);\n\
+    renderer.render(scene, camera);\n\
+  };\n\
+  // Live preview while you edit (the deterministic capture drives __seek directly, not this clock):\n\
   (function loop(){ window.__seek((performance.now() / 1000) % window.__duration); requestAnimationFrame(loop); })();\n\
+  // Richer choreography? scaffold_engine('motion') adds GSAP; drive a paused timeline with tl.time(t).\n\
 </script>".to_string(),
         ),
         "phaser" | "phaserjs" => (
@@ -1433,6 +1473,27 @@ mod tests {
         assert!(
             text.contains("window.__seek") && text.contains("renderer.render(scene, camera)"),
             "three snippet must expose a seekable contract that renders per frame: {text}"
+        );
+        // Cinematic defaults (PBR env map + soft shadows + tone mapping + eased motion) baked in,
+        // so 3D doesn't look flat — all offline and deterministic.
+        for token in [
+            "PMREMGenerator",
+            "ACESFilmicToneMapping",
+            "PCFSoftShadowMap",
+            "MeshPhysicalMaterial",
+            "receiveShadow",
+            "easeInOut",
+        ] {
+            assert!(
+                text.contains(token),
+                "three snippet must bake in cinematic default `{token}`: {text}"
+            );
+        }
+        // Easing is seekable (a function of t), and the guidance explicitly forbids the
+        // clock-delta form that would desync the frame-by-frame export.
+        assert!(
+            text.contains("NEVER \nclock.getDelta()") || text.contains("NEVER clock.getDelta()"),
+            "three snippet must warn against clock-delta easing: {text}"
         );
         assert!(
             std::fs::metadata(
