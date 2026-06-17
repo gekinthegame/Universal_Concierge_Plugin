@@ -104,7 +104,14 @@ impl MemCli {
         // not its block CID, so threads cohere across installs.
         let (clock, next) = match &parent {
             Some(p) => {
-                let parent_env = self.read_message(p)?;
+                // Link by the parent's clock + signature only — do NOT require the
+                // parent to verify here. Verification is what matters for *display*
+                // (`read_message`) and *inbound accept* (`accept_message`); the send
+                // path merely needs the parent's link fields to advance the thread.
+                // Requiring verification here would let a single legacy/corrupt node
+                // (e.g. one written by an earlier build whose key/format differs)
+                // permanently block the user from sending new messages.
+                let parent_env = self.read_message_link(p)?;
                 (parent_env.clock + 1, vec![parent_env.sig])
             }
             None => (1, Vec::new()),
@@ -127,6 +134,19 @@ impl MemCli {
         self.bind(&message_id_name(&env.sig), &cid)?;
         self.bind(&room_latest_name(room), &cid)?;
         Ok(cid)
+    }
+
+    /// Read a message envelope by CID **without verifying its signature**. This is
+    /// for the send path only, where we just need the parent's `clock` and `sig` to
+    /// link a new (locally-signed) message into the thread — see [`Self::post_message`].
+    /// Never use this where authenticity matters; use [`Self::read_message`] /
+    /// [`Self::accept_message`] for display and inbound, which both verify.
+    pub fn read_message_link(&self, cid: &Cid) -> Result<MessageEnvelope> {
+        let record = self.get(&CidOrName::Cid(cid.clone()))?;
+        let Record::Live { body_json, .. } = record else {
+            return Err(Error::Io("message is tombstoned".to_string()));
+        };
+        parse_message_envelope(&body_json)
     }
 
     /// Read a message by CID, **verifying its signature**: a forged or tampered

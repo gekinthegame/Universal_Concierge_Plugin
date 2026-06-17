@@ -1945,7 +1945,37 @@ function brainRow(key, value) {
   row.append(node("span", "wallet-k", key), node("span", "wallet-v", value));
   return row;
 }
+// The Concierge's PRIMARY brain is the host harness it's mounted to (e.g. Claude Code) — the
+// large model that drives it via MCP. The Sovereign LLM below is the optional private alternative.
+async function loadBrainHost() {
+  let cc = {}, meta = {};
+  try { cc = await getJson("/api/claude-code/status"); } catch (e) {}
+  try { meta = await getJson("/api/meta"); } catch (e) {}
+  const ccDetected = !!cc.available;
+  const declared = meta.mounted_model && meta.mounted_model !== "manual mount" && meta.mounted_model !== "not declared";
+  const connected = ccDetected || declared;
+  const dot = document.querySelector("#brain-host .dot");
+  if (dot) {
+    dot.style.background = connected ? "var(--patina)" : "var(--faint)";
+    dot.style.boxShadow = connected ? "0 0 8px var(--patina)" : "none";
+  }
+  let name, detail;
+  if (ccDetected) {
+    const n = cc.session_count || 0;
+    name = "Claude Code · connected";
+    detail = (cc.attached ? "capturing" : "detected — not attached") + " · " + n + " session" + (n === 1 ? "" : "s") + " · drives the Concierge via MCP";
+  } else if (declared) {
+    name = meta.mounted_model + " · mounted";
+    detail = "drives the Concierge via MCP";
+  } else {
+    name = "No host harness detected";
+    detail = "Attach a harness (e.g. Claude Code) — the Concierge mounts the one it detects.";
+  }
+  byId("brain-host-name").textContent = name;
+  byId("brain-host-detail").textContent = detail;
+}
 async function loadBrainMetrics() {
+  loadBrainHost();
   let data; try { data = await getJson("/api/brain/metrics"); } catch (e) { return; }
   const baseline = data.baseline || {};
   // Panel A — engine status card: connection dot + engine name + base_url.
@@ -1959,7 +1989,7 @@ async function loadBrainMetrics() {
     : "No local engine detected";
   byId("brain-engine-url").textContent = baseline.up
     ? (baseline.base_url || "")
-    : "No local engine detected at " + (baseline.base_url || "—") + " — start a local engine (e.g. oMLX)";
+    : "Optional — no local engine at " + (baseline.base_url || "—") + ". Start one (oMLX, Ollama, …) for private on-device inference; your host above is already the brain.";
   // Model picker — populated from baseline.models, current selection marked.
   const select = byId("brain-model"); clear(select);
   const models = Array.isArray(baseline.models) ? baseline.models : [];

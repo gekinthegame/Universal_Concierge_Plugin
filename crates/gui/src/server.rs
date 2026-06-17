@@ -11,6 +11,65 @@ extern "C" fn handle_term_signal(_sig: libc::c_int) {
     SHUTDOWN_REQUESTED.store(true, std::sync::atomic::Ordering::SeqCst);
 }
 
+// ── Windows console-control shutdown (parity with the Unix signal path) ──────
+//
+// Windows has no SIGINT/SIGTERM. Closing the console, Ctrl-C, Ctrl-Break, logoff
+// and system shutdown all arrive as *console control events* instead, delivered
+// by the OS on a dedicated thread. Without this handler those events kill only
+// the foreground process and orphan the **detached** Kubo daemon — the exact
+// "background processes stay open on Windows" leak. Unlike a Unix signal context,
+// this callback runs on a normal thread, so it can safely do the real shutdown
+// work directly (no flag-and-poll dance needed). We stash a `MemCli` here so the
+// handler can reach the same `shutdown()` seam every other path uses.
+#[cfg(windows)]
+static SHUTDOWN_MEM: std::sync::OnceLock<MemCli> = std::sync::OnceLock::new();
+
+#[cfg(windows)]
+#[link(name = "kernel32")]
+extern "system" {
+    fn SetConsoleCtrlHandler(
+        handler: Option<unsafe extern "system" fn(u32) -> i32>,
+        add: i32,
+    ) -> i32;
+    fn OpenProcess(desired_access: u32, inherit_handle: i32, process_id: u32) -> isize;
+    fn WaitForSingleObject(handle: isize, milliseconds: u32) -> u32;
+    fn CloseHandle(handle: isize) -> i32;
+    fn GetLastError() -> u32;
+}
+
+/// OS-invoked on Ctrl-C / Ctrl-Break / console-close / logoff / shutdown. Returning
+/// is moot — we stop the detached Kubo node, drop the lock, and exit from here so the
+/// daemon can never outlive the app.
+#[cfg(windows)]
+unsafe extern "system" fn handle_console_ctrl(_ctrl_type: u32) -> i32 {
+    if let Some(mem) = SHUTDOWN_MEM.get() {
+        shutdown(mem); // never returns
+    }
+    std::process::exit(0);
+}
+
+/// Is `pid` still running? Windows counterpart to the Unix `kill(pid, 0)` probe.
+/// On any ambiguous error (e.g. access-denied) we assume *alive* so a transient
+/// failure can never trigger a spurious shutdown; only an explicitly invalid PID
+/// counts as dead.
+#[cfg(windows)]
+fn pid_is_alive_windows(pid: u32) -> bool {
+    const SYNCHRONIZE: u32 = 0x0010_0000;
+    const WAIT_TIMEOUT: u32 = 0x0000_0102;
+    const ERROR_INVALID_PARAMETER: u32 = 87;
+    unsafe {
+        let handle = OpenProcess(SYNCHRONIZE, 0, pid);
+        if handle == 0 {
+            // No handle: dead only if the OS says the PID is invalid; otherwise
+            // (e.g. ERROR_ACCESS_DENIED) the process exists, so treat it as alive.
+            return GetLastError() != ERROR_INVALID_PARAMETER;
+        }
+        let alive = WaitForSingleObject(handle, 0) == WAIT_TIMEOUT;
+        CloseHandle(handle);
+        alive
+    }
+}
+
 /// Stop background processes and exit. The single exit seam for **every** shutdown path —
 /// window-close (heartbeat watchdog), watched-PID death, and Ctrl-C/SIGTERM — so none of them
 /// can leak the **detached** private Kubo daemon (it outlives this process unless told to stop).
@@ -58,7 +117,9 @@ pub fn serve_with_options(mem: MemCli, addr: &str, options: GuiOptions) -> CoreR
                 libc::kill(pid as i32, 0) == 0
                     || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
             };
-            #[cfg(not(unix))]
+            #[cfg(windows)]
+            let alive = pid_is_alive_windows(pid);
+            #[cfg(not(any(unix, windows)))]
             let alive = true;
             if !alive {
                 shutdown(&mem_watch); // stop the detached Kubo node too, not just this process
@@ -123,6 +184,17 @@ pub fn serve_with_options(mem: MemCli, addr: &str, options: GuiOptions) -> CoreR
                 shutdown(&mem_sig);
             }
         });
+    }
+
+    // Windows equivalent: register a console-control handler so Ctrl-C / Ctrl-Break /
+    // console-close / logoff / shutdown all reach the same `shutdown()` seam and stop
+    // the detached Kubo node instead of orphaning it.
+    #[cfg(windows)]
+    {
+        let _ = SHUTDOWN_MEM.set(mem.clone());
+        unsafe {
+            SetConsoleCtrlHandler(Some(handle_console_ctrl), 1);
+        }
     }
 
     // We stop the detached Kubo daemon on window-close, so if the Sidekick was left enabled,

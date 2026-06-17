@@ -24,8 +24,8 @@ use concierge_core::{
     Record, Result as CoreResult, SharedEmbedder, UserId,
 };
 use concierge_net::{
-    ed25519_hex_from_peer_id, peer_id_from_ed25519_hex, store_provider, ConciergeNode, Multiaddr,
-    NodeConfig, NodeEvent,
+    ed25519_hex_from_peer_id, peer_id_from_ed25519_hex, peer_id_in, store_provider, ConciergeNode,
+    Multiaddr, NodeConfig, NodeEvent,
 };
 use rand_core::{OsRng, RngCore};
 
@@ -144,14 +144,16 @@ struct PeerInfo {
 
 fn prune_discovery_peers(map: &mut std::collections::BTreeMap<String, PeerInfo>, now: u64) {
     map.retain(|_, peer| {
-        peer.status == "connected" || now.saturating_sub(peer.last_seen) < DISCOVERY_PEER_TTL_SECS
+        peer.status == "connected"
+            || peer.source == "ipfs/bootstrap"
+            || now.saturating_sub(peer.last_seen) < DISCOVERY_PEER_TTL_SECS
     });
     if map.len() <= MAX_DISCOVERY_PEERS {
         return;
     }
     let mut removable: Vec<(String, u64)> = map
         .iter()
-        .filter(|(_, peer)| peer.status != "connected")
+        .filter(|(_, peer)| peer.status != "connected" && peer.source != "ipfs/bootstrap")
         .map(|(id, peer)| (id.clone(), peer.last_seen))
         .collect();
     removable.sort_by_key(|(_, last_seen)| *last_seen);
@@ -160,6 +162,35 @@ fn prune_discovery_peers(map: &mut std::collections::BTreeMap<String, PeerInfo>,
             break;
         }
         map.remove(&id);
+    }
+}
+
+fn seed_bootstrap_peers(
+    map: &mut std::collections::BTreeMap<String, PeerInfo>,
+    bootstrap: &[Multiaddr],
+    now: u64,
+) {
+    for addr in bootstrap {
+        let Some(peer) = peer_id_in(addr) else {
+            continue;
+        };
+        let peer_id = peer.to_string();
+        let addr = addr.to_string();
+        map.entry(peer_id.clone())
+            .and_modify(|entry| {
+                if !entry.addresses.contains(&addr) {
+                    entry.addresses.push(addr.clone());
+                }
+                entry.last_seen = now;
+            })
+            .or_insert_with(|| PeerInfo {
+                peer_id,
+                status: "discovered",
+                source: "ipfs/bootstrap".to_string(),
+                relayed: false,
+                addresses: vec![addr],
+                last_seen: now,
+            });
     }
 }
 
@@ -816,11 +847,12 @@ fn ensure_chat_node(mem: &MemCli, options: &GuiOptions) -> Result<(), String> {
         .build()
         .map_err(|e| format!("chat runtime: {e}"))?;
     let provider = store_provider(Arc::new(mem.clone()));
+    let node_config = NodeConfig::default();
     let (node, mut events) = {
         // `spawn_with_provider` calls `tokio::spawn` internally, so it must run
         // inside the runtime context.
         let _enter = runtime.enter();
-        ConciergeNode::spawn_with_provider(secret, NodeConfig::default(), provider)?
+        ConciergeNode::spawn_with_provider(secret, node_config.clone(), provider)?
     };
     // Listen on TCP and QUIC (UDP). QUIC avoids the TCP port-reuse collision when
     // two nodes share a host and traverses NAT better.
@@ -837,6 +869,9 @@ fn ensure_chat_node(mem: &MemCli, options: &GuiOptions) -> Result<(), String> {
     let addrs: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
     let peers: Arc<Mutex<std::collections::BTreeMap<String, PeerInfo>>> =
         Arc::new(Mutex::new(std::collections::BTreeMap::new()));
+    if let Ok(mut map) = peers.lock() {
+        seed_bootstrap_peers(&mut map, &node_config.bootstrap, now_unix());
+    }
 
     // Drain inbound network events into the store. A received message is a signed
     // envelope (verified by `accept_message`); a `Listening` event records a
@@ -969,6 +1004,13 @@ fn ensure_chat_node(mem: &MemCli, options: &GuiOptions) -> Result<(), String> {
                 }
                 NodeEvent::PeerRouted { peer_id, addresses } => {
                     touch_peer(peer_id, "discovered", "dht", true, addresses);
+                }
+                NodeEvent::PeerDiscovered {
+                    peer_id,
+                    source,
+                    addresses,
+                } => {
+                    touch_peer(peer_id, "discovered", source, false, addresses);
                 }
                 _ => {}
             }

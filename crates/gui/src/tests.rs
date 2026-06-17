@@ -1136,6 +1136,31 @@ mod tests {
     }
 
     #[test]
+    fn discovery_map_seeds_public_ipfs_bootstrap_stars() {
+        let now = 1_000;
+        let mut peers = std::collections::BTreeMap::new();
+        let config = NodeConfig::default();
+        seed_bootstrap_peers(&mut peers, &config.bootstrap, now);
+
+        assert!(
+            peers.len() >= 4,
+            "public IPFS bootstrap peers should populate the empty discovery map"
+        );
+        assert!(peers.values().all(|peer| {
+            peer.status == "discovered"
+                && peer.source == "ipfs/bootstrap"
+                && !peer.relayed
+                && !peer.addresses.is_empty()
+        }));
+
+        prune_discovery_peers(&mut peers, now + DISCOVERY_PEER_TTL_SECS + 1);
+        assert!(
+            peers.len() >= 4,
+            "bootstrap peers are stable entry points and should not age out"
+        );
+    }
+
+    #[test]
     fn oversized_headers_receive_431_without_unbounded_reads() {
         let (_dir, mem) = store();
         let options = GuiOptions::default();

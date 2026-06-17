@@ -205,8 +205,14 @@
       <div id="names" class="names-tree"></div>
     </div></div>
     <div id="brain-view" class="view"><div class="content">
-      <div class="msg-section">Sovereign LLM</div>
-      <div class="eyebrow">The Concierge is your sidekick; the Brain is your inference engine. Connect to your local oMLX (Mac) or any OpenAI-compatible server for 100% private, on-device intelligence. Metrics refresh while this tab is open.</div>
+      <div class="msg-section">Host harness</div>
+      <div class="eyebrow">The large model the Concierge is mounted to — your primary brain. The Concierge is its sidekick: the host drives it through the MCP tools, and its sessions are captured into your memory. The Concierge mounts the harness it detects.</div>
+      <div id="brain-host" class="wallet-card">
+        <div class="model"><span class="dot"></span><span id="brain-host-name">Detecting host…</span></div>
+        <div id="brain-host-detail" class="eyebrow" style="color:var(--faint);"></div>
+      </div>
+      <div class="msg-section">Sovereign LLM · optional</div>
+      <div class="eyebrow">An optional private, on-device brain. Connect your local oMLX (Mac), Ollama, or any OpenAI-compatible server so inference stays 100% on your machine. Metrics refresh while this tab is open.</div>
       <div id="brain-engine" class="wallet-card">
         <div class="model"><span class="dot"></span><span id="brain-engine-name">Scanning for a local engine…</span></div>
         <div id="brain-engine-url" class="eyebrow" style="color:var(--faint);"></div>

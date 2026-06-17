@@ -1180,6 +1180,50 @@ mod tests {
     }
 
     #[test]
+    fn send_works_even_when_the_parent_does_not_verify() {
+        // Regression: a legacy/corrupt thread head (e.g. written by an earlier build
+        // whose key/format differs) must not permanently block sending. The send path
+        // links by the parent's clock+sig via `read_message_link` (no verification),
+        // while `read_message` still rejects the tampered node.
+        let dir = temp_workdir("msg-bad-parent");
+        let mem = MemCli::new(&dir);
+        let cid1 = mem.post_message("r", "one").expect("post 1");
+
+        // Forge a tampered copy of the head (payload changed → signature no longer
+        // matches) and make it the thread's latest, simulating the corrupt node.
+        let mut env = mem.read_message_link(&cid1).expect("read link");
+        env.payload = "tampered".to_string();
+        let text = serde_json::to_string(&env).expect("serialize tampered env");
+        let bad = mem
+            .put_node(&Node {
+                kind: "memory".to_string(),
+                fields_json: serde_json::json!({ "text": text, "kind": "reference" })
+                    .to_string(),
+            })
+            .expect("store tampered node");
+        mem.bind(&room_latest_name("r"), &bad).expect("point head at bad node");
+
+        // The tampered head fails verification...
+        assert!(
+            mem.read_message(&bad).is_err(),
+            "a tampered parent must not verify"
+        );
+        // ...but a new message still appends, linking onto the (unverified) parent.
+        let cid2 = mem
+            .post_message("r", "two")
+            .expect("send must succeed despite an unverifiable parent");
+        let env2 = mem.read_message(&cid2).expect("the new message itself verifies");
+        assert_eq!(env2.payload, "two");
+        assert_eq!(
+            env2.clock,
+            env.clock + 1,
+            "links onto the bad parent's clock"
+        );
+        assert_eq!(env2.next, vec![env.sig], "links onto the bad parent's signature");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn room_thread_assembles_in_chronological_order() {
         let dir = temp_workdir("msg-thread");
         let mem = MemCli::new(&dir);

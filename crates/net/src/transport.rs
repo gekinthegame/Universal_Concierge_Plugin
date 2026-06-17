@@ -239,6 +239,14 @@ pub enum NodeEvent {
         peer_id: String,
         addresses: Vec<String>,
     },
+    /// A generic libp2p/IPFS peer observed by passive discovery. Unlike
+    /// [`NodeEvent::RendezvousDiscovered`], this does not imply the peer runs
+    /// Concierge; the GUI renders these as anonymous network stars.
+    PeerDiscovered {
+        peer_id: String,
+        source: &'static str,
+        addresses: Vec<String>,
+    },
     /// Our assessed NAT reachability changed (`public` / `private` / `unknown`).
     /// `private` is the signal to reserve a relay.
     NatStatus {
@@ -1027,6 +1035,11 @@ async fn run(
                     // peer, register its address so a later dial-by-id resolves, and
                     // dial it now (no manual address exchange on a local network).
                     for (peer, addr) in list {
+                        emit(&evt, NodeEvent::PeerDiscovered {
+                            peer_id: peer.to_string(),
+                            source: "lan/mdns",
+                            addresses: vec![addr.to_string()],
+                        });
                         swarm.behaviour_mut().gossipsub.add_explicit_peer(&peer);
                         swarm.add_peer_address(peer, addr.clone());
                         if let Some(kad) = swarm.behaviour_mut().kademlia.as_mut() {
@@ -1059,6 +1072,17 @@ async fn run(
                             let _ = swarm.dial(info.peer_id);
                         }
                     }
+                }
+                SwarmEvent::Behaviour(BehaviourEvent::Kademlia(kad::Event::RoutingUpdated {
+                    peer,
+                    addresses,
+                    ..
+                })) => {
+                    emit(&evt, NodeEvent::PeerDiscovered {
+                        peer_id: peer.to_string(),
+                        source: "dht",
+                        addresses: addresses.iter().map(|a| a.to_string()).collect(),
+                    });
                 }
                 SwarmEvent::Behaviour(BehaviourEvent::Gossipsub(gossipsub::Event::Message {
                     message,
