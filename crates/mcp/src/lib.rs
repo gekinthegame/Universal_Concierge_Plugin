@@ -387,7 +387,10 @@ scaffold_engine again and do NOT create parallel files; the renderer is already 
         tools.push(tool_def(
             "concierge.write_site",
             "Stage a website (its index.html) for the user to preview live in the Studio and \
-publish themselves. STAGING ONLY — this never publishes or makes anything public.",
+publish themselves. STAGING ONLY — this never publishes or makes anything public. For a 3D hero, \
+add Three.js via concierge.scaffold_engine(engine='three') — it ships cinematic PBR defaults \
+(env-map reflections, soft shadows, tone mapping) and stays seekable. For design quality, load \
+concierge.design_guide first.",
             str_schema(
                 &[
                     ("html", "The full index.html for the site"),
@@ -417,11 +420,13 @@ concierge.scaffold_engine to drop in a vendored renderer; the user previews and 
         tools.push(tool_def(
             "concierge.scaffold_engine",
             "Drop a proven, vendored web renderer into a site folder so a game/3D scene/animation \
-stays self-contained (no CDN, works offline + on IPFS): 'three' (Three.js, 3D), 'phaser' (Phaser, \
-2D), or 'motion' (GSAP + Lottie — animation/motion-graphics that record to video in-browser, no \
-ffmpeg). Returns the filenames + a ready-to-use snippet. Call concierge.list_site FIRST — if the \
-renderer is already staged (a 'New' Movie project already includes it), do NOT call this; just \
-EDIT animation.js. Pair with design_guide(topic='motion'). STAGING ONLY — never publishes.",
+stays self-contained (no CDN, works offline + on IPFS): 'three' (Three.js, 3D — ships CINEMATIC \
+PBR defaults: env-map reflections, soft shadows, ACES tone mapping; seekable, so it exports video \
+like the 2D path — use this for any 3D in a movie OR a website), 'phaser' (Phaser, 2D), or 'motion' \
+(GSAP + Lottie — animation/motion-graphics that record to video in-browser, no ffmpeg). Returns the \
+filenames + a ready-to-use snippet. Call concierge.list_site FIRST — if the renderer is already \
+staged (a 'New' Movie project already includes it), do NOT call this; just EDIT animation.js. Pair \
+with design_guide(topic='motion'). STAGING ONLY — never publishes.",
             json!({
                 "type": "object",
                 "properties": {
@@ -1022,7 +1027,7 @@ fn tool_scaffold_engine(mem: &MemCli, args: &Value) -> Result<String, String> {
         )
         .map_err(|e| format!("write capture.js: {e}"))?;
         return Ok(format!(
-            "Vendored GSAP ({} KB) + Lottie ({} KB) + webm-muxer + capture.js into site '{}' — self-contained (no CDN, works offline + on IPFS).\n\nUse them in index.html:\n{}\n\nFor motion guidance call concierge.design_guide(topic='motion'). The video is AUTOMATIC and FULL-LENGTH: on Save/Publish the Concierge renders every frame (window.__duration × window.__fps) to a real video with WebCodecs — any length, as fast as the machine allows, no Record button, no ffmpeg. Keep the timeline SEEKABLE (no random/clock). Stage with concierge.write_asset, preview ({}) live, then publish. Nothing has been published.",
+            "Vendored GSAP ({} KB) + Lottie ({} KB) + webm-muxer + capture.js into site '{}' — self-contained (no CDN, works offline + on IPFS).\n\nUse them in index.html:\n{}\n\nFor motion guidance call concierge.design_guide(topic='motion'). The video is AUTOMATIC and FULL-LENGTH: on Save/Publish the Concierge renders every frame (window.__duration × window.__fps) to a real video with WebCodecs — any length, as fast as the machine allows, no Record button, no ffmpeg. Keep the timeline SEEKABLE (no random/clock). For 3D in your movie, call concierge.scaffold_engine(engine='three') instead — same seekable contract, plus cinematic PBR defaults (environment-map reflections, soft shadows, ACES tone mapping); it renders to the same canvas and exports video identically. Stage with concierge.write_asset, preview ({}) live, then publish. Nothing has been published.",
             ENGINE_GSAP.len() / 1024,
             ENGINE_LOTTIE.len() / 1024,
             safe_site(site),
@@ -1427,6 +1432,13 @@ mod tests {
             }),
         );
         assert_eq!(res["result"]["isError"], false);
+        // The 2D motion path points 3D work at the cinematic three scaffold, so a 3D movie
+        // inherits the premium defaults instead of being steered to Blender.
+        let motion_text = res["result"]["content"][0]["text"].as_str().unwrap();
+        assert!(
+            motion_text.contains("scaffold_engine(engine='three')"),
+            "motion scaffold should route 3D to the cinematic three path: {motion_text}"
+        );
         let folder = mem.store_dir().unwrap().join("canvas/anim");
         assert!(std::fs::metadata(folder.join("gsap.min.js")).unwrap().len() > 1000);
         assert!(
