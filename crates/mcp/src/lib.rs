@@ -48,22 +48,38 @@ const ENGINE_GSAP: &[u8] = include_bytes!("engines/gsap.min.js");
 const ENGINE_LOTTIE: &[u8] = include_bytes!("engines/lottie.min.js");
 // webm-muxer (© Vanilla, MIT) — turns WebCodecs frames into a real .webm in the browser.
 const ENGINE_WEBM_MUXER: &[u8] = include_bytes!("engines/webm-muxer.js");
-const AFRAME_SNIPPET: &str = r##"A-Frame is declarative (HTML). Build worlds by nesting entities. In index.html:
-<script src="./aframe.min.js"></script>
-<script src="./aframe-environment-component.min.js"></script>
-<a-scene>
-  <!-- 1 line = a full 3D world (forest, volcano, egypt, contact, dream, ... ) -->
-  <a-entity environment="preset: forest; shadow: true"></a-entity>
+const AFRAME_SNIPPET: &str = r##"A-Frame is declarative (HTML). TWO MUST-DOs or the scene renders BLANK:
+1) Load A-Frame in <head>, BEFORE any <a-scene>. It must DEFINE the custom elements before the
+   browser parses them — a <script> at the bottom of <body> loads too late and <a-scene> stays inert.
+2) NEVER put <a-scene> (or any ancestor) under display:none. A-Frame sizes its WebGL canvas when the
+   scene loads; a hidden 0x0 parent renders nothing and STAYS 0x0 even after you show it. For a
+   "click to start" screen, OVERLAY the start UI over the always-visible scene and remove it on click
+   (below) — or hide with visibility:hidden / opacity:0 (these keep the element's size). If you truly
+   must toggle display, call sceneEl.resize() right after showing.
 
-  <a-entity id="player" position="0 1.6 4">
-    <a-camera></a-camera>
-  </a-entity>
+<!doctype html>
+<html>
+<head>
+  <script src="./aframe.min.js"></script>
+  <script src="./aframe-environment-component.min.js"></script>
+</head>
+<body style="margin:0">
+  <a-scene>
+    <!-- 1 line = a full 3D world (forest, volcano, egypt, contact, dream, ... ) -->
+    <a-entity environment="preset: forest; shadow: true"></a-entity>
+    <a-entity id="player" position="0 1.6 4"><a-camera></a-camera></a-entity>
+    <!-- High-level assets: AI writes <a-entity> tags better than JS code -->
+    <a-box position="-1 0.5 -3" rotation="0 45 0" color="#4CC3D9" shadow></a-box>
+    <a-sphere position="0 1.25 -5" radius="1.25" color="#EF2D5E" shadow></a-sphere>
+    <a-cylinder position="1 0.75 -3" radius="0.5" height="1.5" color="#FFC65D" shadow></a-cylinder>
+  </a-scene>
 
-  <!-- High-level assets: AI writes <a-entity> tags better than JS code -->
-  <a-box position="-1 0.5 -3" rotation="0 45 0" color="#4CC3D9" shadow></a-box>
-  <a-sphere position="0 1.25 -5" radius="1.25" color="#EF2D5E" shadow></a-sphere>
-  <a-cylinder position="1 0.75 -3" radius="0.5" height="1.5" color="#FFC65D" shadow></a-cylinder>
-</a-scene>"##;
+  <!-- Start screen done RIGHT: an overlay removed on click — the scene stays mounted + sized. -->
+  <div id="start" style="position:fixed;inset:0;display:flex;align-items:center;justify-content:center;background:#0a0b1a;color:#fff;z-index:10">
+    <button onclick="document.getElementById('start').remove()">ENGAGE</button>
+  </div>
+</body>
+</html>"##;
 const MOTION_SNIPPET: &str = r#"Draw to a <canvas> from a SEEKABLE timeline; the Concierge renders every frame to video on Save/Publish (any length, no ffmpeg). index.html:
 <canvas id="stage"></canvas>
 <script src="./gsap.min.js"></script>
@@ -1682,6 +1698,17 @@ mod tests {
                 "aframe scaffold should include `{token}` in the usage guidance: {text}"
             );
         }
+        // Guard the two failure modes that render A-Frame BLANK: loading the script after
+        // <a-scene> (must be in <head>), and a display:none parent (0x0 renderer). The snippet
+        // must steer the model away from both.
+        assert!(
+            text.contains("<head>") && text.contains("BEFORE any <a-scene>"),
+            "aframe snippet must require loading A-Frame in <head> before <a-scene>: {text}"
+        );
+        assert!(
+            text.contains("display:none"),
+            "aframe snippet must warn against a display:none scene container: {text}"
+        );
 
         let folder = mem.store_dir().unwrap().join("canvas/world");
         assert!(
