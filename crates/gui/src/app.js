@@ -152,6 +152,7 @@ function showView(name) {
 async function loadMeta() {
   const meta = await getJson("/api/meta");
   csrfToken = meta.csrf_token || "";
+  startLifecycle();
   byId("model").textContent = meta.mounted_model;
   const option = node("option", "", meta.store);
   byId("store").replaceChildren(option);
@@ -1878,4 +1879,3 @@ document.querySelectorAll("[data-view]").forEach(button => button.addEventListen
   if (button.dataset.view === "messenger") { safely(loadProfile); safely(loadContacts); }
   if (button.dataset.view === "wallet") { safely(walletInit); walletStartPoll(); }
 }));
-

@@ -1855,6 +1855,11 @@ mod tests {
     }
 
     #[test]
+    fn app_starts_window_lifecycle_after_loading_csrf_token() {
+        assert!(APP_JS.contains("csrfToken = meta.csrf_token || \"\";\n  startLifecycle();"));
+    }
+
+    #[test]
     fn convert_private_is_gated_password_protected_and_surfaces_in_privacy() {
         let (_dir, mem) = store();
         put_named(&mem, "latest", "secret content");
