@@ -63,6 +63,12 @@ The Librarian keeps your entire memory "hot" and ready for retrieval.
 *   **Graph-Gravity Ranking:** Retrieval isn't just about keywords; it's about importance. The Librarian ranks by **Meaning × Structural Connectivity**, ensuring well-linked decisions outrank isolated noise.
 *   **Context Budgeting:** Automatically packs the most relevant history into your model's specific token budget.
 
+> **🧪 Proof — the memory recalled its own history.** During development, the host model (Claude) was asked to recall — *from the Concierge's memory, not the source code* — how the project's own features were first built. A single `retrieve` query returned the answer: the exact captured session notes, **dated and located**, ranked across **31,000+ content-addressed IPLD nodes**. An honest detail that makes it more interesting: this ran with the neural embedder *off* — **lexical similarity × IPLD graph-gravity (PageRank) × recency** carried the recall on its own, exactly the ranking described above. First-hand, signed testimony: **[`docs/proof/HOT_RETRIEVAL_TESTIMONY.md`](docs/proof/HOT_RETRIEVAL_TESTIMONY.md)**.
+
+![The Concierge recalling, from its own memory, how peer discovery was first built — 17 hits over 31,760 IPLD nodes.](docs/proof/concierge-hot-retrieval.png)
+
+![A second recall: dating the 200-node Network map change to its exact commit, from the project's own memory.](docs/proof/concierge-hot-retrieval-2.png)
+
 ### 3. The Studio (Autonomous Web Publishing)
 The Studio is where the AI transitions from "talking" to "building."
 

@@ -1128,6 +1128,7 @@ mod tests {
                     relayed: false,
                     addresses: Vec::new(),
                     last_seen: now,
+                    is_concierge: false,
                 },
             );
         }
@@ -1136,27 +1137,31 @@ mod tests {
     }
 
     #[test]
-    fn discovery_map_seeds_public_ipfs_bootstrap_stars() {
+    fn discovery_map_ages_out_stale_discovered_peers_but_keeps_connected() {
         let now = 1_000;
         let mut peers = std::collections::BTreeMap::new();
-        let config = NodeConfig::default();
-        seed_bootstrap_peers(&mut peers, &config.bootstrap, now);
+        let mk = |id: &str, status: &'static str| PeerInfo {
+            peer_id: id.to_string(),
+            status,
+            source: "dht".to_string(),
+            relayed: false,
+            addresses: Vec::new(),
+            last_seen: now,
+            is_concierge: false,
+        };
+        peers.insert("discovered".to_string(), mk("discovered", "discovered"));
+        peers.insert("connected".to_string(), mk("connected", "connected"));
 
-        assert!(
-            peers.len() >= 4,
-            "public IPFS bootstrap peers should populate the empty discovery map"
-        );
-        assert!(peers.values().all(|peer| {
-            peer.status == "discovered"
-                && peer.source == "ipfs/bootstrap"
-                && !peer.relayed
-                && !peer.addresses.is_empty()
-        }));
-
+        // After the TTL, a merely-discovered peer we never reached again ages out;
+        // a live connection persists. No source is immortal (no bootstrap carve-out).
         prune_discovery_peers(&mut peers, now + DISCOVERY_PEER_TTL_SECS + 1);
         assert!(
-            peers.len() >= 4,
-            "bootstrap peers are stable entry points and should not age out"
+            !peers.contains_key("discovered"),
+            "stale discovered peers should age out by TTL"
+        );
+        assert!(
+            peers.contains_key("connected"),
+            "connected peers should never be pruned"
         );
     }
 

@@ -699,6 +699,12 @@ async function loadRecord(cid, open = false) {
   const top = node("div", "record-top");
   top.append(node("span", "cid", record.cid));
   if (record.live !== false) top.append(node("span", "kind", record.kind));
+  if (record.live !== false) {
+    const privBtn = node("button", "tool-button rec-privacy", "🔒 Privacy");
+    privBtn.title = "Privacy & publication state for this record";
+    privBtn.addEventListener("click", () => openPrivacyModal());
+    top.append(privBtn);
+  }
   container.append(top);
   // Pin this record to an always-on service so a copy survives off-device. Same
   // four providers as the Studio, plus "Keep hot on my node" (sovereign — served to
@@ -880,9 +886,42 @@ byId("hot-manage").addEventListener("click", () => safely(loadHotManager));
 byId("hot-close").addEventListener("click", () => { byId("hot-modal").style.display = "none"; });
 byId("hot-modal").addEventListener("click", e => { if (e.target === byId("hot-modal")) byId("hot-modal").style.display = "none"; });
 document.addEventListener("keydown", e => { if (e.key === "Escape" && byId("hot-modal").style.display === "flex") byId("hot-modal").style.display = "none"; });
+
+// "Your profile" popup: your contact card, approved peers, and pending requests.
+// Loaded on open so the data is fresh each time.
+byId("profile-open").addEventListener("click", () => safely(async () => {
+  byId("profile-modal").style.display = "flex";
+  await Promise.all([loadProfile(), loadContacts(), loadRequests()]);
+}));
+byId("profile-close").addEventListener("click", () => { byId("profile-modal").style.display = "none"; });
+byId("profile-modal").addEventListener("click", e => { if (e.target === byId("profile-modal")) byId("profile-modal").style.display = "none"; });
+document.addEventListener("keydown", e => { if (e.key === "Escape" && byId("profile-modal").style.display === "flex") byId("profile-modal").style.display = "none"; });
+
+// "Private network" popup: create/pair/join networks + the device mesh map. (The
+// "Kept hot" button stays inline.) Loaded on open so the mesh is current.
+byId("netmgr-open").addEventListener("click", () => safely(async () => {
+  byId("netmgr-modal").style.display = "flex";
+  await loadNetwork();
+}));
+byId("netmgr-close").addEventListener("click", () => { byId("netmgr-modal").style.display = "none"; });
+byId("netmgr-modal").addEventListener("click", e => { if (e.target === byId("netmgr-modal")) byId("netmgr-modal").style.display = "none"; });
+// Escape closes the parent only when the nested "New network" popup isn't open.
+document.addEventListener("keydown", e => { if (e.key === "Escape" && byId("netmgr-modal").style.display === "flex" && byId("newnet-modal").style.display !== "flex") byId("netmgr-modal").style.display = "none"; });
+
+// Nested "New network" popup: the name field + Create button, shown only on demand.
+byId("network-new").addEventListener("click", () => { byId("newnet-modal").style.display = "flex"; const f = byId("network-name"); if (f) { f.value = ""; f.focus(); } });
+byId("newnet-close").addEventListener("click", () => { byId("newnet-modal").style.display = "none"; });
+byId("newnet-modal").addEventListener("click", e => { if (e.target === byId("newnet-modal")) byId("newnet-modal").style.display = "none"; });
+document.addEventListener("keydown", e => { if (e.key === "Escape" && byId("newnet-modal").style.display === "flex") byId("newnet-modal").style.display = "none"; });
+byId("network-name").addEventListener("keydown", e => { if (e.key === "Enter") byId("network-create").click(); });
+
+// "View thread" popup (the thread list).
+byId("thread-modal-close").addEventListener("click", () => { byId("thread-modal").style.display = "none"; });
+byId("thread-modal").addEventListener("click", e => { if (e.target === byId("thread-modal")) byId("thread-modal").style.display = "none"; });
+document.addEventListener("keydown", e => { if (e.key === "Escape" && byId("thread-modal").style.display === "flex") byId("thread-modal").style.display = "none"; });
 byId("record-close").addEventListener("click", closeRecordModal);
 byId("record-modal").addEventListener("click", e => { if (e.target === byId("record-modal")) closeRecordModal(); });
-document.addEventListener("keydown", e => { if (e.key === "Escape" && byId("record-modal").style.display === "flex") closeRecordModal(); });
+document.addEventListener("keydown", e => { if (e.key === "Escape" && byId("record-modal").style.display === "flex" && byId("privacy-modal").style.display !== "flex") closeRecordModal(); });
 document.addEventListener("keydown", e => { if (e.key === "Escape" && byId("deploy-modal").style.display === "flex") depClose(); });
 
 // Build an inline preview for file_ref / blob records: images, video, audio,
@@ -978,9 +1017,9 @@ function logSystem(text, cls) {
   pop.addEventListener("click", e => e.stopPropagation());
   document.addEventListener("click", e => { if (!mini.contains(e.target)) toggle(false); });
 })();
-// Privacy & Publication moved off the main panel into an on-demand popup, so the graph
-// gets the full window. Refresh on open so it reflects the current selection.
-byId("privacy-open").addEventListener("click", () => { byId("privacy-modal").style.display = "flex"; safely(refreshPrivacy); });
+// Privacy & Publication popup — opened per-record from the record popup (see renderRecord).
+// Refresh on open so it reflects the current selection.
+function openPrivacyModal() { byId("privacy-modal").style.display = "flex"; safely(refreshPrivacy); }
 byId("privacy-close").addEventListener("click", () => { byId("privacy-modal").style.display = "none"; });
 byId("privacy-modal").addEventListener("click", e => { if (e.target === byId("privacy-modal")) byId("privacy-modal").style.display = "none"; });
 document.addEventListener("keydown", e => { if (e.key === "Escape" && byId("privacy-modal").style.display === "flex") byId("privacy-modal").style.display = "none"; });
@@ -1386,8 +1425,27 @@ function appendReviewList(form, label, values) {
   form.append(details);
 }
 async function loadRooms() {
-  const rooms = await getJson("/api/rooms"); const list = byId("room-list"); clear(list);
+  const list = byId("room-list"); if (!list) return;
+  const rooms = await getJson("/api/rooms"); clear(list);
   rooms.forEach(room => { const option = node("option"); option.value = room; list.append(option); });
+}
+// "View thread" opens a popup listing your threads (rooms). Clicking one loads it
+// inline and closes the popup.
+async function showThreadPicker() {
+  const picker = byId("thread-picker"); if (!picker) return;
+  let rooms = [];
+  try { rooms = await getJson("/api/rooms"); } catch (e) { rooms = []; }
+  clear(picker);
+  if (!rooms.length) {
+    picker.append(node("div", "empty", "No threads yet — a thread appears once you exchange messages in a room or with an approved peer."));
+  } else {
+    rooms.forEach(room => {
+      const item = node("button", "thread-pick" + (room === state.room ? " active" : ""), room);
+      item.addEventListener("click", () => { byId("thread-modal").style.display = "none"; safely(() => loadThread(room)); });
+      picker.append(item);
+    });
+  }
+  byId("thread-modal").style.display = "flex";
 }
 // Render the latest *incoming* message (not your own) inline in the bottom DM bar, so a
 // reply shows on the same strip without opening Messenger. Hidden when there's none.
@@ -1400,10 +1458,10 @@ function updateChatIncoming(messages) {
   const from = last.nickname || shortCid(last.author);
   strip.append(node("span", "ci-from", "▸ " + from), node("span", "ci-text", last.payload));
   strip.style.display = "flex";
-  strip.onclick = () => { const tab = document.querySelector('[data-view="messenger"]'); if (tab) tab.click(); };
+  strip.onclick = () => { const tab = document.querySelector('[data-view="network"]'); if (tab) tab.click(); };
 }
-async function loadThread() {
-  const room = byId("room").value.trim(); if (!room) return;
+async function loadThread(room) {
+  room = (room || state.room || "").trim(); if (!room) return;
   state.room = room;
   const thread = await getJson("/api/thread?room=" + encodeURIComponent(room));
   const container = byId("thread"); clear(container);
@@ -1623,6 +1681,7 @@ byId("network-create").addEventListener("click", () => safely(async () => {
   const name = byId("network-name").value.trim(); if (!name) return;
   await postJson("/api/network/create", { name });
   byId("network-name").value = "";
+  byId("newnet-modal").style.display = "none"; // close the small popup after creating
   await loadNetwork();
 }));
 
@@ -1632,6 +1691,7 @@ byId("network-create").addEventListener("click", () => safely(async () => {
 function pairOverlay(title) {
   const old = byId("pair-overlay"); if (old) old.remove();
   const overlay = node("div", "modal-overlay"); overlay.id = "pair-overlay";
+  overlay.style.zIndex = "26"; // above the Private network popup (record-modal z=22) it opens from
   const card = node("div", "pform modal-card"); card.style.maxWidth = "580px";
   const bar = node("div", "pair-head");
   const close = node("button", "record-close", "✕"); close.title = "Close (Esc)";
@@ -1792,34 +1852,122 @@ function discDmPeer(username) {
 // A small pulsating white LED — a generic network node, like a star in the night sky.
 function discStar(cx, cy, connected) {
   const g = svgNode("g", { class: "disc-star " + (connected ? "on" : "off") });
-  const halo = svgNode("circle", { cx: cx, cy: cy, r: connected ? 4.4 : 3.4, class: "disc-star-halo" });
-  const core = svgNode("circle", { cx: cx, cy: cy, r: connected ? 1.7 : 1.3, class: "disc-star-core" });
+  const halo = svgNode("circle", { cx: cx, cy: cy, r: connected ? 0.95 : 0.75, class: "disc-star-halo" });
+  const core = svgNode("circle", { cx: cx, cy: cy, r: connected ? 0.42 : 0.32, class: "disc-star-core" });
   core.style.animationDelay = (Math.random() * 2.4).toFixed(2) + "s"; // twinkle out of unison
   g.append(halo, core);
   return g;
 }
+// ── Discovery map zoom + pan ──────────────────────────────────────────────
+// All drawn content lives in a single <g id="disc-zoom-root"> so one transform
+// zooms/pans the whole map. The view state is module-level so it survives the
+// 4s re-render poll (we just re-apply it after each render).
+const DISC_VIEW = { k: 1, x: 0, y: 0 };
+const DISC_MIN_K = 1, DISC_MAX_K = 14;
+// viewBox is cropped to the populated latitude band (no empty poles): origin (0,40),
+// size 600x240. Zoom/pan math is relative to this viewBox rect.
+const DISC_VB_X0 = 0, DISC_VB_Y0 = 40, DISC_VB_W = 600, DISC_VB_H = 240;
+let discBound = false;
+function applyDiscTransform() {
+  const root = byId("disc-zoom-root");
+  if (root) root.setAttribute("transform",
+    "translate(" + DISC_VIEW.x.toFixed(2) + " " + DISC_VIEW.y.toFixed(2) + ") scale(" + DISC_VIEW.k.toFixed(4) + ")");
+}
+// Keep the map covering the viewport — can't pan the world entirely off-screen.
+function clampDiscPan() {
+  const k = DISC_VIEW.k;
+  DISC_VIEW.x = Math.min(DISC_VB_X0 * (1 - k), Math.max((DISC_VB_X0 + DISC_VB_W) * (1 - k), DISC_VIEW.x));
+  DISC_VIEW.y = Math.min(DISC_VB_Y0 * (1 - k), Math.max((DISC_VB_Y0 + DISC_VB_H) * (1 - k), DISC_VIEW.y));
+}
+// Client (mouse) point → viewBox coordinates.
+function discSvgPoint(svg, clientX, clientY) {
+  const ctm = svg.getScreenCTM(); if (!ctm) return { x: 0, y: 0 };
+  const pt = svg.createSVGPoint(); pt.x = clientX; pt.y = clientY;
+  const p = pt.matrixTransform(ctm.inverse());
+  return { x: p.x, y: p.y };
+}
+// Zoom by `factor`, keeping the viewBox point (cx,cy) fixed under the cursor.
+function discZoomAt(cx, cy, factor) {
+  const k0 = DISC_VIEW.k;
+  const k = Math.max(DISC_MIN_K, Math.min(DISC_MAX_K, k0 * factor));
+  if (k === k0) return;
+  const wx = (cx - DISC_VIEW.x) / k0, wy = (cy - DISC_VIEW.y) / k0;
+  DISC_VIEW.k = k;
+  DISC_VIEW.x = cx - wx * k;
+  DISC_VIEW.y = cy - wy * k;
+  clampDiscPan();
+  applyDiscTransform();
+}
+function discResetView() { DISC_VIEW.k = 1; DISC_VIEW.x = 0; DISC_VIEW.y = 0; applyDiscTransform(); }
+function bindDiscInteractions() {
+  if (discBound) return;
+  const svg = byId("discovery-svg"); if (!svg) return;
+  discBound = true;
+  svg.addEventListener("wheel", (e) => {
+    e.preventDefault();
+    const p = discSvgPoint(svg, e.clientX, e.clientY);
+    discZoomAt(p.x, p.y, e.deltaY < 0 ? 1.18 : 1 / 1.18);
+  }, { passive: false });
+  let panning = false, lastX = 0, lastY = 0;
+  svg.addEventListener("mousedown", (e) => {
+    panning = true; lastX = e.clientX; lastY = e.clientY; svg.classList.add("disc-panning");
+  });
+  window.addEventListener("mousemove", (e) => {
+    if (!panning) return;
+    const ctm = svg.getScreenCTM(); if (!ctm) return;
+    DISC_VIEW.x += (e.clientX - lastX) / ctm.a;
+    DISC_VIEW.y += (e.clientY - lastY) / ctm.d;
+    lastX = e.clientX; lastY = e.clientY;
+    clampDiscPan(); applyDiscTransform();
+  });
+  window.addEventListener("mouseup", () => { panning = false; svg.classList.remove("disc-panning"); });
+  const ctr = { x: DISC_VB_X0 + DISC_VB_W / 2, y: DISC_VB_Y0 + DISC_VB_H / 2 };
+  const bind = (id, fn) => { const b = byId(id); if (b) b.addEventListener("click", fn); };
+  bind("disc-zoom-in", () => discZoomAt(ctr.x, ctr.y, 1.4));
+  bind("disc-zoom-out", () => discZoomAt(ctr.x, ctr.y, 1 / 1.4));
+  bind("disc-zoom-reset", discResetView);
+  bind("disc-maximize", () => { const w = byId("discovery-wrap"); if (w) w.classList.toggle("maximized"); });
+  window.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") { const w = byId("discovery-wrap"); if (w) w.classList.remove("maximized"); }
+  });
+}
+let discLastSig = "";
 function renderDiscovery(data) {
-  const svg = byId("discovery-svg"); if (!svg) return; clear(svg);
+  const svg = byId("discovery-svg"); if (!svg) return;
   const peers = (data && data.peers) || [];
+  // Skip the rebuild when nothing meaningful changed — avoids re-creating thousands of
+  // SVG nodes every poll. Signature covers online state + each peer's id/status/kind.
+  const sig = (data && data.self && data.self.online ? "1" : "0") + "|" + ((data && data.total) || 0)
+    + "|" + peers.map(p => p.peer_id + p.status + (p.is_concierge ? "b" : "s")).join(",");
+  if (sig === discLastSig && byId("disc-zoom-root")) return;
+  discLastSig = sig;
+  clear(svg);
+  const root = svgNode("g", { id: "disc-zoom-root", class: "disc-zoom-root" });
+  svg.append(root);
   // World map: fine graticule + real coastlines/borders.
   const grid = svgNode("g", { class: "disc-grid" });
   for (let lon = -180; lon <= 180; lon += 20) grid.append(svgNode("line", { x1: mapX(lon), y1: MAP.y0, x2: mapX(lon), y2: MAP.y0 + MAP.h }));
   for (let lat = -80; lat <= 80; lat += 20) grid.append(svgNode("line", { x1: MAP.x0, y1: mapY(lat), x2: MAP.x0 + MAP.w, y2: mapY(lat) }));
-  svg.append(grid);
+  root.append(grid);
   if (DISC_LAND_PATHS && DISC_LAND_PATHS.length) {
     const land = svgNode("g", { class: "disc-land-g" });
     DISC_LAND_PATHS.forEach(d => land.append(svgNode("path", { d: d, class: "disc-land" })));
-    svg.append(land);
+    root.append(land);
   }
   // Peers: fellow Concierges as brains (labelled), everyone else as a white LED star.
+  // How many sit at a TRUE geo-IP location (vs the stylised region fallback for
+  // relay/LAN-only peers with no public IP) — surfaced honestly in the caption.
+  const located = peers.filter(p => typeof p.lat === "number" && typeof p.lon === "number").length;
   peers.forEach(p => {
-    const g = discGeo(p.peer_id || "");
+    // Real geo-IP from the bundled DB when we have it; stylised region only as fallback.
+    const g = (typeof p.lat === "number" && typeof p.lon === "number")
+      ? { lat: p.lat, lon: p.lon } : discGeo(p.peer_id || "");
     const x = mapX(g.lon), y = mapY(g.lat);
     const connected = p.status === "connected";
     let el;
     if (p.is_concierge) {
-      el = discBrain(x, y, connected ? 21 : 16, connected ? "connected" : "discovered");
-      const label = svgNode("text", { x: x, y: y + (connected ? 17 : 14), class: "disc-label", "text-anchor": "middle" });
+      el = discBrain(x, y, connected ? 4.5 : 3.5, connected ? "connected" : "discovered");
+      const label = svgNode("text", { x: x, y: y + (connected ? 5 : 4), class: "disc-label", "text-anchor": "middle" });
       label.textContent = (p.peer_id || "").slice(-6);
       el.append(label);
       if (p.username) {
@@ -1832,33 +1980,38 @@ function renderDiscovery(data) {
     const title = svgNode("title", {});
     title.textContent = (p.is_concierge ? "Concierge · " : "Network node · ") + (p.peer_id || "") + " · " + p.status + " · via " + p.source + (p.relayed ? " · relayed" : "") + (p.is_concierge && p.username ? " · click to DM" : "");
     el.append(title);
-    svg.append(el);
+    root.append(el);
   });
-  // Your node — placed by the same approximate region method as every other peer.
+  // Your node — at its real geo-IP location when the backend resolved one, else the
+  // stylised fallback (e.g. behind NAT with no public address yet).
   const online = !!(data && data.self && data.self.online);
-  const sg = discGeo((data && data.self && data.self.peer_id) || "self");
+  const sg = (data && data.self && typeof data.self.lat === "number")
+    ? { lat: data.self.lat, lon: data.self.lon }
+    : discGeo((data && data.self && data.self.peer_id) || "self");
   const meX = mapX(sg.lon), meY = mapY(sg.lat);
-  const me = discBrain(meX, meY, 32, "disc-self");
-  const slabel = svgNode("text", { x: meX, y: meY + 28, class: "disc-label self", "text-anchor": "middle" });
+  const me = discBrain(meX, meY, 8, "disc-self");
+  const slabel = svgNode("text", { x: meX, y: meY + 9, class: "disc-label self", "text-anchor": "middle" });
   slabel.textContent = online ? "your node" : "your node (offline)";
   me.append(slabel);
   const stitle = svgNode("title", {});
   stitle.textContent = "This node · " + ((data && data.self && data.self.peer_id) || "");
   me.append(stitle);
-  svg.append(me);
+  root.append(me);
+  // Re-apply the current zoom/pan so it persists across the 4s re-render.
+  applyDiscTransform();
   // Caption.
   const stat = byId("discovery-stat"); clear(stat);
   const total = (data && data.total) || peers.length;
   if (!online) stat.textContent = "Node offline — open this tab to bring it online and start discovering peers.";
   else if (!peers.length) stat.textContent = "Searching the network… no peers yet. mDNS finds LAN peers instantly; the DHT and rendezvous take a moment.";
-  else stat.textContent = total + " node" + (total === 1 ? "" : "s") + " discovered · " + ((data && data.connected) || 0) + " connected" + (total > peers.length ? " · showing " + peers.length : "") + " — Concierges as brains, other network nodes as stars · positions approximate by region";
+  else stat.textContent = total + " node" + (total === 1 ? "" : "s") + " discovered on the libp2p network (mDNS · DHT · rendezvous) — Concierges as brains, others as stars · " + located + " at real geo-IP location · Geo © DB-IP (CC BY 4.0)";
 }
 async function loadPeers() {
   await loadWorldMap();
   let data; try { data = await getJson("/api/peers"); } catch (e) { return; }
   renderDiscovery(data);
 }
-function startDiscPoll() { stopDiscPoll(); safely(loadPeers); discPoll = setInterval(() => quietly(loadPeers), 4000); }
+function startDiscPoll() { stopDiscPoll(); bindDiscInteractions(); safely(loadPeers); discPoll = setInterval(() => quietly(loadPeers), 4000); }
 function stopDiscPoll() { if (discPoll) { clearInterval(discPoll); discPoll = null; } }
 
 // ── Updates tab: app binary + signed safety rules ────────────────────────────────
@@ -1867,64 +2020,18 @@ function updateRow(key, value) {
   row.append(node("span", "wallet-k", key), node("span", "wallet-v", value));
   return row;
 }
-let rulesPaused = false;
 async function loadUpdateStatus() {
   const data = await getJson("/api/update/status");
-  const rules = data.rules || {};
-  rulesPaused = !!rules.paused;
   const card = byId("update-status"); clear(card);
-  card.append(
-    updateRow("App version", data.app_version || "—"),
-    updateRow("Rules version", rules.version || "—"),
-      updateRow("Rules epoch", String(rules.epoch ?? "—")),
-      updateRow("Rules in force", String(rules.rule_count ?? "—")),
-      updateRow("Rules source", data.rules_source_configured ? (data.rules_ipns || "—") : "not configured"),
-      updateRow("Freshness", rules.fresh ? "fresh" : "stale"),
-      updateRow("Auto-rules", rules.paused ? "paused (kill switch on)" : "live"),
-    );
-    const appUpdate = data.app_update || {};
-    byId("update-app").textContent = appUpdate.release && appUpdate.release.version
-      ? "Running version " + (data.app_version || "—") + ". Update " + appUpdate.release.version + " is available."
-      : "Running version " + (data.app_version || "—") + ". Check the release feed for a newer build.";
-    const fpr = rules.publisher_fpr || "";
-    byId("update-rules").textContent = fpr
-      ? (fpr === "baked" ? "Baked baseline rules are active." : "Publisher " + fpr + " signed the active rules.")
-      : "No publisher key recorded yet — pin a key to trust its signed rules.";
-    byId("rules-ipns").value = data.rules_ipns || "";
-    byId("rules-toggle").textContent = rules.paused ? "Resume auto-rules" : "Pause auto-rules";
-  }
+  card.append(updateRow("App version", data.app_version || "—"));
+  const appUpdate = data.app_update || {};
+  byId("update-app").textContent = appUpdate.release && appUpdate.release.version
+    ? "Running version " + (data.app_version || "—") + ". Update " + appUpdate.release.version + " is available — it installs automatically on next launch."
+    : "Running version " + (data.app_version || "—") + ". You're on the latest version.";
+}
 byId("update-check").addEventListener("click", () => safely(async () => {
   const { release } = await postJson("/api/update/check", {});
   notice(release && release.version ? "Update available: " + release.version : "You're on the latest version.");
-  await loadUpdateStatus();
-}));
-byId("update-apply").addEventListener("click", () => safely(async () => {
-  const { staged } = await postJson("/api/update/apply", {});
-  notice(staged && staged.version ? "Staged " + staged.version + " — applies on next launch." : "No update to stage.");
-  await loadUpdateStatus();
-}));
-byId("rules-refresh").addEventListener("click", () => safely(async () => {
-  const outcome = await postJson("/api/update/rules/refresh", {});
-  notice(outcome && outcome.updated ? "Rules updated to " + outcome.version + "." : "Rules already current.");
-  await loadUpdateStatus();
-}));
-  byId("rules-toggle").addEventListener("click", () => safely(async () => {
-    await postJson("/api/update/rules/pause", { paused: !rulesPaused });
-    await loadUpdateStatus();
-  }));
-  byId("rules-source").addEventListener("click", () => safely(async () => {
-    const ipns = byId("rules-ipns").value.trim();
-    if (!ipns) { notice("Enter a rules IPNS source."); return; }
-    await postJson("/api/update/rules/source", { ipns });
-    notice("Rules IPNS source saved.");
-    await loadUpdateStatus();
-  }));
-  byId("rules-pin").addEventListener("click", () => safely(async () => {
-  const key = byId("rules-pin-key").value.trim();
-  if (!key) { notice("Enter a publisher key (hex)."); return; }
-  await postJson("/api/update/rules/pin", { key });
-  byId("rules-pin-key").value = "";
-  notice("Publisher key pinned.");
   await loadUpdateStatus();
 }));
 
@@ -1948,31 +2055,55 @@ function brainRow(key, value) {
 // The Concierge's PRIMARY brain is the host harness it's mounted to (e.g. Claude Code) — the
 // large model that drives it via MCP. The Sovereign LLM below is the optional private alternative.
 async function loadBrainHost() {
-  let cc = {}, meta = {};
+  let cc = {}, aider = {}, meta = {};
   try { cc = await getJson("/api/claude-code/status"); } catch (e) {}
+  try { aider = await getJson("/api/aider/status"); } catch (e) {}
   try { meta = await getJson("/api/meta"); } catch (e) {}
-  const ccDetected = !!cc.available;
+  const host = byId("brain-host");
+  if (!host) return;
+  clear(host);
+  // One row per detected harness — the Concierge auto-mounts whichever it finds.
+  function row(connected, name, detail, toggle) {
+    const head = node("div", "model");
+    const d = node("span", "dot", "");
+    d.style.background = connected ? "var(--patina)" : "var(--faint)";
+    d.style.boxShadow = connected ? "0 0 8px var(--patina)" : "none";
+    head.append(d, node("span", "", name));
+    if (toggle) head.append(toggle);
+    const det = node("div", "eyebrow", detail);
+    det.style.color = "var(--faint)";
+    det.style.margin = "2px 0 8px";
+    host.append(head, det);
+  }
   const declared = meta.mounted_model && meta.mounted_model !== "manual mount" && meta.mounted_model !== "not declared";
-  const connected = ccDetected || declared;
-  const dot = document.querySelector("#brain-host .dot");
-  if (dot) {
-    dot.style.background = connected ? "var(--patina)" : "var(--faint)";
-    dot.style.boxShadow = connected ? "0 0 8px var(--patina)" : "none";
-  }
-  let name, detail;
-  if (ccDetected) {
+  let any = false;
+  // Claude Code (or a declared mounted model) — the host driving via MCP.
+  if (cc.available) {
+    any = true;
     const n = cc.session_count || 0;
-    name = "Claude Code · connected";
-    detail = (cc.attached ? "capturing" : "detected — not attached") + " · " + n + " session" + (n === 1 ? "" : "s") + " · drives the Concierge via MCP";
+    row(true, "Claude Code · connected",
+      (cc.attached ? "capturing" : "detected — not attached") + " · " + n + " session" + (n === 1 ? "" : "s") + " · drives the Concierge via MCP");
   } else if (declared) {
-    name = meta.mounted_model + " · mounted";
-    detail = "drives the Concierge via MCP";
-  } else {
-    name = "No host harness detected";
-    detail = "Attach a harness (e.g. Claude Code) — the Concierge mounts the one it detects.";
+    any = true;
+    row(true, meta.mounted_model + " · mounted", "drives the Concierge via MCP");
   }
-  byId("brain-host-name").textContent = name;
-  byId("brain-host-detail").textContent = detail;
+  // Aider — a second harness; capture is opt-in (its transcripts are private).
+  if (aider.available) {
+    any = true;
+    const n = aider.session_count || 0, t = aider.transcript_count || 0;
+    const btn = node("button", "tool-button", aider.attached ? "Detach" : "Attach");
+    btn.style.cssText = "margin-left:auto;padding:2px 12px;font-size:12px;";
+    btn.addEventListener("click", () => safely(async () => {
+      await postJson(aider.attached ? "/api/aider/detach" : "/api/aider/attach", {});
+      await loadBrainHost();
+    }));
+    row(aider.attached, "Aider · " + (aider.attached ? "capturing" : "detected"),
+      n + " session" + (n === 1 ? "" : "s") + " across " + t + " transcript" + (t === 1 ? "" : "s") + (aider.attached ? " · ingesting into memory" : " · attach to capture into memory"),
+      btn);
+  }
+  if (!any) {
+    row(false, "No host harness detected", "Run Claude Code or Aider — the Concierge mounts the one it detects.");
+  }
 }
 async function loadBrainMetrics() {
   loadBrainHost();
@@ -2086,11 +2217,17 @@ document.querySelectorAll("[data-view]").forEach(button => button.addEventListen
   stopDiscPoll(); walletStopPoll(); stopBrainPoll(); // only poll these while their tab is open
   // The graph is drawn while hidden at boot (Studio is the landing view), so fit it
   // to the real viewport the first time it's actually shown.
-  if (button.dataset.view === "graph" && !state.graphShown) { state.graphShown = true; safely(fitView); }
+  if (button.dataset.view === "graph") {
+    // Sync the SVG viewBox to the panel's real size every time the tab is shown, so the
+    // aspect ratio matches and right-side nodes don't fall into a click-swallowing dead band.
+    syncGraphViewBox();
+    if (!state.graphShown) { state.graphShown = true; safely(fitView); }
+  }
   if (button.dataset.view === "names") byId("search-q").focus();
-  if (button.dataset.view === "network") { safely(loadNetwork); startDiscPoll(); }
+  // Network now hosts messaging too (the Messenger tab was merged in). Profile/
+  // peers/requests and the private-network mesh load when their popups are opened.
+  if (button.dataset.view === "network") { startDiscPoll(); }
   if (button.dataset.view === "canvas") safely(cvLoadSites);
-  if (button.dataset.view === "messenger") { safely(loadProfile); safely(loadContacts); }
   if (button.dataset.view === "wallet") { safely(walletInit); walletStartPoll(); }
   if (button.dataset.view === "updates") safely(loadUpdateStatus);
   if (button.dataset.view === "brain") startBrainPoll();

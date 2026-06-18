@@ -37,6 +37,7 @@ mod tests {
                 Some(NodeEvent::ConnectionEstablished {
                     peer_id,
                     relayed: true,
+                    ..
                 }) => return peer_id,
                 Some(_) => {}
                 None => panic!("node event stream closed before relayed connection arrived"),
@@ -56,6 +57,7 @@ mod tests {
                 Some(NodeEvent::ConnectionEstablished {
                     peer_id,
                     relayed: false,
+                    ..
                 }) if peer_id == expected_relay => connected = true,
                 Some(NodeEvent::RelayReservationAccepted { relay_peer_id, .. })
                     if relay_peer_id == expected_relay =>

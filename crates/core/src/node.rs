@@ -789,6 +789,21 @@ impl MemCli {
             .unwrap_or(false)
     }
 
+    /// The Librarian's embedder, **gated on the Sidekick**. The on-node embedding model
+    /// (Nomic, in-process via fastembed) lives and dies with the Kubo/Sidekick node: it only
+    /// loads when the Sidekick is enabled. When it's off, retrieval falls back to the
+    /// zero-dependency lexical baseline — search still works, just by keyword, with no model
+    /// running on the machine. (The CLI re-checks this each run; the GUI builds it once at
+    /// launch, so toggling the Sidekick takes effect on the next restart.)
+    pub fn librarian_embedder(&self) -> crate::retrieval::SharedEmbedder {
+        if self.sidekick_enabled() {
+            let config = self.config().map(|c| c.librarian).unwrap_or_default();
+            crate::retrieval::default_embedder(&config)
+        } else {
+            std::sync::Arc::new(crate::retrieval::LexicalEmbedder::default())
+        }
+    }
+
     /// Current Sidekick/node status for the UI and CLI.
     pub fn sidekick_status(&self) -> SidekickStatus {
         let node_running = self
@@ -871,6 +886,20 @@ impl MemCli {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn librarian_embedder_is_gated_on_the_sidekick() {
+        use crate::retrieval::Embedder;
+        let dir = tempfile::tempdir().unwrap();
+        let mem = MemCli::new(dir.path());
+        // Sidekick off → the on-node model stays dormant; the lexical baseline is used.
+        let off = mem.librarian_embedder();
+        assert!(
+            off.id().contains("lexical"),
+            "sidekick off must use the lexical embedder, got {}",
+            off.id()
+        );
+    }
 
     #[test]
     fn status_reports_disclaimer_and_enable_disable_toggles_consent() {

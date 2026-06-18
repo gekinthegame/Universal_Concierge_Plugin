@@ -51,7 +51,7 @@ pub use sync::{
 pub use transport::{
     content_message_id, ed25519_hex_from_peer_id, peer_id_from_ed25519_hex, peer_id_in,
     public_dht_announcements_enabled, ConciergeNode, NodeConfig, NodeEvent,
-    PRIVATE_NAMESPACE_PREFIX, ROOM_PREFIX,
+    CONCIERGE_PROTOCOL_VERSION, PRIVATE_NAMESPACE_PREFIX, ROOM_PREFIX,
 };
 
 #[cfg(test)]

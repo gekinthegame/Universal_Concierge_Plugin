@@ -15,6 +15,31 @@ pub(super) const RELAY_MAX_CIRCUIT_DURATION: Duration = Duration::from_secs(30 *
 /// routing table (mirrors universal-connectivity's `rust-peer` ~300s cadence).
 const KADEMLIA_BOOTSTRAP_INTERVAL: Duration = Duration::from_secs(5 * 60);
 
+/// The well-known DHT key every Concierge advertises *and* queries under, so nodes
+/// discover each other on the **public IPFS DHT with no central rendezvous server**
+/// (rendezvous-via-DHT). A node calls `start_providing(KEY)` to announce "I'm a
+/// Concierge" and `get_providers(KEY)` to find the others; the only shared infra is
+/// the public libp2p bootstrap nodes, which nobody here runs. Bump the version suffix
+/// to fork the discovery namespace (e.g. for an incompatible protocol change).
+const CONCIERGE_RENDEZVOUS_KEY: &[u8] = b"concierge/rendezvous/v1";
+
+/// How often we re-query the DHT for fellow Concierge providers (and, until it lands,
+/// retry our own provider announcement). Provider records expire on the order of a
+/// day and rust-libp2p auto-republishes ours; this interval is just discovery polling.
+const RENDEZVOUS_QUERY_INTERVAL: Duration = Duration::from_secs(120);
+
+/// The libp2p identify `protocol_version` every Concierge node advertises. Any peer
+/// that reports this in its identify info is a fellow Concierge (drawn as a brain on
+/// the map); everyone else is a generic libp2p/IPFS node (a white star).
+pub const CONCIERGE_PROTOCOL_VERSION: &str = "/concierge/1.0.0";
+
+/// The Amino (public IPFS) DHT protocol id — the default `kad::Config` protocol and
+/// the one the public bootstrap network speaks. A peer that advertises it (over
+/// identify) is a DHT server whose listen addresses we feed into our routing table.
+/// Without this wiring, Kademlia never learns peers' addresses and the table never
+/// grows beyond the bootstrap nodes (see the libp2p identify/kad docs).
+const IPFS_KAD_PROTOCOL: &str = "/ipfs/kad/1.0.0";
+
 /// The public IPFS bootstrap nodes — the well-known DHT entry points that let a
 /// fresh node populate its routing table and become reachable/route-able from
 /// anywhere. Same `/dnsaddr/bootstrap.libp2p.io/p2p/Qm…` set the `rust-peer` uses.
@@ -169,6 +194,9 @@ pub enum NodeEvent {
     ConnectionEstablished {
         peer_id: String,
         relayed: bool,
+        /// The remote multiaddr of this connection — a real public IP for direct
+        /// internet connections (used to geo-locate the peer on the map).
+        address: String,
     },
     ExternalAddressAdded {
         address: String,
@@ -246,6 +274,15 @@ pub enum NodeEvent {
         peer_id: String,
         source: &'static str,
         addresses: Vec<String>,
+    },
+    /// A peer completed the libp2p identify exchange, telling us its
+    /// `protocol_version` (and `agent_version`). When `protocol_version` matches
+    /// [`CONCIERGE_PROTOCOL_VERSION`] the peer is a fellow Concierge — the signal the
+    /// GUI uses to draw it as a brain rather than a generic network star.
+    PeerIdentified {
+        peer_id: String,
+        protocol_version: String,
+        agent_version: String,
     },
     /// Our assessed NAT reachability changed (`public` / `private` / `unknown`).
     /// `private` is the signal to reserve a relay.
@@ -553,6 +590,14 @@ pub(super) fn build_swarm(
         // `with_relay_client` in the 0.56 builder type-state. The caller adds a
         // `/ip4/0.0.0.0/udp/0/quic-v1` listener via `ConciergeNode::listen`.
         .with_quic()
+        // Wrap the TCP+QUIC transports with DNS resolution. Without this, `/dnsaddr`
+        // and `/dns*` multiaddrs can't be resolved — and every public IPFS bootstrap
+        // node is a `/dnsaddr/bootstrap.libp2p.io/...` address. No DNS ⇒ the node never
+        // reaches a bootstrap peer, the Kademlia routing table never fills from the
+        // global network, and discovery collapses to mDNS LAN peers only. With it, the
+        // DHT bootstraps and the map populates with peers from across the network.
+        .with_dns()
+        .map_err(|e| e.to_string())?
         .with_relay_client(noise::Config::new, yamux::Config::default)
         .map_err(|e| e.to_string())?
         .with_behaviour(move |key, relay_client| {
@@ -603,7 +648,7 @@ pub(super) fn build_swarm(
                 relay: relay_server.into(),
                 dcutr: dcutr::Behaviour::new(key.public().to_peer_id()),
                 identify: identify::Behaviour::new(identify::Config::new(
-                    "/concierge/1.0.0".to_string(),
+                    CONCIERGE_PROTOCOL_VERSION.to_string(),
                     key.public(),
                 )),
                 sync: request_response::cbor::Behaviour::new(
@@ -708,8 +753,26 @@ async fn run(
     if let Some(kad) = swarm.behaviour_mut().kademlia.as_mut() {
         let _ = kad.bootstrap();
     }
+    // Serverless wide-area discovery: advertise ourselves under the shared Concierge
+    // key on the public DHT and poll it for fellow Concierges. `rdv_provided` flips
+    // once our `start_providing` query lands (it can't until the routing table has a
+    // peer to store the record on, so we retry on each tick until it succeeds).
+    let rdv_key = kad::RecordKey::new(&CONCIERGE_RENDEZVOUS_KEY);
+    let mut rdv_provided = false;
+    let mut rdv_tick = tokio::time::interval(RENDEZVOUS_QUERY_INTERVAL);
+    rdv_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     loop {
         tokio::select! {
+            _ = rdv_tick.tick() => {
+                // Re-announce ourselves (until it lands) and re-query for peers. Both
+                // are no-ops when the DHT is disabled on this node.
+                if let Some(kad) = swarm.behaviour_mut().kademlia.as_mut() {
+                    if !rdv_provided {
+                        let _ = kad.start_providing(rdv_key.clone());
+                    }
+                    kad.get_providers(rdv_key.clone());
+                }
+            }
             command = cmd.recv() => match command {
                 Some(Command::Listen(addr)) => {
                     if let Err(error) = swarm.listen_on(addr) {
@@ -851,6 +914,7 @@ async fn run(
                     emit(&evt, NodeEvent::ConnectionEstablished {
                         peer_id: peer_id.to_string(),
                         relayed: is_relayed(endpoint.get_remote_address()),
+                        address: endpoint.get_remote_address().to_string(),
                     });
                 }
                 SwarmEvent::OutgoingConnectionError { error, .. } => {
@@ -1030,6 +1094,35 @@ async fn run(
                     };
                     emit(&evt, NodeEvent::NatStatus { reachability });
                 }
+                SwarmEvent::Behaviour(BehaviourEvent::Identify(identify::Event::Received {
+                    peer_id,
+                    info,
+                    ..
+                })) => {
+                    // Hook identify → Kademlia. Identify is the only way kad learns the
+                    // listen addresses of peers it meets; without feeding them in, the
+                    // routing table never grows past the bootstrap nodes and discovery
+                    // stalls (libp2p docs: identify "must be manually hooked up to
+                    // Kademlia through calls to add_address"). Only DHT servers (peers
+                    // that advertise the kad protocol) belong in the table.
+                    let kad_protocol = StreamProtocol::new(IPFS_KAD_PROTOCOL);
+                    let speaks_kad = info.protocols.contains(&kad_protocol);
+                    if speaks_kad {
+                        if let Some(kad) = swarm.behaviour_mut().kademlia.as_mut() {
+                            for addr in &info.listen_addrs {
+                                kad.add_address(&peer_id, addr.clone());
+                            }
+                        }
+                    }
+                    // The peer also told us what application it runs. A Concierge
+                    // advertises `CONCIERGE_PROTOCOL_VERSION`; the GUI uses this to draw
+                    // it as a brain. Generic IPFS nodes report their own version string.
+                    emit(&evt, NodeEvent::PeerIdentified {
+                        peer_id: peer_id.to_string(),
+                        protocol_version: info.protocol_version,
+                        agent_version: info.agent_version,
+                    });
+                }
                 SwarmEvent::Behaviour(BehaviourEvent::Mdns(mdns::Event::Discovered(list))) => {
                     // A peer appeared on the LAN: treat it as an explicit gossipsub
                     // peer, register its address so a later dial-by-id resolves, and
@@ -1070,6 +1163,39 @@ async fn run(
                                 addresses: info.addrs.iter().map(|a| a.to_string()).collect(),
                             });
                             let _ = swarm.dial(info.peer_id);
+                        }
+                    }
+                }
+                SwarmEvent::Behaviour(BehaviourEvent::Kademlia(kad::Event::OutboundQueryProgressed {
+                    result: kad::QueryResult::StartProviding(Ok(_)),
+                    ..
+                })) => {
+                    // Our "I'm a Concierge" record is now stored on the DHT; stop retrying.
+                    rdv_provided = true;
+                }
+                SwarmEvent::Behaviour(BehaviourEvent::Kademlia(kad::Event::OutboundQueryProgressed {
+                    result: kad::QueryResult::GetProviders(Ok(providers)),
+                    ..
+                })) => {
+                    // Fellow Concierges that advertised under the shared key. Surface each
+                    // for the map and resolve+dial it through the existing routing path
+                    // (get_closest_peers → PeerRouted → dial), skipping ourselves.
+                    let found = match providers {
+                        kad::GetProvidersOk::FoundProviders { providers, .. } => providers,
+                        kad::GetProvidersOk::FinishedWithNoAdditionalRecord { .. } => HashSet::new(),
+                    };
+                    for provider in found {
+                        if provider == peer_id {
+                            continue;
+                        }
+                        emit(&evt, NodeEvent::PeerDiscovered {
+                            peer_id: provider.to_string(),
+                            source: "rendezvous",
+                            addresses: Vec::new(),
+                        });
+                        if let Some(kad) = swarm.behaviour_mut().kademlia.as_mut() {
+                            routing.insert(provider);
+                            kad.get_closest_peers(provider);
                         }
                     }
                 }

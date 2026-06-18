@@ -14,6 +14,55 @@ pub(super) fn cmd_id() -> ExitCode {
     }
 }
 
+/// Print this node's stable libp2p PeerId and ready-to-copy commands for running it
+/// as the shared rendezvous point (so other Concierges find each other under the
+/// "concierge" namespace). The PeerId is derived from the persisted identity, so no
+/// node needs to be running and it stays constant across restarts.
+pub(super) fn cmd_rendezvous_info() -> ExitCode {
+    let mem = MemCli::new(workdir());
+    let agent_id = match mem.agent_id() {
+        Ok(id) => id.0,
+        Err(e) => {
+            eprintln!("rendezvous-info failed: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let peer_id = match concierge_net::peer_id_from_ed25519_hex(&agent_id) {
+        Some(p) => p.to_string(),
+        None => {
+            eprintln!("rendezvous-info: could not derive a PeerId from this identity");
+            return ExitCode::FAILURE;
+        }
+    };
+    // Prefer the persisted [network] config (the path a GUI-launched app actually
+    // uses — env vars rarely survive a double-click, especially on Windows), then
+    // fall back to the env override, then the default port.
+    let net_cfg = mem.config().map(|c| c.network).unwrap_or_default();
+    let port = std::env::var("CONCIERGE_LISTEN_PORT")
+        .ok()
+        .and_then(|p| p.trim().parse::<u16>().ok())
+        .or(Some(net_cfg.listen_port).filter(|p| *p != 0))
+        .unwrap_or(4101);
+    println!("Concierge rendezvous point");
+    println!("  PeerId: {peer_id}");
+    println!("  Listen port: {port}");
+    println!();
+    println!("Make THIS node the always-on rendezvous point — in ~/.concierge/config.toml:");
+    println!("  [network]");
+    println!("  rendezvous_server = true");
+    println!("  listen_port = {port}");
+    println!("  (then forward TCP+UDP {port} on your router to this machine's LAN IP)");
+    println!();
+    println!("On every client — in their ~/.concierge/config.toml (replace <PUBLIC_IP>):");
+    println!("  [network]");
+    println!("  rendezvous = \"/ip4/<PUBLIC_IP>/tcp/{port}/p2p/{peer_id}\"");
+    println!();
+    println!("Env-var override (ephemeral / power users):");
+    println!("  server:  CONCIERGE_RENDEZVOUS_SERVER=1 CONCIERGE_LISTEN_PORT={port} concierge-plugin gui --no-open");
+    println!("  client:  CONCIERGE_RENDEZVOUS=/ip4/<PUBLIC_IP>/tcp/{port}/p2p/{peer_id} concierge-plugin gui");
+    ExitCode::SUCCESS
+}
+
 /// `follow <agentid>` — follow another install's AgentID (local allowlist).
 pub(super) fn cmd_follow(args: &[String]) -> ExitCode {
     let Some(agent_id) = args.get(1).map(String::as_str) else {
@@ -349,7 +398,7 @@ fn cmd_room_serve(mem: &MemCli, room: &str, args: &[String]) -> ExitCode {
                             eprintln!("publish deduplicated");
                         }
                     }
-                    Some(concierge_net::NodeEvent::ConnectionEstablished { peer_id, relayed }) => {
+                    Some(concierge_net::NodeEvent::ConnectionEstablished { peer_id, relayed, .. }) => {
                         println!("connected: {peer_id} ({})", if relayed { "relayed" } else { "direct" });
                     }
                     Some(concierge_net::NodeEvent::ExternalAddressAdded { address }) => {

@@ -10,7 +10,10 @@ name = "concierge-plugin"
 path = "src/main.rs"
 
 [dependencies]
-concierge-core = { path = "../core" }
+# semantic-embed bakes the in-process on-node embedder (fastembed/ONNX → Nomic) into the
+# shipped binary; it only *activates* when the Sidekick/Kubo node is enabled (see
+# MemCli::librarian_embedder). Feature unification turns it on across the whole concierge-plugin.
+concierge-core = { path = "../core", features = ["semantic-embed"] }
 concierge-adapter-jsonl = { path = "../adapter-jsonl" }
 concierge-adapter-hermes = { path = "../adapter-hermes" }
 concierge-adapter-claude-code = { path = "../adapter-claude-code" }

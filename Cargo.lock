@@ -262,6 +262,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "asn1_der"
+version = "0.7.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4858a9d740c5007a9069007c3b4e91152d0506f13c1b31dd49051fd537656156"
+
+[[package]]
 name = "async-channel"
 version = "2.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -821,6 +827,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "concierge-adapter-aider"
+version = "0.1.0"
+dependencies = [
+ "concierge-adapter-jsonl",
+ "concierge-core",
+ "tempfile",
+]
+
+[[package]]
 name = "concierge-adapter-claude-code"
 version = "0.1.0"
 dependencies = [
@@ -912,11 +927,14 @@ name = "concierge-gui"
 version = "0.1.0"
 dependencies = [
  "cid",
+ "concierge-adapter-aider",
  "concierge-adapter-claude-code",
  "concierge-adapter-jsonl",
  "concierge-core",
  "concierge-net",
+ "flate2",
  "libc",
+ "maxminddb",
  "png",
  "rand_core 0.6.4",
  "serde",
@@ -2883,6 +2901,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d98f6fed1fde3f8c21bc40a1abb88dd75e67924f9cffc3ef95607bad8017f8e2"
 
 [[package]]
+name = "ipnetwork"
+version = "0.21.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cf370abdafd54d13e54a620e8c3e1145f28e46cc9d704bc6d94414559df41763"
+
+[[package]]
 name = "iroh-car"
 version = "0.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3238,12 +3262,14 @@ version = "0.2.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9525f3831544f7ae497bde79adf114ef127b0fbbb97edbbf692a80408636421c"
 dependencies = [
+ "asn1_der",
  "bs58",
  "ed25519-dalek",
  "hkdf",
  "multihash",
  "prost",
  "rand 0.8.6",
+ "ring",
  "sha2",
  "thiserror 2.0.18",
  "tracing",
@@ -3682,6 +3708,19 @@ checksum = "a06de3016e9fae57a36fd14dba131fccf49f74b40b7fbdb472f96e361ec71a08"
 dependencies = [
  "autocfg",
  "rawpointer",
+]
+
+[[package]]
+name = "maxminddb"
+version = "0.28.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "faf6467428ad055b71e588bcedcbaf2ff605b3251deb0c52be4a04b674c546dd"
+dependencies = [
+ "ipnetwork",
+ "log",
+ "memchr",
+ "serde",
+ "thiserror 2.0.18",
 ]
 
 [[package]]

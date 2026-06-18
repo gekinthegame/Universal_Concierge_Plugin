@@ -540,7 +540,10 @@ byId("cv-open").addEventListener("click", () => safely(cvOpenPicker));
 byId("cv-folder").addEventListener("keydown", e => { if (e.key === "Enter") safely(cvOpen); });
 document.addEventListener("keydown", e => { if (e.key === "Escape" && byId("cv-pick-overlay")) byId("cv-pick-overlay").remove(); });
 
-byId("cv-publish").addEventListener("click", () => safely(() => cvPublish("ipfs")));
+byId("cv-publish").addEventListener("click", () => { byId("publish-modal").style.display = "flex"; });
+byId("publish-close").addEventListener("click", () => { byId("publish-modal").style.display = "none"; });
+byId("publish-modal").addEventListener("click", e => { if (e.target === byId("publish-modal") || e.target.closest(".menu-item")) byId("publish-modal").style.display = "none"; });
+document.addEventListener("keydown", e => { if (e.key === "Escape" && byId("publish-modal").style.display === "flex") byId("publish-modal").style.display = "none"; });
 byId("cv-pub-ipfs").addEventListener("click", () => safely(() => cvPublish("ipfs")));
 byId("cv-pub-github").addEventListener("click", () => safely(() => cvPublish("github")));
 byId("cv-pub-netlify").addEventListener("click", () => safely(() => cvPublish("netlify")));
@@ -583,7 +586,10 @@ async function cvPin(service) {
   cvUpdateDomain();
   await cvLoadSites();
 }
-byId("cv-pin").addEventListener("click", () => safely(() => cvPin("filebase")));
+byId("cv-pin").addEventListener("click", () => { byId("pinsvc-modal").style.display = "flex"; });
+byId("pinsvc-close").addEventListener("click", () => { byId("pinsvc-modal").style.display = "none"; });
+byId("pinsvc-modal").addEventListener("click", e => { if (e.target === byId("pinsvc-modal") || e.target.closest(".menu-item")) byId("pinsvc-modal").style.display = "none"; });
+document.addEventListener("keydown", e => { if (e.key === "Escape" && byId("pinsvc-modal").style.display === "flex") byId("pinsvc-modal").style.display = "none"; });
 byId("cv-pin-filebase").addEventListener("click", () => safely(() => cvPin("filebase")));
 byId("cv-pin-pinata").addEventListener("click", () => safely(() => cvPin("pinata")));
 byId("cv-pin-foureverland").addEventListener("click", () => safely(() => cvPin("foureverland")));
@@ -1294,21 +1300,13 @@ function cvSetBig(on) {
   byId("cv-preview").classList.toggle("big", on);
   byId("cv-backdrop").classList.toggle("on", on);
   byId("cv-expand").classList.toggle("on", on);
-  byId("cv-expand").textContent = on ? "⤡ Collapse" : "⛶ Expand";
+  byId("cv-expand").textContent = on ? "⤡" : "⛶";
+  byId("cv-expand").title = on ? "Minimize preview" : "Expand preview";
 }
 byId("cv-expand").addEventListener("click", () => cvSetBig(!cvBig));
 byId("cv-backdrop").addEventListener("click", () => cvSetBig(false));
 document.addEventListener("keydown", e => {
-  if (e.key === "Escape" && cvBig) { cvSetBig(false); return; }
-  // F toggles expand — but only in the Studio view and not while typing in a field
-  // (so typing "f" in the HTML window, or Cmd/Ctrl-F find, still works normally).
-  if (e.key === "f" || e.key === "F") {
-    const t = e.target || {}, tag = t.tagName || "";
-    const typing = tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || t.isContentEditable;
-    if (typing || e.metaKey || e.ctrlKey || e.altKey) return;
-    if (!byId("canvas-view").classList.contains("active")) return;
-    e.preventDefault(); cvSetBig(!cvBig);
-  }
+  if (e.key === "Escape" && cvBig) { cvSetBig(false); }
 });
 
 // Educational live-share: broadcast the current page to remote viewers over WebRTC
@@ -1463,9 +1461,10 @@ async function loadContacts() {
     main.append(node("div", "c-sub", (c.username || "").slice(0, 18) + "…" + (c.site_ipns ? "  ·  /ipns/" + String(c.site_ipns).slice(0, 12) + "…" : "")));
     main.title = "Open thread · " + c.username;
     main.addEventListener("click", () => {
+      const pm = byId("profile-modal"); if (pm) pm.style.display = "none"; // reveal the thread behind the popup
       byId("chat-to").value = c.username;
       const room = c.room || (state.myUsername ? dmRoom(state.myUsername, c.username) : "");
-      if (room) { byId("room").value = room; state.room = room; safely(loadThread); }
+      if (room) { state.room = room; safely(() => loadThread(room)); }
       byId("chat-msg").focus();
     });
     const pet = node("button", "c-pet", "Nickname");

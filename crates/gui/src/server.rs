@@ -211,6 +211,7 @@ pub fn serve_with_options(mem: MemCli, addr: &str, options: GuiOptions) -> CoreR
     // Phase C: while the app is open, continuously capture Claude Code sessions —
     // but only once the user has explicitly attached (consent-gated, opt-in).
     spawn_claude_code_capture(mem.clone());
+    spawn_aider_capture(mem.clone());
 
     // Maintenance: silently compact the store (GC superseded blocks) once a day — a
     // first pass two minutes after launch (so startup isn't slowed), then every 24h.
@@ -275,6 +276,70 @@ fn set_claude_code_attached(mem: &MemCli, attached: bool) -> std::io::Result<()>
     } else {
         Ok(())
     }
+}
+
+// ── Aider harness capture (same shape as Claude Code, different on-disk format) ──
+// Aider writes a Markdown transcript per repo (`.aider.chat.history.md`); the
+// adapter discovers them and re-ingests on change (CID-dedup makes that safe).
+// Capture is consent-gated by its own sentinel, exactly like Claude Code.
+
+fn aider_flag_path(mem: &MemCli) -> Option<std::path::PathBuf> {
+    mem.store_dir().ok().map(|dir| dir.join("capture-aider"))
+}
+
+pub(super) fn aider_attached(mem: &MemCli) -> bool {
+    aider_flag_path(mem)
+        .map(|path| path.exists())
+        .unwrap_or(false)
+}
+
+pub(super) fn set_aider_attached(mem: &MemCli, attached: bool) -> std::io::Result<()> {
+    let Some(path) = aider_flag_path(mem) else {
+        return Ok(());
+    };
+    if attached {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        atomic_local_write(&path, b"attached")
+    } else if path.exists() {
+        std::fs::remove_file(&path)
+    } else {
+        Ok(())
+    }
+}
+
+/// `GET /api/aider/status`: which Aider transcripts the Concierge can see and
+/// whether capture is attached — so the Host card can show "Aider · N sessions"
+/// the same way it shows Claude Code.
+pub(super) fn aider_status_json(mem: &MemCli) -> CoreResult<String> {
+    use concierge_adapter_aider::discovery;
+    let transcripts = discovery::discover();
+    let session_count = discovery::total_sessions(&transcripts);
+    serde_json::to_string(&serde_json::json!({
+        "available": !transcripts.is_empty(),
+        "transcript_count": transcripts.len(),
+        "session_count": session_count,
+        "attached": aider_attached(mem),
+    }))
+    .map_err(|e| Error::Io(format!("serialize aider status: {e}")))
+}
+
+/// Background capture: while attached, re-ingest any changed Aider transcript on a
+/// short interval (cheap stat per file; idempotent by CID). Mirrors the Claude loop.
+fn spawn_aider_capture(mem: MemCli) {
+    use concierge_adapter_aider::capture_once;
+    let base = mem.working_dir().to_path_buf();
+    std::thread::spawn(move || {
+        let mut lens: std::collections::HashMap<std::path::PathBuf, u64> =
+            std::collections::HashMap::new();
+        loop {
+            if aider_attached(&mem) {
+                let _ = capture_once(&mut lens, &mem, &base);
+            }
+            std::thread::sleep(std::time::Duration::from_secs(5));
+        }
+    });
 }
 
 /// Where per-file ingest offsets are persisted across relaunches, so a restart
@@ -407,6 +472,17 @@ pub(super) fn mutation_claude_code_attach(mem: &MemCli, attached: bool) -> Respo
         return Response::error(format!("could not update capture state: {error}"));
     }
     match claude_code_status_json(mem) {
+        Ok(body) => Response::json(body),
+        Err(error) => Response::error(error.to_string()),
+    }
+}
+
+/// Attach/detach Aider capture (the consent sentinel), same shape as Claude Code.
+pub(super) fn mutation_aider_attach(mem: &MemCli, attached: bool) -> Response {
+    if let Err(error) = set_aider_attached(mem, attached) {
+        return Response::error(format!("could not update aider capture state: {error}"));
+    }
+    match aider_status_json(mem) {
         Ok(body) => Response::json(body),
         Err(error) => Response::error(error.to_string()),
     }

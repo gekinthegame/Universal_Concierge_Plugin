@@ -23,6 +23,7 @@ pub struct Config {
     pub librarian: LibrarianConfig,
     pub update: UpdateConfig,
     pub brain: BrainConfig,
+    pub network: NetworkConfig,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -98,7 +99,7 @@ impl Default for LibrarianConfig {
     fn default() -> Self {
         Self {
             embedder: "auto".to_string(),
-            embedding_model: "bge-small-en-v1.5".to_string(),
+            embedding_model: "nomic-embed-text-v1.5".to_string(),
             embedding_url: String::new(),
         }
     }
@@ -233,6 +234,29 @@ impl Default for BrainConfig {
     }
 }
 
+/// Peer-discovery / rendezvous wiring (Network tab). The always-on "original"
+/// Concierge can act as the shared **rendezvous point**, and every other node
+/// registers + discovers against it so peers find each other beyond the LAN
+/// (mDNS only reaches the same subnet). Driven from config so a GUI-launched app
+/// — especially on Windows, where a double-clicked app barely inherits env vars —
+/// keeps working across restarts. The matching env vars (`CONCIERGE_RENDEZVOUS_SERVER`,
+/// `CONCIERGE_LISTEN_PORT`, `CONCIERGE_RENDEZVOUS`) still override these when set.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(default)]
+pub struct NetworkConfig {
+    /// Be the shared rendezvous point. Requires a STABLE, publicly dialable address
+    /// (`listen_port` pinned + a router port-forward), so others can register here.
+    pub rendezvous_server: bool,
+    /// Pin the libp2p listen port (TCP + QUIC/UDP). `0` = ephemeral (fine for an
+    /// ordinary node). A rendezvous point MUST pin this so its address is stable and
+    /// matches the forwarded port on the router.
+    pub listen_port: u16,
+    /// Multiaddr of the rendezvous point to register + discover at — e.g.
+    /// `/ip4/<public-ip>/tcp/48011/p2p/<peer-id>`. Empty disables rendezvous (the
+    /// node still uses mDNS + the public DHT).
+    pub rendezvous: String,
+}
+
 impl Config {
     pub fn load_from_project_root(project_root: &Path) -> std::result::Result<Self, String> {
         let path = project_root.join(CONFIG_PATH);
@@ -286,6 +310,29 @@ mod tests {
             cfg.update.app_repo,
             "gekinthegame/Universal_Concierge_Plugin"
         );
+    }
+
+    #[test]
+    fn network_defaults_are_inert_and_roundtrip() {
+        // An unconfigured node is never a rendezvous server, uses an ephemeral port,
+        // and registers against no one — discovery falls back to mDNS + the DHT.
+        let cfg = Config::default();
+        assert!(!cfg.network.rendezvous_server);
+        assert_eq!(cfg.network.listen_port, 0);
+        assert!(cfg.network.rendezvous.is_empty());
+
+        let dir = TempDir::new().unwrap();
+        let mut configured = Config::default();
+        configured.network.rendezvous_server = true;
+        configured.network.listen_port = 48011;
+        configured.network.rendezvous =
+            "/ip4/67.247.166.2/tcp/48011/p2p/12D3KooWL5cDq7wqi77eyBNtxPT6vqazKtd2mRFe3c29txfBi1Ky"
+                .to_string();
+        configured.save_to_project_root(dir.path()).unwrap();
+        let reloaded = Config::load_from_project_root(dir.path()).unwrap();
+        assert!(reloaded.network.rendezvous_server);
+        assert_eq!(reloaded.network.listen_port, 48011);
+        assert!(reloaded.network.rendezvous.contains("/tcp/48011/p2p/"));
     }
 
     #[test]

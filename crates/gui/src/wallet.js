@@ -189,11 +189,10 @@ document.querySelectorAll("[data-command]").forEach(button => button.addEventLis
 }));
 // Compact = run GC to reclaim "Reclaimable" (superseded) blocks. Safe by
 // Compaction now runs automatically in the background (daily) — no manual button.
-byId("view-room").addEventListener("click", () => safely(loadThread));
+byId("view-room").addEventListener("click", () => safely(showThreadPicker));
 byId("human-only").addEventListener("click", () => {
   state.humanOnly = !state.humanOnly; byId("human-only").classList.toggle("on", state.humanOnly); safely(loadThread);
 });
-byId("room").addEventListener("keydown", event => { if (event.key === "Enter") safely(loadThread); });
 
 // Direct private chat bar (bottom of the center panel). A 64-hex "to" is a
 // username (a peer DM, delivered concierge-to-concierge); anything else is a room.
@@ -205,8 +204,7 @@ async function sendChat() {
   const res = await postJson("/api/message", { room: to, body: text });
   byId("chat-msg").value = "";
   const room = res.room || to;        // a direct message resolves to a dm-room id
-  byId("room").value = room;          // keep the Messenger view in sync
-  state.room = room;
+  state.room = room;                  // keep the open thread in sync
   const how = res.direct ? "direct message" : "message";
   logSystem(how + " → " + (res.delivered ? "delivered" : "queued (peer offline)"), res.delivered ? "ok" : "warn");
   await loadMe();                     // the node just came online on first send

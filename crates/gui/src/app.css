@@ -161,14 +161,18 @@
   .site-card .site-url:hover { text-decoration: underline; }
   .site-card .site-meta { font: 10px var(--mono); color: var(--faint); }
   .canvas-status { font: 10px var(--mono); color: var(--muted); padding: 4px 10px; border: 1px solid var(--line); border-radius: 4px; }
-  .canvas-preview { flex: 1.7 1 0; min-width: 0; border: 1px solid var(--line); border-radius: 6px; background: #fff; }
+  .canvas-preview { flex: 1.7 1 0; min-width: 0; border: 1px solid var(--line); border-radius: 6px; background: #a4a7b0; }
   /* Expanded preview: blow the iframe up to a near-fullscreen overlay for testing. */
   .cv-backdrop { position: fixed; inset: 0; z-index: 40; background: rgba(3,3,8,.8); backdrop-filter: blur(3px); display: none; }
   .cv-backdrop.on { display: block; }
   /* An <iframe> is a replaced element: inset alone won't size it, so set explicit
      width/height (auto would collapse to its intrinsic ~300x150). */
   .canvas-preview.big { position: fixed; top: 26px; left: 26px; width: calc(100vw - 52px); height: calc(100vh - 52px); flex: none; z-index: 45; border-radius: 10px; box-shadow: 0 30px 90px rgba(0,0,0,.7), 0 0 60px rgba(var(--gold-rgb),.15); }
-  #cv-expand.on { background: var(--gold); color: var(--black); border-color: var(--pale-gold); }
+  /* Expand/minimize toggle, pinned to the canvas preview's top-right corner. */
+  #cv-expand { position: absolute; top: 10px; right: 10px; z-index: 6; width: 30px; height: 30px; padding: 0; line-height: 28px; text-align: center; font-size: 15px; border-radius: 6px; background: rgba(8,12,24,.82); border: 1px solid var(--strong-line); color: var(--muted); cursor: pointer; backdrop-filter: blur(2px); }
+  #cv-expand:hover { color: #fff; border-color: var(--patina); }
+  /* When expanded the preview is fixed/fullscreen — keep the button fixed at ITS top-right, above it. */
+  #cv-expand.on { position: fixed; top: 34px; right: 34px; z-index: 46; background: var(--gold); color: var(--black); border-color: var(--pale-gold); }
   .cv-title { display: flex; align-items: center; gap: 9px; margin: 1px 2px 0; padding-bottom: 3px; border-bottom: 1px solid var(--line); }
   .cv-new { flex: 0 0 auto; padding: 5px 12px; font-size: 9px; border-color: var(--deep-gold); color: var(--gold); }
   .cv-new:hover { background: var(--gold); color: var(--black); border-color: var(--pale-gold); }
@@ -181,8 +185,10 @@
   .new-choice small { color: var(--faint); font: 9px var(--mono); }
   /* Studio: HTML windows on top take all the room; the toolbars are compact at the bottom. */
   .cv-toolbar { margin: 4px 0 0; gap: 5px; row-gap: 4px; }
-  .cv-toolbar .tool-button, .cv-toolbar .canvas-status { padding: 4px 8px; font-size: 9px; }
-  .cv-toolbar .input { padding: 4px 7px; }
+  .cv-toolbar .canvas-status { padding: 4px 8px; font-size: 9px; }
+  /* Bottom toolbar: uniform HEIGHT + width so buttons and fields form one tidy strip. */
+  .cv-toolbar .tool-button { height: 30px; box-sizing: border-box; padding: 0 10px; font-size: 9px; min-width: 100px; display: inline-flex; align-items: center; justify-content: center; }
+  .cv-toolbar .input { height: 30px; box-sizing: border-box; padding: 0 8px; }
   .publish-group { position: relative; display: flex; }
   .publish-menu {
     position: absolute;
@@ -224,6 +230,10 @@
   .menu-item:hover { background: var(--line); color: var(--gold); }
   .menu-item:hover .limit { color: var(--pale-gold); opacity: 1; }
   .main-publish { border-radius: 4px; }
+  /* Publish + Pin: open popups now (not hover menus); keep them the same size. */
+  .cv-pubpin { min-width: 92px; text-align: center; justify-content: center; }
+  .publish-list { display: flex; flex-direction: column; gap: 2px; }
+  .publish-list .menu-item { width: 100%; }
   /* Record window: pin this record to an always-on service (Public or Private). */
   .record-pinbar { display: flex; align-items: center; gap: 10px; margin: 2px 0 14px; flex-wrap: wrap; }
   .pin-mode { display: inline-flex; border: 1px solid var(--line); border-radius: 5px; overflow: hidden; }
@@ -238,8 +248,8 @@
   .hot-info { flex: 1; min-width: 0; }
   .hot-cid { font: 11px var(--mono); color: var(--ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   /* Highlight the primary action: Publish stands out (gold-filled, glowing). */
-  #cv-publish { background: var(--gold); color: var(--black); border-color: var(--pale-gold); font-weight: 700; letter-spacing: .04em; padding: 6px 16px; box-shadow: 0 0 11px rgba(var(--gold-rgb),.3); }
-  #cv-publish:hover { background: var(--pale-gold); }
+  #cv-publish, #cv-pin, #cv-commit { background: var(--gold); color: var(--black); border-color: var(--pale-gold); font-weight: 700; letter-spacing: .04em; padding: 6px 16px; box-shadow: 0 0 11px rgba(var(--gold-rgb),.3); }
+  #cv-publish:hover, #cv-pin:hover, #cv-commit:hover { background: var(--pale-gold); }
   .cv-domain { font: 10px var(--mono); color: var(--faint); letter-spacing: .02em; margin: 3px 2px 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .cv-domain:empty { display: none; }
   .cv-domain b { color: var(--patina); font-weight: 600; }
@@ -276,7 +286,7 @@
   .cv-title .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--gold); box-shadow: 0 0 8px var(--gold); flex: 0 0 auto; }
   .cv-title b { font: 12px var(--mono); letter-spacing: .18em; text-transform: uppercase; color: var(--pale-gold); font-weight: 600; }
   .cv-title span { margin-left: auto; font: 9px var(--mono); letter-spacing: .1em; text-transform: uppercase; color: var(--faint); }
-  .cv-split { flex: 1; display: flex; gap: 8px; min-height: 0; margin-top: 5px; }
+  .cv-split { position: relative; flex: 1; display: flex; gap: 8px; min-height: 0; margin-top: 5px; }
   /* Editor is the narrower pane; the live app/preview gets the lion's share of width. */
   .cv-src { flex: 1 1 0; min-width: 240px; resize: none; background: var(--deep); color: var(--ink); border: 1px solid var(--line); border-radius: 6px; padding: 12px; font: 12px/1.55 var(--mono); }
   .cv-src:focus { outline: none; border-color: var(--patina); }
@@ -292,10 +302,16 @@
   .panel-title { margin-right: auto; color: var(--muted); font: 10px var(--mono); letter-spacing: .18em; text-transform: uppercase; }
   .tab { border: 0; border-bottom: 2px solid transparent; padding: 14px 8px 11px; color: var(--faint); background: transparent; font: 9px var(--mono); text-transform: uppercase; }
   .tab:hover, .tab.active { color: var(--gold); border-bottom-color: var(--gold); }
+  /* Studio = highlighted call-to-action tab (filled), set apart from the others. */
+  .header-tabs .tab.tab-cta { margin: 2px 0 2px 6px; padding: 5px 15px; border-radius: 6px; background: var(--gold); color: var(--black); border-bottom-color: transparent; font-weight: 700; }
+  .header-tabs .tab.tab-cta:hover, .header-tabs .tab.tab-cta.active { color: var(--black); background: var(--pale-gold); border-bottom-color: transparent; }
   .reset-btn { border: 1px solid var(--line); border-radius: 3px; padding: 6px 12px; margin-right: 6px; color: var(--ink); background: var(--graphite); font: 9px var(--mono); letter-spacing: .06em; text-transform: uppercase; cursor: pointer; }
   .reset-btn:hover { color: var(--gold); border-color: var(--gold); }
   /* Minimized Reset View, floating at the top-center of the graph canvas. */
   .reset-mini { position: absolute; top: 10px; left: 50%; transform: translateX(-50%); z-index: 4; padding: 5px 12px; border: 1px solid var(--line); border-radius: 14px; background: rgba(22,23,19,.82); color: var(--muted); font: 9px var(--mono); letter-spacing: .08em; text-transform: uppercase; cursor: pointer; opacity: .68; transition: .15s; }
+  /* Centered graph toolbar holding Reset view + Ingest side by side. */
+  .graph-toolbar { position: absolute; top: 10px; left: 50%; transform: translateX(-50%); z-index: 4; display: flex; gap: 8px; }
+  .graph-toolbar .reset-mini { position: static; top: auto; left: auto; transform: none; }
   .reset-mini:hover { opacity: 1; color: var(--black); background: var(--gold); border-color: var(--pale-gold); }
   .view { display: none; height: 100%; overflow: auto; }
   .view.active { display: block; }
@@ -372,14 +388,24 @@
   .graph-plus { fill: var(--gold); font: 700 15px var(--mono); pointer-events: none; }
   /* Network discovery map — your node + the peers it discovers, each a small
      pulsating brain (same glyph as the graph centre, scaled down). */
-  .discovery-wrap { margin: 6px 0 16px; border: 1px solid rgba(60,110,210,.28); border-radius: 8px; background: radial-gradient(130% 130% at 50% 30%, rgba(40,90,190,.10), transparent 70%), #050813; padding: 6px 6px 10px; }
-  #discovery-svg { width: 100%; height: auto; max-height: 380px; display: block; }
+  .discovery-wrap { position: relative; margin: 6px 0 16px; border: 1px solid rgba(60,110,210,.28); border-radius: 8px; background: radial-gradient(130% 130% at 50% 30%, rgba(40,90,190,.10), transparent 70%), #050813; padding: 6px 6px 10px; }
+  #discovery-svg { width: 100%; height: auto; max-height: 76vh; min-height: 460px; display: block; touch-action: none; cursor: grab; }
+  #discovery-svg.disc-panning { cursor: grabbing; }
   .discovery-stat { text-align: center; margin-top: 2px; }
+  /* Zoom/maximize controls, overlaid top-right of the map. */
+  .disc-controls { position: absolute; top: 12px; right: 12px; z-index: 3; display: flex; flex-direction: column; gap: 6px; }
+  .disc-ctl { width: 30px; height: 30px; line-height: 28px; text-align: center; font-size: 16px; color: var(--muted); background: rgba(8,12,24,.78); border: 1px solid rgba(60,110,210,.4); border-radius: 6px; cursor: pointer; padding: 0; backdrop-filter: blur(2px); transition: color .12s, border-color .12s; }
+  .disc-ctl:hover { color: #fff; border-color: var(--patina); }
+  /* Maximized: the map fills the viewport as a fixed overlay. */
+  .discovery-wrap.maximized { position: fixed; inset: 12px; margin: 0; z-index: 80; padding: 10px; box-shadow: 0 12px 48px rgba(0,0,0,.7); display: flex; flex-direction: column; }
+  .discovery-wrap.maximized #discovery-svg { max-height: none; min-height: 0; flex: 1 1 auto; height: 100%; }
   /* World map backdrop — blue HUD coastlines/borders on a faint grid */
   .disc-grid line { stroke: rgba(70,120,220,.11); stroke-width: .5; }
   .disc-land { fill: none; stroke: rgba(64,140,255,.55); stroke-width: .45; stroke-linejoin: round; pointer-events: none; }
   /* Generic network node = a twinkling white LED, like a star in the night sky */
-  .disc-star-halo { fill: #fff; opacity: .28; filter: blur(1.4px); pointer-events: none; }
+  /* No blur filter: at thousands of stars per-element blur is the main perf cost,
+     and at this radius a soft opacity disc reads the same. */
+  .disc-star-halo { fill: #fff; opacity: .22; pointer-events: none; }
   .disc-star-core { fill: #fff; animation: disc-twinkle 2.6s ease-in-out infinite; }
   .disc-star.off { opacity: .5; }
   @keyframes disc-twinkle { 0%, 100% { opacity: 1; } 50% { opacity: .32; } }
@@ -401,7 +427,7 @@
   .pair-copy .tool-button { align-self: flex-end; }
   .pair-phrase { font: 700 22px var(--mono); letter-spacing: .14em; text-align: center; color: var(--patina); background: rgba(var(--patina-rgb),.055); border: 1px solid var(--strong-line); border-radius: 8px; padding: 14px; }
   .modal-overlay { position: fixed; inset: 0; z-index: 20; display: flex; align-items: center; justify-content: center; background: rgba(5,5,4,.66); backdrop-filter: blur(2px); }
-  .modal-card { width: min(560px, 92vw); gap: 12px; padding: 20px; box-shadow: 0 18px 60px rgba(0,0,0,.5); }
+  .modal-card { width: min(560px, 92vw); gap: 12px; padding: 20px; background: var(--raised); border: 1px solid var(--strong-line); box-shadow: 0 18px 60px rgba(0,0,0,.5); }
   /* Record popup: a wider, scrollable card that opens when a record is selected. */
   .record-modal { z-index: 22; }
   .record-card { position: relative; width: min(760px, 94vw); max-height: 86vh; overflow: auto; padding: 0; background: var(--raised); border: 1px solid var(--strong-line); border-radius: 8px; box-shadow: 0 24px 70px rgba(0,0,0,.6); }
@@ -422,6 +448,8 @@
      panel width (no 1050px cap, minimal padding) so the editor + preview maximize. */
   #canvas-view > .content { max-width: none; margin: 0; padding: 10px 12px; }
   .record-top { display: flex; align-items: center; gap: 9px; margin-bottom: 14px; }
+  .record-top .cid { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+  .record-top .rec-privacy { margin-left: auto; margin-right: 34px; flex: 0 0 auto; }
   .kind { color: var(--black); background: var(--gold); border-radius: 2px; padding: 3px 7px; font: 9px var(--mono); text-transform: uppercase; }
   .cid { color: var(--patina); font: 10px var(--mono); word-break: break-all; }
   pre { margin: 0; padding: 16px; overflow: auto; white-space: pre-wrap; word-break: break-word; color: var(--ink); background: var(--deep); border: 1px solid var(--line); border-radius: 5px; font: 11px/1.6 var(--mono); }
@@ -472,7 +500,24 @@
   .event-desc { color: var(--ink); font: 12px var(--body); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .event-aliases { color: var(--patina); font: 9px var(--mono); }
   .event-cid { color: var(--faint); font: 8px var(--mono); white-space: nowrap; }
-  .messenger-tools, .search-tools { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 14px; }
+  .messenger-tools, .search-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 14px; }
+  /* Records action buttons: uniform width + centered so they line up tidily. */
+  .rec-tool { min-width: 140px; text-align: center; }
+  /* Records toolbar: give every control the same height so buttons + fields align. */
+  #names-view .messenger-tools .tool-button, #names-view .messenger-tools .input { height: 36px; box-sizing: border-box; }
+  #names-view .messenger-tools .tool-button { display: inline-flex; align-items: center; justify-content: center; }
+  /* The search form is nested in the toolbar — drop its own bottom margin so its controls
+     sit on the same line as the action buttons (the margin was offsetting them upward). */
+  #names-view .messenger-tools .search-tools { margin-bottom: 0; }
+  /* Keep the "synced bookmarks" status on its own line so it never shifts the buttons. */
+  #bookmarks-status { flex-basis: 100%; }
+  #bookmarks-status:empty { display: none; }
+  /* Thread picker: the selectable list shown by "View thread". */
+  .thread-picker { display: flex; flex-direction: column; gap: 6px; margin-bottom: 14px; }
+  .thread-picker .thread-pick { text-align: left; border: 1px solid var(--line); border-radius: 4px; background: var(--deep); color: var(--ink); padding: 8px 10px; cursor: pointer; font: 11px var(--mono); }
+  .thread-picker .thread-pick:hover { border-color: var(--patina); color: #fff; }
+  .thread-picker .thread-pick.active { border-color: var(--gold); color: var(--gold); }
+  .thread-picker .empty { padding: 8px 10px; }
   .search-hit { padding: 9px 11px; margin-bottom: 7px; border: 1px solid var(--line); border-radius: 4px; background: var(--deep); cursor: pointer; }
   .search-hit:hover { border-color: var(--gold); }
   .search-hit.related { border-style: dashed; opacity: .82; margin-left: 16px; }

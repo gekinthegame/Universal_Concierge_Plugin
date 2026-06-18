@@ -7,6 +7,7 @@ members = [
     "crates/adapter-jsonl",
     "crates/adapter-hermes",
     "crates/adapter-claude-code",
+    "crates/adapter-aider",
     "crates/gui",
     "crates/net",
     "crates/mcp",
@@ -27,7 +28,7 @@ futures = "0.3"
 hmac = "0.12"
 iroh-car = "0.5.1"
 libc = "0.2"
-libp2p = { version = "0.56", features = ["tokio", "gossipsub", "tcp", "quic", "noise", "yamux", "macros", "ed25519", "relay", "dcutr", "identify", "request-response", "cbor", "autonat", "rendezvous", "kad", "mdns"] }
+libp2p = { version = "0.56", features = ["tokio", "gossipsub", "tcp", "quic", "dns", "noise", "yamux", "macros", "ed25519", "rsa", "relay", "dcutr", "identify", "request-response", "cbor", "autonat", "rendezvous", "kad", "mdns"] }
 multihash = "0.19"
 notify = "6"
 rand_core = { version = "0.6", features = ["getrandom"] }

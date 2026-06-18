@@ -154,7 +154,8 @@ impl MemCli {
         if !ContextCompiler::should_wake(&config.injection, event_type) {
             return Ok(None);
         }
-        let embedder = crate::retrieval::default_embedder(&config.librarian);
+        // Gated on the Sidekick (same as search/retrieve): Nomic in-process when enabled, else lexical.
+        let embedder = self.librarian_embedder();
         let librarian = crate::retrieval::Librarian::index_all_persistent(self, embedder)?;
         let authority = authority_id.map(TrustedAuthority::new);
         match ContextCompiler::suggest(&config.injection, authority.as_ref(), &librarian, query) {

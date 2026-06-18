@@ -943,6 +943,30 @@ mod tests {
     use super::*;
     use crate::binding::Node;
 
+    #[cfg(feature = "semantic-embed")]
+    #[test]
+    fn nomic_model_id_resolves_to_a_real_nomic_model() {
+        // The user's chosen on-node model. Must resolve against fastembed's catalog by the same
+        // rule `SemanticEmbedder::new` uses (exact code, else HF-style `…/<want>` suffix) — no
+        // network/download here, just the catalog lookup.
+        let want = "nomic-embed-text-v1.5";
+        let models = fastembed::TextEmbedding::list_supported_models();
+        let info = models
+            .iter()
+            .find(|i| i.model_code.to_lowercase() == want)
+            .or_else(|| {
+                models
+                    .iter()
+                    .find(|i| i.model_code.to_lowercase().ends_with(&format!("/{want}")))
+            })
+            .expect("config 'nomic-embed-text-v1.5' must resolve to a supported fastembed model");
+        assert!(
+            info.model_code.to_lowercase().contains("nomic"),
+            "expected a Nomic model, resolved to {}",
+            info.model_code
+        );
+    }
+
     impl Librarian<LexicalEmbedder> {
         /// Build a deterministic index directly from `(cid, text, outbound)`
         /// triples — bypasses the store so ranking/packing/gravity are testable

@@ -3,7 +3,7 @@ use super::*;
 pub(super) fn peers_response(mem: &MemCli, options: &GuiOptions) -> Response {
     let _ = ensure_chat_node(mem, options);
     let now = now_unix();
-    let (online, self_peer, self_agent, mut peers) = match options.chat.lock() {
+    let (online, self_peer, self_agent, self_addrs, mut peers) = match options.chat.lock() {
         Ok(guard) => match guard.as_ref() {
             Some(chat) => {
                 let list: Vec<PeerInfo> = chat
@@ -11,11 +11,18 @@ pub(super) fn peers_response(mem: &MemCli, options: &GuiOptions) -> Response {
                     .lock()
                     .map(|m| m.values().cloned().collect())
                     .unwrap_or_default();
-                (true, chat.peer_id.clone(), chat.agent_id.clone(), list)
+                let addrs = chat.addrs.lock().map(|a| a.clone()).unwrap_or_default();
+                (
+                    true,
+                    chat.peer_id.clone(),
+                    chat.agent_id.clone(),
+                    addrs,
+                    list,
+                )
             }
-            None => (false, String::new(), String::new(), Vec::new()),
+            None => (false, String::new(), String::new(), Vec::new(), Vec::new()),
         },
-        Err(_) => (false, String::new(), String::new(), Vec::new()),
+        Err(_) => (false, String::new(), String::new(), Vec::new(), Vec::new()),
     };
     // Drop discovered-only peers we haven't actually reached in a while; keep all
     // connected ones. Show the freshest first, capped so the map stays legible.
@@ -29,7 +36,8 @@ pub(super) fn peers_response(mem: &MemCli, options: &GuiOptions) -> Response {
     });
     let total = peers.len();
     let connected = peers.iter().filter(|p| p.status == "connected").count();
-    peers.truncate(200);
+    // No render cap — every discovered peer goes on the map so the global pattern is
+    // visible. The store is bounded by MAX_DISCOVERY_PEERS, which keeps this sane.
     // Which peers are fellow Concierges (drawn as brains, vs generic network nodes drawn
     // as stars): an approved contact, or a peer found via our concierge rendezvous
     // namespace. Everything else is just an anonymous IPFS/libp2p node in the swarm.
@@ -42,7 +50,11 @@ pub(super) fn peers_response(mem: &MemCli, options: &GuiOptions) -> Response {
     let peers_json: Vec<serde_json::Value> = peers
         .iter()
         .map(|p| {
-            let is_concierge = p.source == "rendezvous" || concierge_peers.contains(&p.peer_id);
+            // A fellow Concierge is any peer that identified itself with the Concierge
+            // protocol version, plus our existing positives (approved contact, or found
+            // via the Concierge rendezvous namespace). Everything else is a network star.
+            let is_concierge =
+                p.is_concierge || p.source == "rendezvous" || concierge_peers.contains(&p.peer_id);
             // A concierge node's AgentID ("username") for DMs is recoverable from its
             // Ed25519 PeerID — so clicking its brain can copy a sendable username.
             let username = is_concierge
@@ -53,6 +65,10 @@ pub(super) fn peers_response(mem: &MemCli, options: &GuiOptions) -> Response {
                         .and_then(|peer| ed25519_hex_from_peer_id(&peer))
                 })
                 .flatten();
+            // Real geo-IP (bundled offline DB-IP City Lite): the peer's true lat/lon
+            // from its public address, so the map plots actual locations instead of
+            // a stylised region scatter. None ⇒ relay/LAN-only peer with no public IP.
+            let geo = crate::geoip::locate_addrs(&p.addresses);
             serde_json::json!({
                 "peer_id": p.peer_id,
                 "status": p.status,
@@ -62,12 +78,24 @@ pub(super) fn peers_response(mem: &MemCli, options: &GuiOptions) -> Response {
                 "last_seen": p.last_seen,
                 "is_concierge": is_concierge,
                 "username": username,
+                "lat": geo.as_ref().map(|g| g.0),
+                "lon": geo.as_ref().map(|g| g.1),
+                "country": geo.as_ref().and_then(|g| g.2.clone()),
             })
         })
         .collect();
+    // Our own node's real location, when one of its addresses is a public IP (e.g. an
+    // AutoNAT-observed external address); None ⇒ the map uses the stylised fallback.
+    let self_geo = crate::geoip::locate_addrs(&self_addrs);
     Response::json(
         serde_json::json!({
-            "self": { "peer_id": self_peer, "agent_id": self_agent, "online": online },
+            "self": {
+                "peer_id": self_peer,
+                "agent_id": self_agent,
+                "online": online,
+                "lat": self_geo.as_ref().map(|g| g.0),
+                "lon": self_geo.as_ref().map(|g| g.1),
+            },
             "peers": peers_json,
             "total": total,
             "connected": connected,
@@ -1306,8 +1334,8 @@ pub(super) fn search_response(mem: &MemCli, options: &GuiOptions, query: &str) -
     // Build the embedder once, per the librarian config (model is config-selected,
     // not baked in — lexical / fastembed:<model> / http:<url>).
     if guard.embedder.is_none() {
-        let librarian_config = mem.config().map(|c| c.librarian).unwrap_or_default();
-        let built = default_embedder(&librarian_config);
+        // Gated on the Sidekick: Nomic (in-process) when the node is enabled, else lexical.
+        let built = mem.librarian_embedder();
         options.log(
             "ok",
             format!("embedder ready · {} ({}d)", built.id(), built.dims()),

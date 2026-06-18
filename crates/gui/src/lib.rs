@@ -19,17 +19,18 @@ use std::time::{Duration, Instant};
 
 use concierge_core::deploy::SiteDeployPlan;
 use concierge_core::{
-    cid_from_link, default_embedder, verify_capability, verify_membership, Cid, CidOrName,
-    CoreBinding, Depth, EgressOperation, EgressPlan, Error, Librarian, MemCli, PrivateSharePlan,
-    Record, Result as CoreResult, SharedEmbedder, UserId,
+    cid_from_link, verify_capability, verify_membership, Cid, CidOrName, CoreBinding, Depth,
+    EgressOperation, EgressPlan, Error, Librarian, MemCli, PrivateSharePlan, Record,
+    Result as CoreResult, SharedEmbedder, UserId,
 };
 use concierge_net::{
     ed25519_hex_from_peer_id, peer_id_from_ed25519_hex, peer_id_in, store_provider, ConciergeNode,
-    Multiaddr, NodeConfig, NodeEvent,
+    Multiaddr, NodeConfig, NodeEvent, CONCIERGE_PROTOCOL_VERSION,
 };
 use rand_core::{OsRng, RngCore};
 
 mod canvas;
+mod geoip;
 mod mutations;
 mod read_routes;
 mod server;
@@ -57,6 +58,10 @@ use read_routes::{
 };
 #[cfg(test)]
 use read_routes::{node_and_links_from_record, PrivacyOverlay};
+use server::{
+    aider_status_json, claude_code_status_json, mutation_aider_attach, mutation_claude_code_attach,
+    mutation_sidekick, sidekick_status_json,
+};
 pub use server::{
     brave_path, open_app, open_browser, opera_path, pick_free_port, running_gui_port, serve,
     serve_with_options, wallet_browser, WalletBrowser,
@@ -65,9 +70,6 @@ pub use server::{
 use server::{
     claude_code_attached, load_capture_offsets, route_request, save_capture_offsets,
     serve_connection,
-};
-use server::{
-    claude_code_status_json, mutation_claude_code_attach, mutation_sidekick, sidekick_status_json,
 };
 
 const INDEX_HTML: &str = include_str!("index.html");
@@ -95,7 +97,10 @@ const MAX_CANVAS_SIGNAL_QUEUE: usize = 128;
 const MAX_CANVAS_SIGNAL_BYTES: usize = 64 * 1024;
 const MAX_CANVAS_SESSION_LEN: usize = 128;
 const MAX_PREVIEW_DIRS: usize = 64;
-const MAX_DISCOVERY_PEERS: usize = 256;
+// Effectively uncapped for the map — the public DHT routing table tops out in the low
+// thousands, so this just bounds memory against pathological growth (each entry is a
+// small struct). Every discovered peer renders, so the global pattern is visible.
+const MAX_DISCOVERY_PEERS: usize = 20000;
 const DISCOVERY_PEER_TTL_SECS: u64 = 600;
 
 /// A fresh, unguessable CSRF token for one server process.
@@ -140,20 +145,21 @@ struct PeerInfo {
     addresses: Vec<String>,
     /// Unix seconds we last saw activity from this peer.
     last_seen: u64,
+    /// The peer identified itself as a Concierge (advertised
+    /// `CONCIERGE_PROTOCOL_VERSION` over libp2p identify) — drawn as a brain.
+    is_concierge: bool,
 }
 
 fn prune_discovery_peers(map: &mut std::collections::BTreeMap<String, PeerInfo>, now: u64) {
     map.retain(|_, peer| {
-        peer.status == "connected"
-            || peer.source == "ipfs/bootstrap"
-            || now.saturating_sub(peer.last_seen) < DISCOVERY_PEER_TTL_SECS
+        peer.status == "connected" || now.saturating_sub(peer.last_seen) < DISCOVERY_PEER_TTL_SECS
     });
     if map.len() <= MAX_DISCOVERY_PEERS {
         return;
     }
     let mut removable: Vec<(String, u64)> = map
         .iter()
-        .filter(|(_, peer)| peer.status != "connected" && peer.source != "ipfs/bootstrap")
+        .filter(|(_, peer)| peer.status != "connected")
         .map(|(id, peer)| (id.clone(), peer.last_seen))
         .collect();
     removable.sort_by_key(|(_, last_seen)| *last_seen);
@@ -162,35 +168,6 @@ fn prune_discovery_peers(map: &mut std::collections::BTreeMap<String, PeerInfo>,
             break;
         }
         map.remove(&id);
-    }
-}
-
-fn seed_bootstrap_peers(
-    map: &mut std::collections::BTreeMap<String, PeerInfo>,
-    bootstrap: &[Multiaddr],
-    now: u64,
-) {
-    for addr in bootstrap {
-        let Some(peer) = peer_id_in(addr) else {
-            continue;
-        };
-        let peer_id = peer.to_string();
-        let addr = addr.to_string();
-        map.entry(peer_id.clone())
-            .and_modify(|entry| {
-                if !entry.addresses.contains(&addr) {
-                    entry.addresses.push(addr.clone());
-                }
-                entry.last_seen = now;
-            })
-            .or_insert_with(|| PeerInfo {
-                peer_id,
-                status: "discovered",
-                source: "ipfs/bootstrap".to_string(),
-                relayed: false,
-                addresses: vec![addr],
-                last_seen: now,
-            });
     }
 }
 
@@ -736,6 +713,7 @@ pub fn handle_with_options(
         "/api/search" => search_response(mem, options, query),
         "/api/sidekick/status" => to_response(sidekick_status_json(mem)),
         "/api/claude-code/status" => to_response(claude_code_status_json(mem)),
+        "/api/aider/status" => to_response(aider_status_json(mem)),
         "/api/update/status" => to_response(update_status_json(mem)),
         "/api/brain/metrics" => to_response(brain_metrics_json(mem)),
         "/api/deploy/credentials" => to_response(deploy_status_json(mem)),
@@ -847,7 +825,15 @@ fn ensure_chat_node(mem: &MemCli, options: &GuiOptions) -> Result<(), String> {
         .build()
         .map_err(|e| format!("chat runtime: {e}"))?;
     let provider = store_provider(Arc::new(mem.clone()));
-    let node_config = NodeConfig::default();
+    // Network/rendezvous settings come from config (survives a GUI relaunch), with
+    // the env vars as an override for power users / ephemeral testing.
+    let net_cfg = mem.config().map(|c| c.network).unwrap_or_default();
+    let mut node_config = NodeConfig::default();
+    // Opt-in: designate this always-on node as the shared rendezvous point, so other
+    // Concierges can register + discover each other under the "concierge" namespace.
+    if net_cfg.rendezvous_server || std::env::var("CONCIERGE_RENDEZVOUS_SERVER").is_ok() {
+        node_config.rendezvous_point = true;
+    }
     let (node, mut events) = {
         // `spawn_with_provider` calls `tokio::spawn` internally, so it must run
         // inside the runtime context.
@@ -855,10 +841,49 @@ fn ensure_chat_node(mem: &MemCli, options: &GuiOptions) -> Result<(), String> {
         ConciergeNode::spawn_with_provider(secret, node_config.clone(), provider)?
     };
     // Listen on TCP and QUIC (UDP). QUIC avoids the TCP port-reuse collision when
-    // two nodes share a host and traverses NAT better.
-    for listen in ["/ip4/0.0.0.0/tcp/0", "/ip4/0.0.0.0/udp/0/quic-v1"] {
+    // two nodes share a host and traverses NAT better. A rendezvous point needs a
+    // STABLE address, so let the operator pin the port via CONCIERGE_LISTEN_PORT
+    // (ordinary nodes stay on an ephemeral port, which is fine).
+    let listen_addrs: Vec<String> = match std::env::var("CONCIERGE_LISTEN_PORT")
+        .ok()
+        .and_then(|p| p.trim().parse::<u16>().ok())
+        .or(Some(net_cfg.listen_port).filter(|p| *p != 0))
+    {
+        Some(port) => vec![
+            format!("/ip4/0.0.0.0/tcp/{port}"),
+            format!("/ip4/0.0.0.0/udp/{port}/quic-v1"),
+        ],
+        None => vec![
+            "/ip4/0.0.0.0/tcp/0".to_string(),
+            "/ip4/0.0.0.0/udp/0/quic-v1".to_string(),
+        ],
+    };
+    for listen in &listen_addrs {
         if let Ok(addr) = listen.parse::<Multiaddr>() {
             let _ = node.listen(addr);
+        }
+    }
+    // If a rendezvous point is configured, dial it and keep registering + discovering
+    // under the "concierge" namespace so Concierge nodes find each other beyond the LAN
+    // (they render as brains on the map). Rendezvous results are point-in-time, so we
+    // refresh on an interval; re-dial each pass in case the connection dropped.
+    if let Some(addr) = std::env::var("CONCIERGE_RENDEZVOUS")
+        .ok()
+        .or_else(|| Some(net_cfg.rendezvous.clone()).filter(|s| !s.trim().is_empty()))
+        .and_then(|s| s.trim().parse::<Multiaddr>().ok())
+    {
+        if let Some(point) = peer_id_in(&addr) {
+            let rdv_node = node.clone();
+            runtime.spawn(async move {
+                let _ = rdv_node.dial(addr.clone());
+                tokio::time::sleep(Duration::from_secs(3)).await;
+                loop {
+                    let _ = rdv_node.dial(addr.clone());
+                    let _ = rdv_node.register_rendezvous(point, "concierge");
+                    let _ = rdv_node.discover_rendezvous(point, "concierge");
+                    tokio::time::sleep(Duration::from_secs(60)).await;
+                }
+            });
         }
     }
     for room in known_rooms(mem) {
@@ -867,11 +892,10 @@ fn ensure_chat_node(mem: &MemCli, options: &GuiOptions) -> Result<(), String> {
     let agent_id = identity.agent_id().0;
     let peer_id = node.peer_id.to_string();
     let addrs: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    // The map starts empty and fills only with peers we genuinely discover or connect
+    // to (mDNS, the DHT routing table, rendezvous) — no synthetic seeds.
     let peers: Arc<Mutex<std::collections::BTreeMap<String, PeerInfo>>> =
         Arc::new(Mutex::new(std::collections::BTreeMap::new()));
-    if let Ok(mut map) = peers.lock() {
-        seed_bootstrap_peers(&mut map, &node_config.bootstrap, now_unix());
-    }
 
     // Drain inbound network events into the store. A received message is a signed
     // envelope (verified by `accept_message`); a `Listening` event records a
@@ -899,6 +923,7 @@ fn ensure_chat_node(mem: &MemCli, options: &GuiOptions) -> Result<(), String> {
                     relayed: true,
                     addresses: Vec::new(),
                     last_seen: now,
+                    is_concierge: false,
                 });
                 if status == "connected" || entry.status != "connected" {
                     entry.status = status;
@@ -989,9 +1014,16 @@ fn ensure_chat_node(mem: &MemCli, options: &GuiOptions) -> Result<(), String> {
                     }
                 }
                 // ── Discovery-map signals ──
-                NodeEvent::ConnectionEstablished { peer_id, relayed } => {
+                NodeEvent::ConnectionEstablished {
+                    peer_id,
+                    relayed,
+                    address,
+                } => {
                     let source = if relayed { "relay" } else { "lan/direct" };
-                    touch_peer(peer_id, "connected", source, relayed, Vec::new());
+                    // Keep the connection's remote multiaddr: for a direct internet
+                    // connection it carries the peer's real public IP, which geo-locates
+                    // it on the map (relay-circuit addresses just won't resolve).
+                    touch_peer(peer_id, "connected", source, relayed, vec![address]);
                 }
                 NodeEvent::DirectConnectionUpgrade {
                     peer_id,
@@ -1011,6 +1043,33 @@ fn ensure_chat_node(mem: &MemCli, options: &GuiOptions) -> Result<(), String> {
                     addresses,
                 } => {
                     touch_peer(peer_id, "discovered", source, false, addresses);
+                }
+                // Identify told us what the peer runs. Mark fellow Concierges (by
+                // protocol version) so the map draws them as brains, whatever channel
+                // first surfaced them. Never downgrades a peer already known to be one.
+                NodeEvent::PeerIdentified {
+                    peer_id,
+                    protocol_version,
+                    ..
+                } => {
+                    let is_concierge = protocol_version == CONCIERGE_PROTOCOL_VERSION;
+                    if let Ok(mut map) = drain_peers.lock() {
+                        let now = now_unix();
+                        let entry = map.entry(peer_id.clone()).or_insert_with(|| PeerInfo {
+                            peer_id,
+                            status: "discovered",
+                            source: "identify".to_string(),
+                            relayed: true,
+                            addresses: Vec::new(),
+                            last_seen: now,
+                            is_concierge: false,
+                        });
+                        entry.last_seen = now;
+                        if is_concierge {
+                            entry.is_concierge = true;
+                        }
+                        prune_discovery_peers(&mut map, now);
+                    }
                 }
                 _ => {}
             }

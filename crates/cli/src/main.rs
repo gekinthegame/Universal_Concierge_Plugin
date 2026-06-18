@@ -13,8 +13,8 @@ use concierge_adapter_jsonl::{
     ingest, ingest_envelopes, Importer, IngestReport, JsonlImporter, MarkdownImporter,
 };
 use concierge_core::{
-    cid_from_link, default_embedder, Cid, CidOrName, Config, CoreBinding, Depth, EgressOperation,
-    Librarian, MemCli, Record,
+    cid_from_link, Cid, CidOrName, Config, CoreBinding, Depth, EgressOperation, Librarian, MemCli,
+    Record,
 };
 use serde_json::Value;
 
@@ -25,8 +25,8 @@ mod publishing_commands;
 #[cfg(test)]
 use messaging_commands::envelope_declares_room;
 use messaging_commands::{
-    cmd_follow, cmd_following, cmd_id, cmd_msg, cmd_nickname, cmd_room, cmd_shared, cmd_thread,
-    flag_value,
+    cmd_follow, cmd_following, cmd_id, cmd_msg, cmd_nickname, cmd_rendezvous_info, cmd_room,
+    cmd_shared, cmd_thread, flag_value,
 };
 use network_commands::{cmd_actor, cmd_network, cmd_sidekick, cmd_sync};
 use publishing_commands::{
@@ -117,6 +117,8 @@ COMMANDS:
                          host to summarize, record the host's summary    [Phase 8]
     backend <list|show NAME|add NAME>  Inspect/configure backends       [Phase 5]
     id                   Show this install's stable AgentID            [Phase 5.5]
+    rendezvous-info      Show this node's PeerId + commands to run it
+                         as the shared rendezvous point
     follow <agentid>     Follow another install (local allowlist)      [Phase 5.5]
     nickname <agentid> <name>  Give an AgentID a local petname         [Phase 5.5]
     following            List who you follow (with petnames)           [Phase 5.5]
@@ -266,7 +268,8 @@ fn cmd_retrieve(args: &[String]) -> ExitCode {
     });
 
     let mem = MemCli::new(workdir());
-    let embedder = default_embedder(&mem.config().unwrap_or_default().librarian);
+    // Gated on the Sidekick: Nomic (in-process) when the node is enabled, else lexical.
+    let embedder = mem.librarian_embedder();
     let librarian = match Librarian::index_all_persistent(&mem, embedder) {
         Ok(lib) => lib,
         Err(e) => {
@@ -2024,6 +2027,7 @@ fn main() -> ExitCode {
         Some("brain") => cmd_brain(&args),
         Some("backend") => cmd_backend(&args),
         Some("id") => cmd_id(),
+        Some("rendezvous-info") => cmd_rendezvous_info(),
         Some("follow") => cmd_follow(&args),
         Some("nickname") => cmd_nickname(&args),
         Some("following") => cmd_following(),
