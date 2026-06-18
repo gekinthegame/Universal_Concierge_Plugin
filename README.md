@@ -10,16 +10,8 @@ Built on **IPLD** and secured by **Private IPFS Swarms**, UCP turns transient ag
 
 ## ⬇️ Install
 
-One self-contained binary — no separate `mem`, database, or cloud. Kubo/IPFS is
-**optional** (only for publishing and the on-node Sidekick).
-
 ### 🖱️ Click to install
 From the [latest release](https://github.com/gekinthegame/Universal_Concierge_Plugin/releases/latest):
-
-- **macOS** — download **`Universal-Concierge-macos.dmg`**, open it, **drag Concierge → Applications**. First launch: **right-click → Open** (one time — unsigned).
-- **Windows** — download and run **`Universal-Concierge-windows-setup.exe`** (adds Start Menu + desktop icons). SmartScreen may warn → **More info → Run anyway**.
-
-Clicking the **Concierge** icon starts the explorer and opens it in your browser.
 
 ### ⌨️ Command-line install
 **macOS / Linux**
