@@ -59,8 +59,9 @@ use read_routes::{
 #[cfg(test)]
 use read_routes::{node_and_links_from_record, PrivacyOverlay};
 use server::{
-    aider_status_json, claude_code_status_json, mutation_aider_attach, mutation_claude_code_attach,
-    mutation_sidekick, sidekick_status_json,
+    aider_status_json, claude_code_status_json, codex_status_json, continue_status_json,
+    gemini_status_json, mutation_aider_attach, mutation_claude_code_attach, mutation_codex_attach,
+    mutation_continue_attach, mutation_gemini_attach, mutation_sidekick, sidekick_status_json,
 };
 pub use server::{
     brave_path, open_app, open_browser, opera_path, pick_free_port, running_gui_port, serve,
@@ -714,6 +715,9 @@ pub fn handle_with_options(
         "/api/sidekick/status" => to_response(sidekick_status_json(mem)),
         "/api/claude-code/status" => to_response(claude_code_status_json(mem)),
         "/api/aider/status" => to_response(aider_status_json(mem)),
+        "/api/codex/status" => to_response(codex_status_json(mem)),
+        "/api/gemini/status" => to_response(gemini_status_json(mem)),
+        "/api/continue/status" => to_response(continue_status_json(mem)),
         "/api/update/status" => to_response(update_status_json(mem)),
         "/api/brain/metrics" => to_response(brain_metrics_json(mem)),
         "/api/deploy/credentials" => to_response(deploy_status_json(mem)),
@@ -1010,6 +1014,15 @@ fn ensure_chat_node(mem: &MemCli, options: &GuiOptions) -> Result<(), String> {
                     if let Ok(mut list) = drain_addrs.lock() {
                         if !list.contains(&addr) {
                             list.push(addr);
+                        }
+                    }
+                }
+                // A peer observed us at this address (our public IP). Record it so the
+                // map can geo-locate THIS node — listen addrs alone are LAN/loopback.
+                NodeEvent::ExternalAddressAdded { address } => {
+                    if let Ok(mut list) = drain_addrs.lock() {
+                        if !list.contains(&address) {
+                            list.push(address);
                         }
                     }
                 }

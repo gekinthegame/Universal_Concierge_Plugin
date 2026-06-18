@@ -748,6 +748,10 @@ async fn run(
     // PeerIDs we've been asked to route to (via `find_peer`), so a closest-peers
     // query result for one of them is recognised and dialed.
     let mut routing: HashSet<PeerId> = HashSet::new();
+    // Distinct addresses peers have observed us at (identify `observed_addr`) — i.e.
+    // our own public IP as seen from the internet. Emitted once each so the GUI can
+    // geo-locate *this* node on the map; deduped to avoid per-identify spam.
+    let mut observed_addrs: HashSet<String> = HashSet::new();
     // Kick off the initial DHT bootstrap (when Kademlia is enabled); the periodic
     // interval keeps the routing table fresh thereafter.
     if let Some(kad) = swarm.behaviour_mut().kademlia.as_mut() {
@@ -1113,6 +1117,13 @@ async fn run(
                                 kad.add_address(&peer_id, addr.clone());
                             }
                         }
+                    }
+                    // The peer reports the address it observed us at — our own public
+                    // IP as seen from the internet. Surface each distinct one once so the
+                    // GUI can place THIS node at its true location (self-geo on the map).
+                    let observed = info.observed_addr.to_string();
+                    if observed_addrs.insert(observed.clone()) {
+                        emit(&evt, NodeEvent::ExternalAddressAdded { address: observed });
                     }
                     // The peer also told us what application it runs. A Concierge
                     // advertises `CONCIERGE_PROTOCOL_VERSION`; the GUI uses this to draw

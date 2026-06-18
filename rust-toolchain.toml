@@ -1,4 +1,6 @@
 [toolchain]
 channel = "1.95.0"
-components = ["clippy", "rustfmt"]
 profile = "minimal"
+# clippy/rustfmt are intentionally NOT requested here. CI installs them explicitly via
+# its toolchain action; requesting them here made the release job (which needs neither)
+# auto-install rustfmt and collide with the runner's existing cargo-fmt.

@@ -212,6 +212,9 @@ pub fn serve_with_options(mem: MemCli, addr: &str, options: GuiOptions) -> CoreR
     // but only once the user has explicitly attached (consent-gated, opt-in).
     spawn_claude_code_capture(mem.clone());
     spawn_aider_capture(mem.clone());
+    spawn_codex_capture(mem.clone());
+    spawn_gemini_capture(mem.clone());
+    spawn_continue_capture(mem.clone());
 
     // Maintenance: silently compact the store (GC superseded blocks) once a day — a
     // first pass two minutes after launch (so startup isn't slowed), then every 24h.
@@ -341,6 +344,98 @@ fn spawn_aider_capture(mem: MemCli) {
         }
     });
 }
+
+// ── Additional file-based harnesses (Codex, Gemini, Continue) ────────────────
+// Each reads the harness's own on-disk session files and re-ingests changed ones
+// (CID-dedup makes the re-read idempotent), gated by a per-harness consent
+// sentinel — exactly the Claude Code / Aider shape. One macro generates the
+// attach sentinel helpers, the status JSON, and the background capture loop.
+macro_rules! harness_capture {
+    ($flag:literal, $attached:ident, $set:ident, $status:ident, $spawn:ident,
+     $disc:path, $cap:path, $label:literal) => {
+        pub(super) fn $attached(mem: &MemCli) -> bool {
+            mem.store_dir()
+                .ok()
+                .map(|dir| dir.join($flag).exists())
+                .unwrap_or(false)
+        }
+
+        pub(super) fn $set(mem: &MemCli, attached: bool) -> std::io::Result<()> {
+            let Ok(dir) = mem.store_dir() else {
+                return Ok(());
+            };
+            let path = dir.join($flag);
+            if attached {
+                if let Some(parent) = path.parent() {
+                    std::fs::create_dir_all(parent)?;
+                }
+                atomic_local_write(&path, b"attached")
+            } else if path.exists() {
+                std::fs::remove_file(&path)
+            } else {
+                Ok(())
+            }
+        }
+
+        pub(super) fn $status(mem: &MemCli) -> CoreResult<String> {
+            use $disc as discovery;
+            let sessions = discovery::discover();
+            let session_count = discovery::total_sessions(&sessions);
+            serde_json::to_string(&serde_json::json!({
+                "available": !sessions.is_empty(),
+                "transcript_count": sessions.len(),
+                "session_count": session_count,
+                "attached": $attached(mem),
+            }))
+            .map_err(|e| Error::Io(format!("serialize {} status: {}", $label, e)))
+        }
+
+        fn $spawn(mem: MemCli) {
+            let base = mem.working_dir().to_path_buf();
+            std::thread::spawn(move || {
+                let mut lens: std::collections::HashMap<std::path::PathBuf, u64> =
+                    std::collections::HashMap::new();
+                loop {
+                    if $attached(&mem) {
+                        let _ = $cap(&mut lens, &mem, &base);
+                    }
+                    std::thread::sleep(std::time::Duration::from_secs(5));
+                }
+            });
+        }
+    };
+}
+
+harness_capture!(
+    "capture-codex",
+    codex_attached,
+    set_codex_attached,
+    codex_status_json,
+    spawn_codex_capture,
+    concierge_adapter_codex::discovery,
+    concierge_adapter_codex::capture_once,
+    "codex"
+);
+harness_capture!(
+    "capture-gemini",
+    gemini_attached,
+    set_gemini_attached,
+    gemini_status_json,
+    spawn_gemini_capture,
+    concierge_adapter_gemini::discovery,
+    concierge_adapter_gemini::capture_once,
+    "gemini"
+);
+harness_capture!(
+    "capture-continue",
+    continue_attached,
+    set_continue_attached,
+    continue_status_json,
+    spawn_continue_capture,
+    concierge_adapter_continue::discovery,
+    concierge_adapter_continue::capture_once,
+    "continue"
+);
 
 /// Where per-file ingest offsets are persisted across relaunches, so a restart
 /// resumes the tail instead of re-scanning every session from byte 0.
@@ -483,6 +578,36 @@ pub(super) fn mutation_aider_attach(mem: &MemCli, attached: bool) -> Response {
         return Response::error(format!("could not update aider capture state: {error}"));
     }
     match aider_status_json(mem) {
+        Ok(body) => Response::json(body),
+        Err(error) => Response::error(error.to_string()),
+    }
+}
+
+pub(super) fn mutation_codex_attach(mem: &MemCli, attached: bool) -> Response {
+    if let Err(error) = set_codex_attached(mem, attached) {
+        return Response::error(format!("could not update codex capture state: {error}"));
+    }
+    match codex_status_json(mem) {
+        Ok(body) => Response::json(body),
+        Err(error) => Response::error(error.to_string()),
+    }
+}
+
+pub(super) fn mutation_gemini_attach(mem: &MemCli, attached: bool) -> Response {
+    if let Err(error) = set_gemini_attached(mem, attached) {
+        return Response::error(format!("could not update gemini capture state: {error}"));
+    }
+    match gemini_status_json(mem) {
+        Ok(body) => Response::json(body),
+        Err(error) => Response::error(error.to_string()),
+    }
+}
+
+pub(super) fn mutation_continue_attach(mem: &MemCli, attached: bool) -> Response {
+    if let Err(error) = set_continue_attached(mem, attached) {
+        return Response::error(format!("could not update continue capture state: {error}"));
+    }
+    match continue_status_json(mem) {
         Ok(body) => Response::json(body),
         Err(error) => Response::error(error.to_string()),
     }

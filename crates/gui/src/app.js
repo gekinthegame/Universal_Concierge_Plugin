@@ -1966,8 +1966,9 @@ function renderDiscovery(data) {
     const connected = p.status === "connected";
     let el;
     if (p.is_concierge) {
-      el = discBrain(x, y, connected ? 4.5 : 3.5, connected ? "connected" : "discovered");
-      const label = svgNode("text", { x: x, y: y + (connected ? 5 : 4), class: "disc-label", "text-anchor": "middle" });
+      // Brains are sized to ~2× a LED star (a LED is ~1.9 across via its halo).
+      el = discBrain(x, y, connected ? 3.8 : 3.2, connected ? "connected" : "discovered");
+      const label = svgNode("text", { x: x, y: y + (connected ? 4 : 3.4), class: "disc-label", "text-anchor": "middle" });
       label.textContent = (p.peer_id || "").slice(-6);
       el.append(label);
       if (p.username) {
@@ -1989,8 +1990,8 @@ function renderDiscovery(data) {
     ? { lat: data.self.lat, lon: data.self.lon }
     : discGeo((data && data.self && data.self.peer_id) || "self");
   const meX = mapX(sg.lon), meY = mapY(sg.lat);
-  const me = discBrain(meX, meY, 8, "disc-self");
-  const slabel = svgNode("text", { x: meX, y: meY + 9, class: "disc-label self", "text-anchor": "middle" });
+  const me = discBrain(meX, meY, 3.8, "disc-self");
+  const slabel = svgNode("text", { x: meX, y: meY + 4, class: "disc-label self", "text-anchor": "middle" });
   slabel.textContent = online ? "your node" : "your node (offline)";
   me.append(slabel);
   const stitle = svgNode("title", {});
@@ -2055,9 +2056,12 @@ function brainRow(key, value) {
 // The Concierge's PRIMARY brain is the host harness it's mounted to (e.g. Claude Code) — the
 // large model that drives it via MCP. The Sovereign LLM below is the optional private alternative.
 async function loadBrainHost() {
-  let cc = {}, aider = {}, meta = {};
+  let cc = {}, aider = {}, codex = {}, gemini = {}, cont = {}, meta = {};
   try { cc = await getJson("/api/claude-code/status"); } catch (e) {}
   try { aider = await getJson("/api/aider/status"); } catch (e) {}
+  try { codex = await getJson("/api/codex/status"); } catch (e) {}
+  try { gemini = await getJson("/api/gemini/status"); } catch (e) {}
+  try { cont = await getJson("/api/continue/status"); } catch (e) {}
   try { meta = await getJson("/api/meta"); } catch (e) {}
   const host = byId("brain-host");
   if (!host) return;
@@ -2077,6 +2081,22 @@ async function loadBrainHost() {
   }
   const declared = meta.mounted_model && meta.mounted_model !== "manual mount" && meta.mounted_model !== "not declared";
   let any = false;
+  // A detected file-based harness (Aider/Codex/Gemini/Continue): one row + an
+  // opt-in attach toggle. Capture is local-only; their transcripts are private.
+  function adapterRow(st, key, label) {
+    if (!st || !st.available) return;
+    any = true;
+    const n = st.session_count || 0, t = st.transcript_count || 0;
+    const btn = node("button", "tool-button", st.attached ? "Detach" : "Attach");
+    btn.style.cssText = "margin-left:auto;padding:2px 12px;font-size:12px;";
+    btn.addEventListener("click", () => safely(async () => {
+      await postJson("/api/" + key + (st.attached ? "/detach" : "/attach"), {});
+      await loadBrainHost();
+    }));
+    row(st.attached, label + " · " + (st.attached ? "capturing" : "detected"),
+      n + " session" + (n === 1 ? "" : "s") + " across " + t + " transcript" + (t === 1 ? "" : "s") + (st.attached ? " · ingesting into memory" : " · attach to capture into memory"),
+      btn);
+  }
   // Claude Code (or a declared mounted model) — the host driving via MCP.
   if (cc.available) {
     any = true;
@@ -2087,20 +2107,11 @@ async function loadBrainHost() {
     any = true;
     row(true, meta.mounted_model + " · mounted", "drives the Concierge via MCP");
   }
-  // Aider — a second harness; capture is opt-in (its transcripts are private).
-  if (aider.available) {
-    any = true;
-    const n = aider.session_count || 0, t = aider.transcript_count || 0;
-    const btn = node("button", "tool-button", aider.attached ? "Detach" : "Attach");
-    btn.style.cssText = "margin-left:auto;padding:2px 12px;font-size:12px;";
-    btn.addEventListener("click", () => safely(async () => {
-      await postJson(aider.attached ? "/api/aider/detach" : "/api/aider/attach", {});
-      await loadBrainHost();
-    }));
-    row(aider.attached, "Aider · " + (aider.attached ? "capturing" : "detected"),
-      n + " session" + (n === 1 ? "" : "s") + " across " + t + " transcript" + (t === 1 ? "" : "s") + (aider.attached ? " · ingesting into memory" : " · attach to capture into memory"),
-      btn);
-  }
+  // Additional file-based harnesses — each detected one gets an opt-in attach toggle.
+  adapterRow(aider, "aider", "Aider");
+  adapterRow(codex, "codex", "Codex");
+  adapterRow(gemini, "gemini", "Gemini");
+  adapterRow(cont, "continue", "Continue");
   if (!any) {
     row(false, "No host harness detected", "Run Claude Code or Aider — the Concierge mounts the one it detects.");
   }

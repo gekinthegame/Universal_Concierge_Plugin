@@ -13,6 +13,9 @@ concierge-net = { path = "../net" }
 concierge-adapter-jsonl = { path = "../adapter-jsonl" }
 concierge-adapter-claude-code = { path = "../adapter-claude-code" }
 concierge-adapter-aider = { path = "../adapter-aider" }
+concierge-adapter-codex = { path = "../adapter-codex" }
+concierge-adapter-gemini = { path = "../adapter-gemini" }
+concierge-adapter-continue = { path = "../adapter-continue" }
 tokio = { workspace = true }
 rand_core = { workspace = true }
 serde = { workspace = true }

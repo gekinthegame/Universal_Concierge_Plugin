@@ -1,0 +1,14 @@
+[package]
+name = "concierge-adapter-gemini"
+description = "Layer 3 — Gemini CLI harness adapter. Discovers and translates Gemini CLI chat sessions (~/.gemini/tmp/*/chats/session-*.jsonl) into Concierge envelopes."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+concierge-core = { path = "../core" }
+concierge-adapter-jsonl = { path = "../adapter-jsonl" }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
