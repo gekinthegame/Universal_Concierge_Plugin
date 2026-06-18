@@ -1,8 +1,8 @@
 # Universal Concierge Plugin (UCP)
 
-### *Serving up Data on a Silver Platter.*
+### *Soveriegn AI life*
 
-**Universal Concierge Plugin (UCP)** is a mountable, lightweight sidekick that provides any AI harness with a portable, content-addressed memory substrate. It organizes, ranks, and serves your entire agent history as a unified context layer, visualized through an interactive, forkable knowledge graph.
+**Universal Concierge Plugin (UCP)** is a mountable, lightweight sidekick that provides any AI harness with a portable, content-addressed memory substrate. It organizes, ranks, and serves your entire agent history as a unified context layer, visualized through an interactive forkable knowledge graph. A small embedder model lives in the memory substrate and keeps your memory hot. Instead of conversations and memory being tied to one AI, you own the memory and can take it across platforms. The memory of all your agents in one unified layer via IPLD. Create websites, movies and games and one click publish and share your work in the studio. 
 
 Built on **IPLD** and secured by **Private IPFS Swarms**, UCP turns transient agent traces into an enduring, sovereign knowledge base that you own, verify, and can share without middlemen.
 
