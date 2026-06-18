@@ -57,7 +57,11 @@ fn cap(s: &str) -> String {
 fn content_text(content: &Value) -> Option<String> {
     if let Some(s) = content.as_str() {
         let t = s.trim();
-        return if t.is_empty() { None } else { Some(t.to_string()) };
+        return if t.is_empty() {
+            None
+        } else {
+            Some(t.to_string())
+        };
     }
     if let Some(arr) = content.as_array() {
         let mut texts = Vec::new();
@@ -107,7 +111,11 @@ fn iso_ts(value: &Value) -> String {
 fn civil_from_unix(secs: i64) -> (i64, u32, u32, u32, u32, u32) {
     let days = secs.div_euclid(86_400);
     let rem = secs.rem_euclid(86_400);
-    let (hh, mm, ss) = ((rem / 3600) as u32, ((rem % 3600) / 60) as u32, (rem % 60) as u32);
+    let (hh, mm, ss) = (
+        (rem / 3600) as u32,
+        ((rem % 3600) / 60) as u32,
+        (rem % 60) as u32,
+    );
     let z = days + 719_468;
     let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
     let doe = z - era * 146_097;
@@ -217,7 +225,10 @@ pub fn translate(session: &Value, source_id: &str) -> Vec<Envelope> {
     }
 
     let empty = Vec::new();
-    let history = obj.get("history").and_then(|v| v.as_array()).unwrap_or(&empty);
+    let history = obj
+        .get("history")
+        .and_then(|v| v.as_array())
+        .unwrap_or(&empty);
     let mut pending: Option<Reasoning> = None;
     for item in history {
         let message = item
@@ -363,12 +374,16 @@ mod tests {
               ]
             }"#,
         );
-        assert!(matches!(&evs[0], Event::SessionStarted { cwd } if cwd.as_deref() == Some("/home/me/proj")));
+        assert!(
+            matches!(&evs[0], Event::SessionStarted { cwd } if cwd.as_deref() == Some("/home/me/proj"))
+        );
         assert!(matches!(&evs[1], Event::MemoryRecorded { text } if text.contains("Refactor")));
         assert!(matches!(&evs[2], Event::UserPrompt { text } if text == "hello"));
         assert!(matches!(&evs[3], Event::ModelResponse { text } if text == "hi there"));
         assert!(matches!(&evs[4], Event::ToolCallStarted { tool, .. } if tool == "read"));
-        assert!(matches!(&evs[5], Event::ToolCallFinished { tool, ok, .. } if tool == "read" && *ok));
+        assert!(
+            matches!(&evs[5], Event::ToolCallFinished { tool, ok, .. } if tool == "read" && *ok)
+        );
         assert!(matches!(evs.last(), Some(Event::SessionEnded)));
     }
 
@@ -379,7 +394,12 @@ mod tests {
         )
         .unwrap();
         let envs = translate(&v, "src");
-        let resp = envs.iter().find(|e| matches!(e.event, Event::ModelResponse { .. })).unwrap();
-        assert!(matches!(&resp.reasoning, Some(r) if r.text == "why" && r.source == ReasoningSource::Thinking));
+        let resp = envs
+            .iter()
+            .find(|e| matches!(e.event, Event::ModelResponse { .. }))
+            .unwrap();
+        assert!(
+            matches!(&resp.reasoning, Some(r) if r.text == "why" && r.source == ReasoningSource::Thinking)
+        );
     }
 }

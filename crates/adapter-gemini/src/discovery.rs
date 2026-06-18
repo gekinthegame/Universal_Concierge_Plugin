@@ -123,7 +123,12 @@ mod tests {
         scan(root.path(), 0, &mut out);
         assert_eq!(out, vec![f.clone()]);
         // project_of needs a `tmp` component above the project dir.
-        let full = root.path().join("tmp").join("my-proj").join("chats").join("session-x.jsonl");
+        let full = root
+            .path()
+            .join("tmp")
+            .join("my-proj")
+            .join("chats")
+            .join("session-x.jsonl");
         assert_eq!(project_of(&full).as_deref(), Some("my-proj"));
     }
 }

@@ -54,7 +54,11 @@ fn cap(s: &str) -> String {
 /// User content is a list of `{text}` parts; gemini content is a plain string.
 fn parts_text(content: &Value) -> Option<String> {
     if let Some(s) = content.as_str() {
-        return if s.is_empty() { None } else { Some(s.to_string()) };
+        return if s.is_empty() {
+            None
+        } else {
+            Some(s.to_string())
+        };
     }
     if let Some(arr) = content.as_array() {
         let parts: Vec<String> = arr
@@ -64,7 +68,11 @@ fn parts_text(content: &Value) -> Option<String> {
             .map(|t| t.to_string())
             .collect();
         let joined = parts.join("\n");
-        return if joined.is_empty() { None } else { Some(joined) };
+        return if joined.is_empty() {
+            None
+        } else {
+            Some(joined)
+        };
     }
     None
 }
@@ -78,7 +86,11 @@ fn reasoning_of(thoughts: &Value) -> Option<Reasoning> {
     let mut lines = Vec::new();
     for t in arr {
         if let Some(o) = t.as_object() {
-            let subject = o.get("subject").and_then(|v| v.as_str()).unwrap_or("").trim();
+            let subject = o
+                .get("subject")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .trim();
             let desc = o
                 .get("description")
                 .and_then(|v| v.as_str())
@@ -317,7 +329,9 @@ mod tests {
         assert!(matches!(evs[0], Event::SessionStarted { .. }));
         assert!(matches!(&evs[1], Event::UserPrompt { text } if text == "hi"));
         assert!(matches!(&evs[2], Event::ToolCallStarted { tool, .. } if tool == "read_file"));
-        assert!(matches!(&evs[3], Event::ToolCallFinished { tool, ok, .. } if tool == "read_file" && *ok));
+        assert!(
+            matches!(&evs[3], Event::ToolCallFinished { tool, ok, .. } if tool == "read_file" && *ok)
+        );
         assert!(matches!(&evs[4], Event::ModelResponse { text } if text == "hello"));
         assert!(matches!(evs.last(), Some(Event::SessionEnded)));
     }
@@ -332,7 +346,12 @@ mod tests {
             "src",
             None,
         );
-        let resp = envs.iter().find(|e| matches!(e.event, Event::ModelResponse { .. })).unwrap();
-        assert!(matches!(&resp.reasoning, Some(r) if r.text == "a: b" && r.source == ReasoningSource::Thinking));
+        let resp = envs
+            .iter()
+            .find(|e| matches!(e.event, Event::ModelResponse { .. }))
+            .unwrap();
+        assert!(
+            matches!(&resp.reasoning, Some(r) if r.text == "a: b" && r.source == ReasoningSource::Thinking)
+        );
     }
 }

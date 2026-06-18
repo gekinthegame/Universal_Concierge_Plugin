@@ -847,6 +847,36 @@ dependencies = [
 ]
 
 [[package]]
+name = "concierge-adapter-codex"
+version = "0.1.0"
+dependencies = [
+ "concierge-adapter-jsonl",
+ "concierge-core",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
+name = "concierge-adapter-continue"
+version = "0.1.0"
+dependencies = [
+ "concierge-adapter-jsonl",
+ "concierge-core",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
+name = "concierge-adapter-gemini"
+version = "0.1.0"
+dependencies = [
+ "concierge-adapter-jsonl",
+ "concierge-core",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
 name = "concierge-adapter-hermes"
 version = "0.1.0"
 dependencies = [
@@ -929,6 +959,9 @@ dependencies = [
  "cid",
  "concierge-adapter-aider",
  "concierge-adapter-claude-code",
+ "concierge-adapter-codex",
+ "concierge-adapter-continue",
+ "concierge-adapter-gemini",
  "concierge-adapter-jsonl",
  "concierge-core",
  "concierge-net",

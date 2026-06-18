@@ -62,7 +62,11 @@ fn cap(s: &str) -> String {
 /// like `{"type":"input_text"/"output_text"/"text","text":…}`).
 fn text_of(content: &Value) -> Option<String> {
     if let Some(s) = content.as_str() {
-        return if s.is_empty() { None } else { Some(s.to_string()) };
+        return if s.is_empty() {
+            None
+        } else {
+            Some(s.to_string())
+        };
     }
     if let Some(arr) = content.as_array() {
         let mut parts = Vec::new();
@@ -81,7 +85,11 @@ fn text_of(content: &Value) -> Option<String> {
             }
         }
         let joined = parts.join("\n");
-        return if joined.is_empty() { None } else { Some(joined) };
+        return if joined.is_empty() {
+            None
+        } else {
+            Some(joined)
+        };
     }
     None
 }
@@ -96,10 +104,18 @@ fn summary_text(summary: &Value) -> Option<String> {
             .map(|t| t.to_string())
             .collect();
         let joined = parts.join("\n");
-        return if joined.is_empty() { None } else { Some(joined) };
+        return if joined.is_empty() {
+            None
+        } else {
+            Some(joined)
+        };
     }
     if let Some(s) = summary.as_str() {
-        return if s.is_empty() { None } else { Some(s.to_string()) };
+        return if s.is_empty() {
+            None
+        } else {
+            Some(s.to_string())
+        };
     }
     None
 }
@@ -119,7 +135,10 @@ fn compact(value: &Value) -> Option<String> {
 /// Does a tool output look like an error (non-zero exit, `is_error`, `error`)?
 fn looks_error(output: &Value) -> bool {
     if let Some(obj) = output.as_object() {
-        if obj.get("is_error").and_then(|v| v.as_bool()).unwrap_or(false)
+        if obj
+            .get("is_error")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false)
             || obj.get("error").map(|v| !v.is_null()).unwrap_or(false)
         {
             return true;
@@ -405,7 +424,10 @@ mod tests {
             .iter()
             .map(|l| serde_json::from_str(l).unwrap())
             .collect();
-        translate(&records, "src").into_iter().map(|e| e.event).collect()
+        translate(&records, "src")
+            .into_iter()
+            .map(|e| e.event)
+            .collect()
     }
 
     #[test]
@@ -418,11 +440,15 @@ mod tests {
             r#"{"type":"response_item","timestamp":"2026-06-05T10:00:04Z","payload":{"type":"function_call","name":"bash","call_id":"c1","arguments":"{\"cmd\":\"ls\"}"}}"#,
             r#"{"type":"response_item","timestamp":"2026-06-05T10:00:05Z","payload":{"type":"function_call_output","call_id":"c1","output":{"exit_code":0}}}"#,
         ]);
-        assert!(matches!(&evs[0], Event::SessionStarted { cwd } if cwd.as_deref() == Some("/home/me/proj")));
+        assert!(
+            matches!(&evs[0], Event::SessionStarted { cwd } if cwd.as_deref() == Some("/home/me/proj"))
+        );
         assert!(matches!(&evs[1], Event::UserPrompt { text } if text == "add a readme"));
         assert!(matches!(&evs[2], Event::ModelResponse { text } if text == "done"));
         assert!(matches!(&evs[3], Event::ToolCallStarted { tool, .. } if tool == "bash"));
-        assert!(matches!(&evs[4], Event::ToolCallFinished { tool, ok, .. } if tool == "bash" && *ok));
+        assert!(
+            matches!(&evs[4], Event::ToolCallFinished { tool, ok, .. } if tool == "bash" && *ok)
+        );
         assert!(matches!(evs.last(), Some(Event::SessionEnded)));
     }
 
@@ -436,16 +462,30 @@ mod tests {
             ],
             "src",
         );
-        let resp = envs.iter().find(|e| matches!(e.event, Event::ModelResponse { .. })).unwrap();
-        assert!(matches!(&resp.reasoning, Some(r) if r.text == "why" && r.source == ReasoningSource::Thinking));
+        let resp = envs
+            .iter()
+            .find(|e| matches!(e.event, Event::ModelResponse { .. }))
+            .unwrap();
+        assert!(
+            matches!(&resp.reasoning, Some(r) if r.text == "why" && r.source == ReasoningSource::Thinking)
+        );
     }
 
     #[test]
     fn stable_event_ids_so_reingest_dedupes() {
         let lines = [r#"{"type":"session_meta","timestamp":"t","payload":{}}"#];
-        let recs: Vec<Value> = lines.iter().map(|l| serde_json::from_str(l).unwrap()).collect();
-        let a: Vec<_> = translate(&recs, "src").iter().map(|e| e.event_id.clone()).collect();
-        let b: Vec<_> = translate(&recs, "src").iter().map(|e| e.event_id.clone()).collect();
+        let recs: Vec<Value> = lines
+            .iter()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect();
+        let a: Vec<_> = translate(&recs, "src")
+            .iter()
+            .map(|e| e.event_id.clone())
+            .collect();
+        let b: Vec<_> = translate(&recs, "src")
+            .iter()
+            .map(|e| e.event_id.clone())
+            .collect();
         assert_eq!(a, b);
     }
 }

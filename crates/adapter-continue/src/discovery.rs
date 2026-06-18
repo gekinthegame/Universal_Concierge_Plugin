@@ -99,7 +99,12 @@ mod tests {
         std::env::remove_var("CONCIERGE_CONTINUE_ROOTS");
         let names: Vec<_> = found
             .iter()
-            .filter_map(|s| s.file.file_name().and_then(|n| n.to_str()).map(|s| s.to_string()))
+            .filter_map(|s| {
+                s.file
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .map(|s| s.to_string())
+            })
             .collect();
         assert!(names.contains(&"abc.json".to_string()));
         assert!(!names.contains(&"sessions.json".to_string()));
