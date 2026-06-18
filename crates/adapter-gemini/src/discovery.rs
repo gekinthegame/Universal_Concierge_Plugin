@@ -53,13 +53,14 @@ pub fn project_of(path: &Path) -> Option<String> {
         .components()
         .map(|c| c.as_os_str().to_string_lossy().to_string())
         .collect();
-    let i = comps.iter().position(|c| c == "tmp")?;
-    let name = comps.get(i + 1)?;
+    let name = comps.windows(3).rev().find_map(|window| {
+        (window[0] == "tmp" && window[2] == "chats").then(|| window[1].as_str())
+    })?;
     let is_hash = name.len() == 64 && name.bytes().all(|b| b.is_ascii_hexdigit());
     if is_hash || name.is_empty() {
         None
     } else {
-        Some(name.clone())
+        Some(name.to_string())
     }
 }
 
@@ -130,5 +131,12 @@ mod tests {
             .join("chats")
             .join("session-x.jsonl");
         assert_eq!(project_of(&full).as_deref(), Some("my-proj"));
+        let under_system_tmp = Path::new("/tmp")
+            .join(".tmpnCh2ga")
+            .join("tmp")
+            .join("my-proj")
+            .join("chats")
+            .join("session-x.jsonl");
+        assert_eq!(project_of(&under_system_tmp).as_deref(), Some("my-proj"));
     }
 }
