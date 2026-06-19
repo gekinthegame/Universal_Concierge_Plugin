@@ -1440,9 +1440,24 @@ async function showThreadPicker() {
     picker.append(node("div", "empty", "No threads yet — a thread appears once you exchange messages in a room or with an approved peer."));
   } else {
     rooms.forEach(room => {
+      const row = node("div", "thread-row");
       const item = node("button", "thread-pick" + (room === state.room ? " active" : ""), room);
       item.addEventListener("click", () => { byId("thread-modal").style.display = "none"; safely(() => loadThread(room)); });
-      picker.append(item);
+      // Delete the thread (forget the room pointer). The signed messages stay in
+      // the store; this just clears a stale/legacy thread out of the messenger.
+      const del = node("button", "thread-del", "✕");
+      del.title = "Delete this thread";
+      del.addEventListener("click", e => {
+        e.stopPropagation();
+        safely(async () => {
+          if (!window.confirm("Delete this thread? Its messages stay in your store, but the thread is removed from the messenger.")) return;
+          await postJson("/api/thread/delete", { room });
+          if (state.room === room) { state.room = ""; const c = byId("thread"); if (c) clear(c); }
+          await showThreadPicker();
+        });
+      });
+      row.append(item, del);
+      picker.append(row);
     });
   }
   byId("thread-modal").style.display = "flex";

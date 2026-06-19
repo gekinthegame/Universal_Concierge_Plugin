@@ -514,9 +514,12 @@
   #bookmarks-status:empty { display: none; }
   /* Thread picker: the selectable list shown by "View thread". */
   .thread-picker { display: flex; flex-direction: column; gap: 6px; margin-bottom: 14px; }
-  .thread-picker .thread-pick { text-align: left; border: 1px solid var(--line); border-radius: 4px; background: var(--deep); color: var(--ink); padding: 8px 10px; cursor: pointer; font: 11px var(--mono); }
+  .thread-picker .thread-row { display: flex; gap: 6px; align-items: stretch; }
+  .thread-picker .thread-pick { flex: 1; text-align: left; border: 1px solid var(--line); border-radius: 4px; background: var(--deep); color: var(--ink); padding: 8px 10px; cursor: pointer; font: 11px var(--mono); }
   .thread-picker .thread-pick:hover { border-color: var(--patina); color: #fff; }
   .thread-picker .thread-pick.active { border-color: var(--gold); color: var(--gold); }
+  .thread-picker .thread-del { flex: 0 0 auto; width: 32px; border: 1px solid var(--line); border-radius: 4px; background: var(--deep); color: var(--faint); cursor: pointer; font: 11px var(--mono); }
+  .thread-picker .thread-del:hover { border-color: #c0556a; color: #ff8095; }
   .thread-picker .empty { padding: 8px 10px; }
   .search-hit { padding: 9px 11px; margin-bottom: 7px; border: 1px solid var(--line); border-radius: 4px; background: var(--deep); cursor: pointer; }
   .search-hit:hover { border-color: var(--gold); }

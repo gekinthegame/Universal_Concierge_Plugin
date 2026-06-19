@@ -142,6 +142,12 @@ impl<B: Blockstore, C: Clock> Store<B, C> {
         self.names.resolve(name)
     }
 
+    /// Forget a name binding entirely. Returns whether it was bound. The blocks it
+    /// pointed at stay in the content-addressed store; only the pointer is removed.
+    pub fn unbind(&mut self, name: &str) -> anyhow::Result<bool> {
+        self.names.unbind(name)
+    }
+
     /// All current name → CID bindings (for `mem ls`).
     pub fn names(&self) -> impl Iterator<Item = (&str, &Cid)> {
         self.names.iter()

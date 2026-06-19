@@ -165,6 +165,12 @@ impl RoomBook {
         self.rooms.entry(room.to_string()).or_default().ai_send = value.to_string();
     }
 
+    /// Forget a room's policy entirely (used when a thread is deleted). Returns
+    /// whether a policy existed.
+    pub fn remove(&mut self, room: &str) -> bool {
+        self.rooms.remove(room).is_some()
+    }
+
     pub fn mute(&mut self, room: &str, agent_id: &str) {
         self.rooms
             .entry(room.to_string())

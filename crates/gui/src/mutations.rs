@@ -41,6 +41,7 @@ pub(super) fn handle_mutation(
         "/api/authorize-publish" => mutation_authorize_publish(mem, options, body),
         "/api/convert-private" => mutation_convert_private(mem, options, body),
         "/api/message" => mutation_post_message(mem, options, body),
+        "/api/thread/delete" => mutation_thread_delete(mem, body),
         "/api/site/deploy-plan" => mutation_site_deploy_plan(mem, options, body),
         "/api/site/publish" => mutation_publish_site(mem, options, body),
         "/api/site/checkpoint/save" => mutation_save_checkpoint(mem, body),
@@ -163,6 +164,7 @@ fn mutation_label(path: &str) -> Option<&'static str> {
         "/api/requests/accept" => "accepted a contact request",
         "/api/requests/decline" => "declined a contact request",
         "/api/contacts/remove" => "removed an approved peer",
+        "/api/thread/delete" => "deleted a message thread",
         "/api/petname" => "set a petname",
         "/api/profile" => "updated your contact card",
         "/api/network/create" => "created a network / certificate",
@@ -1581,6 +1583,29 @@ fn mutation_profile(mem: &MemCli, body: &str) -> Response {
 }
 
 /// Revoke approval for a peer (they go back to needing a request to reach you).
+/// `/api/thread/delete`: forget a message thread (the room head pointer + policy).
+/// The signed message nodes stay in the content-addressed store; only the thread
+/// pointer is removed, so a stale or legacy thread disappears from the messenger.
+fn mutation_thread_delete(mem: &MemCli, body: &str) -> Response {
+    let value = match parse_body(body) {
+        Ok(value) => value,
+        Err(response) => return response,
+    };
+    let room = match body_str(&value, "room") {
+        Ok(room) => room.trim(),
+        Err(response) => return response,
+    };
+    if room.is_empty() {
+        return Response::bad_request("room is required");
+    }
+    match mem.delete_thread(room) {
+        Ok(removed) => {
+            Response::json(serde_json::json!({ "ok": true, "removed": removed }).to_string())
+        }
+        Err(error) => Response::error(error.to_string()),
+    }
+}
+
 fn mutation_contact_remove(mem: &MemCli, body: &str) -> Response {
     let value = match parse_body(body) {
         Ok(value) => value,

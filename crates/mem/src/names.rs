@@ -57,6 +57,20 @@ impl NameIndex {
         Ok(())
     }
 
+    /// Remove a name binding, persisting atomically. Returns whether the name was
+    /// bound. Used to forget a pointer entirely (e.g. deleting a message thread) —
+    /// the content-addressed blocks it referenced are untouched.
+    pub fn unbind(&mut self, name: &str) -> anyhow::Result<bool> {
+        if !self.map.contains_key(name) {
+            return Ok(false);
+        }
+        let mut next = self.map.clone();
+        next.remove(name);
+        self.save(&next)?;
+        self.map = next;
+        Ok(true)
+    }
+
     /// Resolve a name to its current root CID.
     pub fn resolve(&self, name: &str) -> anyhow::Result<Cid> {
         self.map

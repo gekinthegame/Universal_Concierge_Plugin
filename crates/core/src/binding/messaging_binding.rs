@@ -83,6 +83,24 @@ impl MemCli {
         })
     }
 
+    /// Delete a message thread: forget the room's head pointer and its policy. The
+    /// content-addressed message nodes stay in the store (they're immutable), but the
+    /// thread no longer resolves or appears in the room list — used to clear out a
+    /// stale or legacy thread the user no longer wants. Returns whether the room had
+    /// a bound head to remove.
+    pub fn delete_thread(&self, room: &str) -> Result<bool> {
+        let mut store = self.open_store()?;
+        let removed = store
+            .unbind(&room_latest_name(room))
+            .map_err(|e| Error::Io(format!("unbind room head: {e}")))?;
+        let path = self.room_book_path()?;
+        crate::state::update_json::<RoomBook, _>(&path, |book| {
+            book.remove(room);
+            Ok(())
+        })?;
+        Ok(removed)
+    }
+
     /// Post a signed message to a room, returning its CID. Enforces the AI-send
     /// lever (send-side): an `ai` install cannot post to a Human-only room.
     pub fn post_message(&self, room: &str, payload: &str) -> Result<Cid> {
@@ -482,7 +500,16 @@ impl MemCli {
         if !visited.insert(cid.clone()) {
             return Ok(());
         }
-        let env = self.read_message(cid)?;
+        // Read the envelope WITHOUT failing the whole thread on a single bad node.
+        // A message written by an earlier build (different signing format/key) or an
+        // otherwise corrupt/tombstoned node must never block the entire conversation
+        // from rendering — this mirrors the tolerance the send path already has via
+        // `read_message_link`. We still only *display* a message whose signature
+        // verifies (below), so a forged node is traversed but hidden.
+        let env = match self.read_message_link(cid) {
+            Ok(env) => env,
+            Err(_) => return Ok(()), // tombstoned / unreadable: nothing to walk
+        };
         for entry in &env.next {
             // `next` entries are parent *message ids* (signatures); resolve each to
             // its local block CID via the index. Fall back to treating the entry as
@@ -498,7 +525,14 @@ impl MemCli {
                 self.collect_thread(room, book, &parent_cid, visited, out)?;
             }
         }
-        if !book.is_muted(room, &env.key) {
+        // Only display a message whose signature verifies against its author key.
+        // An unverifiable node (legacy signing format, corruption, or forgery) is
+        // walked-through above so its descendants still link, but is hidden here —
+        // a single bad message no longer breaks the whole thread view.
+        let verified =
+            crate::identity::verify(&AgentId(env.key.clone()), &env.signing_bytes(), &env.sig)
+                .unwrap_or(false);
+        if verified && !book.is_muted(room, &env.key) {
             out.push((cid.clone(), env));
         }
         Ok(())
