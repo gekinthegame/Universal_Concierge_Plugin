@@ -274,11 +274,10 @@ impl MemCli {
         })
     }
 
-    /// The consent gate for **inbound** messages (the "only an approved concierge"
-    /// rule). Verifies authorship, then: a message from us or an approved contact
-    /// is accepted into its thread (`"accepted"`); a message from an unknown
-    /// author is held as a request the user must accept/decline (`"pending"`) — a
-    /// public username is never enough to land a message.
+    /// Handle an **inbound** message: verify the author's signature, then accept it
+    /// straight into its thread. There is no approval gate — any peer whose signature
+    /// verifies can message you (authorship is still cryptographically checked, so
+    /// forged/tampered messages are rejected). Returns `"accepted"`.
     pub fn receive_message(&self, env_json: &str) -> Result<&'static str> {
         let env: MessageEnvelope = serde_json::from_str(env_json)
             .map_err(|e| Error::Io(format!("parse inbound message: {e}")))?;
@@ -290,21 +289,12 @@ impl MemCli {
                 env.key
             )));
         }
-        let me = self.identity()?.agent_id().0;
-        if env.key == me || self.is_contact(&env.key) {
-            self.accept_message(env_json)?;
-            return Ok("accepted");
-        }
-        // Unknown sender: hold it as a request (de-duped by signature).
-        let path = self.contacts_path()?;
-        crate::state::update_json::<Contacts, _>(&path, |contacts| {
-            let queue = contacts.requests.entry(env.key.clone()).or_default();
-            if !queue.iter().any(|held| held.contains(&env.sig)) {
-                queue.push(env_json.to_string());
-            }
-            Ok(())
-        })?;
-        Ok("pending")
+        // No approval gate: any message whose signature verifies is accepted straight
+        // into its thread. Authorship is still cryptographically verified above (a
+        // forged or tampered message is rejected) — we just don't require the sender
+        // to be a pre-approved contact.
+        self.accept_message(env_json)?;
+        Ok("accepted")
     }
 
     /// Pending message requests: `(sender username, held count, latest preview)`.

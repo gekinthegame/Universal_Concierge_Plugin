@@ -319,6 +319,30 @@ pub fn capture_once<B: CoreBinding>(
     total
 }
 
+/// Record the current size of every discovered session WITHOUT ingesting, so
+/// attaching/loading does not backfill history — only growth from here is captured.
+pub fn seed_lens(lens: &mut HashMap<PathBuf, u64>) {
+    for session in discovery::discover() {
+        if let Ok(meta) = std::fs::metadata(&session.file) {
+            lens.insert(session.file, meta.len());
+        }
+    }
+}
+
+/// Full historical backfill: ingest EVERY discovered session (the manual "Ingest"
+/// action). Idempotent via CID dedup; yields between files so a large backfill
+/// never starves the web server. Returns the number of events ingested.
+pub fn ingest_all<B: CoreBinding>(binding: &B, base_dir: &Path) -> usize {
+    let mut total = 0usize;
+    for session in discovery::discover() {
+        if let Ok(report) = ingest_file(&session.file, binding, base_dir) {
+            total += report.events;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    total
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

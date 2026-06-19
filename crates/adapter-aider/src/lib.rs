@@ -269,6 +269,30 @@ pub fn capture_once<B: CoreBinding>(
     total
 }
 
+/// Record the current size of every discovered transcript WITHOUT ingesting, so
+/// attaching/loading does not backfill history — only growth from here is captured.
+pub fn seed_lens(lens: &mut std::collections::HashMap<PathBuf, u64>) {
+    for transcript in discovery::discover() {
+        if let Ok(meta) = std::fs::metadata(&transcript.file) {
+            lens.insert(transcript.file, meta.len());
+        }
+    }
+}
+
+/// Full historical backfill: ingest EVERY discovered transcript (the manual
+/// "Ingest" action). Idempotent via CID dedup; yields between files so a large
+/// backfill never starves the web server. Returns the number of events ingested.
+pub fn ingest_all<B: CoreBinding>(binding: &B, base_dir: &Path) -> usize {
+    let mut total = 0usize;
+    for transcript in discovery::discover() {
+        if let Ok(report) = ingest_file(&transcript.file, binding, base_dir) {
+            total += report.events;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    total
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

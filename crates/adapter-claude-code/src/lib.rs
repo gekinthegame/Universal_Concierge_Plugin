@@ -421,6 +421,25 @@ pub fn capture_once<B: CoreBinding>(
     total
 }
 
+/// Seed the offset of every CURRENTLY-EXISTING session to its end WITHOUT ingesting,
+/// so attaching/loading does not backfill history. Only sessions not already tracked
+/// are seeded (existing incremental positions are preserved); sessions created later
+/// are still captured from the start. This is what stops the first-attach backfill.
+pub fn seed_offsets(projects_dir: &Path, offsets: &mut HashMap<std::path::PathBuf, u64>) {
+    for session in discovery::enumerate_sessions(projects_dir) {
+        if let Ok(meta) = std::fs::metadata(&session.session_file) {
+            offsets.entry(session.session_file).or_insert(meta.len());
+        }
+    }
+}
+
+/// Full historical backfill: re-read every session from offset 0 (the manual
+/// "Ingest" action). Idempotent via CID dedup. Returns the number of events ingested.
+pub fn ingest_all<B: CoreBinding>(projects_dir: &Path, binding: &B, base_dir: &Path) -> usize {
+    let mut offsets = HashMap::new();
+    capture_once(projects_dir, &mut offsets, binding, base_dir)
+}
+
 /// Render a node→host [`ContextSuggested`] (Phase 8 §2) into the text block a
 /// Claude Code harness would **prepend** to its context window — the "inject" half
 /// of the write-back loop. `previews` is the resolved `(cid, preview)` content for

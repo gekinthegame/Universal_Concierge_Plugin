@@ -141,6 +141,81 @@ async function safely(action) {
 async function quietly(action) {
   try { await action(); } catch (error) { notice(error.message || String(error)); }
 }
+
+// ── UI event delegation ───────────────────────────────────────────────────────
+// One set of document-level listeners drives every STATIC control, instead of a
+// long run of top-level `byId("x").addEventListener(...)`. A missing element is
+// now a harmless no-op, so a removed button can never throw during init and take
+// the whole page down (which is exactly what used to happen). Static controls
+// declare `data-action`; the handler is resolved from ACTIONS at event time, so
+// load order never matters. Modals share `.modal-overlay`, so one backdrop-click
+// and one Escape handler dismiss them all (a modal with cleanup adds `data-close`).
+function showModal(id) { const m = byId(id); if (m) m.style.display = "flex"; }
+function hideModal(id) { const m = byId(id); if (m) m.style.display = "none"; }
+function closeOverlay(m) {
+  if (!m) return;
+  const custom = m.dataset && m.dataset.close && window[m.dataset.close];
+  if (typeof custom === "function") custom(); else m.style.display = "none";
+}
+function topOverlay() {
+  const open = [...document.querySelectorAll(".modal-overlay")].filter(m => m.style.display === "flex");
+  return open[open.length - 1] || null;
+}
+// Handlers factored out of the old inline bindings so ACTIONS can reference them.
+function openProfileBundle() { return Promise.all([loadProfile(), loadContacts(), loadRequests()]); }
+function focusNetworkName() { const f = byId("network-name"); if (f) { f.value = ""; f.focus(); } }
+async function bookmarksSync() {
+  const st = byId("bookmarks-status"); if (st) { clear(st); st.appendChild(document.createTextNode("Syncing…")); }
+  const res = await postJson("/api/bookmarks/sync", {});
+  if (st) { clear(st); st.appendChild(document.createTextNode(res.added > 0
+    ? "Added " + res.added + " bookmark" + (res.added === 1 ? "" : "s") + " to memory."
+    : "Up to date — no new bookmarks.")); }
+  logSystem("synced browser bookmarks · +" + (res.added || 0), "ok");
+  await Promise.all([loadNames(), loadStats()]);
+}
+async function networkCreate() {
+  const f = byId("network-name"); const name = (f && f.value.trim()) || ""; if (!name) return;
+  await postJson("/api/network/create", { name });
+  if (f) f.value = "";
+  hideModal("newnet-modal");
+  await loadNetwork();
+}
+async function updateCheck() {
+  const { release } = await postJson("/api/update/check", {});
+  notice(release && release.version ? "Update available: " + release.version : "You're on the latest version.");
+  await loadUpdateStatus();
+}
+async function brainModelApply() {
+  const sel = byId("brain-model"); const model = sel ? sel.value : "";
+  await postJson("/api/brain/model", { model });
+  notice(model ? "Active model set to " + model + "." : "Model selection cleared.");
+  await loadBrainMetrics();
+}
+const ACTIONS = {
+  open:  el => { showModal(el.dataset.modal); const fn = el.dataset.onopen && window[el.dataset.onopen]; if (typeof fn === "function") safely(fn); },
+  close: el => closeOverlay(el.closest(".modal-overlay")),
+  hotManage: () => safely(loadHotManager),
+  bookmarksSync: () => safely(bookmarksSync),
+  pairShare: () => safely(pairShareWizard),
+  pairJoin: () => safely(pairJoinWizard),
+  networkCreate: () => safely(networkCreate),
+  updateCheck: () => safely(updateCheck),
+  brainModelApply: () => safely(brainModelApply),
+};
+// Studio (studio.js) registers its own actions into this same map.
+window.ACTIONS = ACTIONS;
+document.addEventListener("click", e => {
+  const actor = e.target.closest("[data-action]");
+  if (actor) { const fn = ACTIONS[actor.dataset.action]; if (fn) fn(actor, e); return; }
+  if (e.target.classList && e.target.classList.contains("modal-overlay")) closeOverlay(e.target); // backdrop
+});
+document.addEventListener("keydown", e => {
+  if (e.key === "Escape") { const m = topOverlay(); if (m) closeOverlay(m); return; }
+  if (e.key === "Enter" && e.target.dataset && e.target.dataset.enter) {
+    const fn = ACTIONS[e.target.dataset.enter]; if (fn) { e.preventDefault(); fn(e.target, e); }
+  }
+});
+
 function showView(name) {
   document.querySelectorAll(".view").forEach(item => item.classList.toggle("active", item.id === name + "-view"));
   document.querySelectorAll("[data-view]").forEach(item => item.classList.toggle("active", item.dataset.view === name));
@@ -157,101 +232,9 @@ async function loadMeta() {
   const option = node("option", "", meta.store);
   byId("store").replaceChildren(option);
 }
-async function loadNames() {
-  const names = await getJson("/api/names");
-  const container = byId("names"); clear(container);
-  if (!names.length) { container.append(node("div", "empty", "No names are bound yet.")); return; }
-
-  const months = new Map();
-  names.forEach(binding => {
-    const seconds = Number(binding.created_at || 0);
-    let monthKey, dayKey, monthLabel, dayLabel, sort;
-    if (seconds > 0) {
-      const date = new Date(seconds * 1000);
-      monthKey = date.getFullYear() + "-" + String(date.getMonth() + 1).padStart(2, "0");
-      dayKey = monthKey + "-" + String(date.getDate()).padStart(2, "0");
-      monthLabel = date.toLocaleDateString(undefined, { year: "numeric", month: "long" });
-      dayLabel = date.toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric" });
-      sort = date.getTime();
-    } else {
-      monthKey = dayKey = "undated"; monthLabel = "Undated"; dayLabel = "No timestamp"; sort = -1;
-    }
-    if (!months.has(monthKey)) months.set(monthKey, { label: monthLabel, sort, count: 0, days: new Map() });
-    const month = months.get(monthKey); month.count += 1; month.sort = Math.max(month.sort, sort);
-    if (!month.days.has(dayKey)) month.days.set(dayKey, { label: dayLabel, sort, entries: [] });
-    const day = month.days.get(dayKey); day.sort = Math.max(day.sort, sort);
-    day.entries.push({ ...binding, sort });
-  });
-
-  const sortedMonths = [...months.entries()].sort((a, b) => b[1].sort - a[1].sort);
-  // On the very first render, open the newest month and its newest day. After
-  // that, expansion is driven by state.namesOpen (the user's choices), so the 5s
-  // background refresh re-renders without popping collapsed sections back open.
-  if (!state.namesOpenInit && sortedMonths.length) {
-    const [topMonthKey, topMonth] = sortedMonths[0];
-    state.namesOpen.add(topMonthKey);
-    const topDay = [...topMonth.days.entries()].sort((a, b) => b[1].sort - a[1].sort)[0];
-    if (topDay) state.namesOpen.add(topDay[0]);
-    state.namesOpenInit = true;
-  }
-
-  sortedMonths.forEach(([monthKey, month]) => {
-    const monthOpen = state.namesOpen.has(monthKey);
-    const head = node("button", "month-head" + (monthOpen ? " open" : ""));
-    head.append(
-      node("span", "disclosure", monthOpen ? "▾" : "▸"),
-      node("span", "month-label", month.label),
-      node("span", "count", month.count + (month.count === 1 ? " record" : " records")),
-    );
-    const body = node("div", "month-body"); body.style.display = monthOpen ? "flex" : "none";
-    head.addEventListener("click", () => toggleSection(head, body, monthKey));
-
-    [...month.days.entries()].sort((a, b) => b[1].sort - a[1].sort).forEach(([dayKey, day]) => {
-      const dayOpen = state.namesOpen.has(dayKey);
-      const dayHead = node("button", "day-head" + (dayOpen ? " open" : ""));
-      dayHead.append(
-        node("span", "disclosure", dayOpen ? "▾" : "▸"),
-        node("span", "day-label", day.label),
-        node("span", "count", day.entries.length + (day.entries.length === 1 ? " record" : " records")),
-      );
-      const dayBody = node("div", "day-body"); dayBody.style.display = dayOpen ? "flex" : "none";
-      dayHead.addEventListener("click", () => toggleSection(dayHead, dayBody, dayKey));
-      day.entries.sort((a, b) => a.sort - b.sort).forEach(entry => dayBody.append(eventRow(entry)));
-      body.append(appendChildren(node("div", "day-group"), dayHead, dayBody));
-    });
-    container.append(appendChildren(node("div", "month-group"), head, body));
-  });
-}
+// Records is merged into the Graph file tree; loadNames now just refreshes it.
+async function loadNames() { return loadGraphTree(); }
 function appendChildren(parent, ...children) { children.forEach(child => parent.append(child)); return parent; }
-function toggleSection(head, body, key) {
-  const open = body.style.display !== "none";
-  body.style.display = open ? "none" : "flex";
-  head.classList.toggle("open", !open);
-  const caret = head.querySelector(".disclosure");
-  if (caret) caret.textContent = open ? "▸" : "▾";
-  // Remember the choice so the periodic re-render preserves it.
-  if (key) { if (open) state.namesOpen.delete(key); else state.namesOpen.add(key); }
-}
-function eventRow(entry) {
-  const row = node("button", "event-row" + (entry.locked ? " locked" : ""));
-  const seconds = Number(entry.created_at || 0);
-  const time = seconds > 0
-    ? new Date(seconds * 1000).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit", second: "2-digit" })
-    : "--:--:--";
-  const desc = entry.locked ? "🔒 Locked record" : (entry.preview || "(no description)");
-  const aliases = entry.names && entry.names.length ? entry.names : [entry.name];
-  const descSpan = node("span", "event-desc", desc);
-  if (aliases.length > 1) descSpan.append(node("span", "event-aliases", " ×" + aliases.length));
-  row.append(
-    node("span", "event-time", time),
-    node("span", "event-kind", entry.kind || "node"),
-    descSpan,
-    node("span", "event-cid", shortCid(entry.cid)),
-  );
-  row.title = aliases.join("\n") + "\n" + entry.cid;
-  row.addEventListener("click", () => { selectRoot(entry.cid); loadRecord(entry.cid, true); });
-  return row;
-}
 
 async function selectRoot(cid) {
   state.root = cid;
@@ -262,6 +245,141 @@ async function selectRoot(cid) {
   await Promise.all([loadGraph(), loadStats(), refreshPrivacy()]);
 }
 
+// ── Graph tab: a file tree of your memory (Month ▸ Day ▸ Session ▸ Record), built
+// from the SAME /api/names path the Records tab uses, on the canonical UTC axis. ──
+function sessionOf(names) {
+  for (const nm of (names || [])) {
+    const after = (nm.split(":session:")[1] || "");
+    const id = after.split(":")[0];
+    if (id) return id;
+  }
+  return "loose";
+}
+function sessionLabel(s) { return s === "loose" ? "loose records" : "session " + s.slice(0, 8); }
+async function loadGraphTree() {
+  const names = await getJson("/api/names");
+  renderGraphTree(names, byId("graph-tree"));
+}
+function ftFolder(open, icon, label, count, key, body, badge) {
+  const head = node("button", "ft-row ft-folder-row" + (open ? " open" : ""));
+  head.append(node("span", "disclosure", open ? "▾" : "▸"), node("span", "ft-icon", icon),
+    node("span", "ft-label", label));
+  // A session whose records link out (Merkle edges) gets a link badge.
+  if (badge) { const b = node("span", "ft-link-badge", badge); b.title = "Contains records that link out (Merkle edges)"; head.append(b); }
+  head.append(node("span", "count", count + " rec"));
+  head.addEventListener("click", () => {
+    const isOpen = body.style.display !== "none";
+    body.style.display = isOpen ? "none" : "block";
+    head.classList.toggle("open", !isOpen);
+    const caret = head.querySelector(".disclosure");
+    if (caret) caret.textContent = isOpen ? "▸" : "▾";
+    if (isOpen) state.namesOpen.delete(key); else state.namesOpen.add(key);
+  });
+  return head;
+}
+// A record leaf. Click the row to view its content; click the caret to follow the
+// record's REAL Merkle edges — past the calendar, the tree becomes the DAG itself.
+function fileLeaf(entry) {
+  const group = node("div", "ft-group");
+  const row = node("div", "ft-row ft-file" + (entry.locked ? " locked" : ""));
+  const caret = node("span", "disclosure ft-caret", "▸");
+  caret.title = "Follow the records this one links to (its Merkle edges)";
+  const seconds = Number(entry.created_at || 0);
+  const time = seconds > 0
+    ? new Date(seconds * 1000).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit", timeZone: "UTC" })
+    : "--:--";
+  const desc = entry.locked ? "🔒 Locked record" : (entry.preview || "(no description)");
+  row.append(caret, node("span", "ft-icon", "📄"), node("span", "event-kind", entry.kind || "node"),
+    node("span", "event-desc", desc), node("span", "event-time", time), node("span", "event-cid", shortCid(entry.cid)));
+  row.title = (entry.names && entry.names.length ? entry.names : [entry.name]).join("\n") + "\n" + entry.cid;
+  const body = node("div", "ft-body ft-indent"); body.style.display = "none";
+  bindMerkleCaret(caret, body, entry.cid);
+  row.addEventListener("click", () => loadRecord(entry.cid, true));
+  group.append(row, body);
+  return group;
+}
+// Lazily fetch a record's outbound CID links (the Merkle edges) and render each as
+// a child node — which itself expands the same way, walking the DAG by content hash.
+async function expandMerkleLinks(cid, body) {
+  const rec = await getJson("/api/record?cid=" + encodeURIComponent(cid));
+  clear(body);
+  const links = (rec && rec.links) || [];
+  if (!links.length) { body.append(node("div", "ft-empty", "— a root · nothing links out from here")); return; }
+  links.forEach(l => body.append(merkleNode(l.cid, l.relation)));
+}
+function bindMerkleCaret(caret, body, cid) {
+  let loaded = false;
+  caret.addEventListener("click", e => {
+    e.stopPropagation();
+    const open = body.style.display !== "none";
+    body.style.display = open ? "none" : "block";
+    caret.textContent = open ? "▸" : "▾";
+    if (!open && !loaded) { loaded = true; safely(() => expandMerkleLinks(cid, body)); }
+  });
+}
+// One hop in the Merkle walk: the edge's relation + the target CID. Row opens the
+// linked record; caret follows ITS links, recursively.
+function merkleNode(cid, relation) {
+  const group = node("div", "ft-group ft-indent");
+  const row = node("div", "ft-row ft-link");
+  const caret = node("span", "disclosure ft-caret", "▸");
+  row.append(caret, node("span", "ft-rel", relation || "→"), node("span", "ft-icon", "🔗"),
+    node("span", "event-cid", shortCid(cid)));
+  row.title = cid + (relation ? "\nedge: " + relation : "");
+  const body = node("div", "ft-body ft-indent"); body.style.display = "none";
+  bindMerkleCaret(caret, body, cid);
+  row.addEventListener("click", () => loadRecord(cid, true));
+  group.append(row, body);
+  return group;
+}
+function renderGraphTree(names, container) {
+  if (!container) return;
+  clear(container);
+  if (!names || !names.length) { container.append(node("div", "empty", "No records yet — capture or ingest some, and they'll appear here.")); return; }
+  const months = new Map();
+  names.forEach(binding => {
+    const seconds = Number(binding.created_at || 0);
+    let mKey, dKey, mLabel, dLabel, sort;
+    if (seconds > 0) {
+      const date = new Date(seconds * 1000);
+      mKey = date.getUTCFullYear() + "-" + String(date.getUTCMonth() + 1).padStart(2, "0");
+      dKey = mKey + "-" + String(date.getUTCDate()).padStart(2, "0");
+      mLabel = date.toLocaleDateString(undefined, { year: "numeric", month: "long", timeZone: "UTC" });
+      dLabel = date.toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric", timeZone: "UTC" });
+      sort = date.getTime();
+    } else { mKey = dKey = "undated"; mLabel = "Undated"; dLabel = "No timestamp"; sort = -1; }
+    const sess = sessionOf(binding.names);
+    if (!months.has(mKey)) months.set(mKey, { label: mLabel, sort, count: 0, days: new Map() });
+    const m = months.get(mKey); m.count++; m.sort = Math.max(m.sort, sort);
+    if (!m.days.has(dKey)) m.days.set(dKey, { label: dLabel, sort, count: 0, sessions: new Map() });
+    const d = m.days.get(dKey); d.count++; d.sort = Math.max(d.sort, sort);
+    if (!d.sessions.has(sess)) d.sessions.set(sess, { label: sessionLabel(sess), sort, entries: [], hasLinks: false });
+    const s = d.sessions.get(sess); s.sort = Math.max(s.sort, sort); s.entries.push({ ...binding, sort });
+    if (binding.linked) s.hasLinks = true;
+  });
+  const sortedMonths = [...months.entries()].sort((a, b) => b[1].sort - a[1].sort);
+  // On first view, open the newest month so the tree isn't a wall of closed folders.
+  if (!state.graphTreeInit && sortedMonths.length) { state.namesOpen.add("g:" + sortedMonths[0][0]); state.graphTreeInit = true; }
+  sortedMonths.forEach(([mKey, m]) => {
+    const mOpen = state.namesOpen.has("g:" + mKey);
+    const mBody = node("div", "ft-body"); mBody.style.display = mOpen ? "block" : "none";
+    const mGroup = appendChildren(node("div", "ft-group"), ftFolder(mOpen, "📁", m.label, m.count, "g:" + mKey, mBody), mBody);
+    [...m.days.entries()].sort((a, b) => b[1].sort - a[1].sort).forEach(([dKey, d]) => {
+      const dOpen = state.namesOpen.has("g:" + dKey);
+      const dBody = node("div", "ft-body"); dBody.style.display = dOpen ? "block" : "none";
+      const dGroup = appendChildren(node("div", "ft-group ft-indent"), ftFolder(dOpen, "📁", d.label, d.count, "g:" + dKey, dBody), dBody);
+      [...d.sessions.entries()].sort((a, b) => b[1].sort - a[1].sort).forEach(([sKey, s]) => {
+        const sk = "g:" + dKey + ":" + sKey;
+        const sOpen = state.namesOpen.has(sk);
+        const sBody = node("div", "ft-body"); sBody.style.display = sOpen ? "block" : "none";
+        s.entries.sort((a, b) => a.sort - b.sort).forEach(entry => sBody.append(fileLeaf(entry)));
+        dBody.append(appendChildren(node("div", "ft-group ft-indent"), ftFolder(sOpen, "🗂", s.label, s.entries.length, sk, sBody, s.hasLinks ? "🔗" : null), sBody));
+      });
+      mBody.append(dGroup);
+    });
+    container.append(mGroup);
+  });
+}
 function isSynthetic(cid) {
   return cid.startsWith("store:") || cid.startsWith("session:") ||
          cid.startsWith("year:") || cid.startsWith("month:") || cid.startsWith("day:");
@@ -882,47 +1000,8 @@ async function loadHotManager() {
     list.append(row);
   });
 }
-byId("hot-manage").addEventListener("click", () => safely(loadHotManager));
-byId("hot-close").addEventListener("click", () => { byId("hot-modal").style.display = "none"; });
-byId("hot-modal").addEventListener("click", e => { if (e.target === byId("hot-modal")) byId("hot-modal").style.display = "none"; });
-document.addEventListener("keydown", e => { if (e.key === "Escape" && byId("hot-modal").style.display === "flex") byId("hot-modal").style.display = "none"; });
-
-// "Your profile" popup: your contact card, approved peers, and pending requests.
-// Loaded on open so the data is fresh each time.
-byId("profile-open").addEventListener("click", () => safely(async () => {
-  byId("profile-modal").style.display = "flex";
-  await Promise.all([loadProfile(), loadContacts(), loadRequests()]);
-}));
-byId("profile-close").addEventListener("click", () => { byId("profile-modal").style.display = "none"; });
-byId("profile-modal").addEventListener("click", e => { if (e.target === byId("profile-modal")) byId("profile-modal").style.display = "none"; });
-document.addEventListener("keydown", e => { if (e.key === "Escape" && byId("profile-modal").style.display === "flex") byId("profile-modal").style.display = "none"; });
-
-// "Private network" popup: create/pair/join networks + the device mesh map. (The
-// "Kept hot" button stays inline.) Loaded on open so the mesh is current.
-byId("netmgr-open").addEventListener("click", () => safely(async () => {
-  byId("netmgr-modal").style.display = "flex";
-  await loadNetwork();
-}));
-byId("netmgr-close").addEventListener("click", () => { byId("netmgr-modal").style.display = "none"; });
-byId("netmgr-modal").addEventListener("click", e => { if (e.target === byId("netmgr-modal")) byId("netmgr-modal").style.display = "none"; });
-// Escape closes the parent only when the nested "New network" popup isn't open.
-document.addEventListener("keydown", e => { if (e.key === "Escape" && byId("netmgr-modal").style.display === "flex" && byId("newnet-modal").style.display !== "flex") byId("netmgr-modal").style.display = "none"; });
-
-// Nested "New network" popup: the name field + Create button, shown only on demand.
-byId("network-new").addEventListener("click", () => { byId("newnet-modal").style.display = "flex"; const f = byId("network-name"); if (f) { f.value = ""; f.focus(); } });
-byId("newnet-close").addEventListener("click", () => { byId("newnet-modal").style.display = "none"; });
-byId("newnet-modal").addEventListener("click", e => { if (e.target === byId("newnet-modal")) byId("newnet-modal").style.display = "none"; });
-document.addEventListener("keydown", e => { if (e.key === "Escape" && byId("newnet-modal").style.display === "flex") byId("newnet-modal").style.display = "none"; });
-byId("network-name").addEventListener("keydown", e => { if (e.key === "Enter") byId("network-create").click(); });
-
-// "View thread" popup (the thread list).
-byId("thread-modal-close").addEventListener("click", () => { byId("thread-modal").style.display = "none"; });
-byId("thread-modal").addEventListener("click", e => { if (e.target === byId("thread-modal")) byId("thread-modal").style.display = "none"; });
-document.addEventListener("keydown", e => { if (e.key === "Escape" && byId("thread-modal").style.display === "flex") byId("thread-modal").style.display = "none"; });
-byId("record-close").addEventListener("click", closeRecordModal);
-byId("record-modal").addEventListener("click", e => { if (e.target === byId("record-modal")) closeRecordModal(); });
-document.addEventListener("keydown", e => { if (e.key === "Escape" && byId("record-modal").style.display === "flex" && byId("privacy-modal").style.display !== "flex") closeRecordModal(); });
-document.addEventListener("keydown", e => { if (e.key === "Escape" && byId("deploy-modal").style.display === "flex") depClose(); });
+// Modal open/close/backdrop/Escape are all handled by the delegated listeners above
+// (data-action="open|close", data-modal, data-onopen, data-close). Nothing to bind here.
 
 // Build an inline preview for file_ref / blob records: images, video, audio,
 // and PDFs render in-page; text/code is fetched and shown; everything else
@@ -1020,9 +1099,7 @@ function logSystem(text, cls) {
 // Privacy & Publication popup — opened per-record from the record popup (see renderRecord).
 // Refresh on open so it reflects the current selection.
 function openPrivacyModal() { byId("privacy-modal").style.display = "flex"; safely(refreshPrivacy); }
-byId("privacy-close").addEventListener("click", () => { byId("privacy-modal").style.display = "none"; });
-byId("privacy-modal").addEventListener("click", e => { if (e.target === byId("privacy-modal")) byId("privacy-modal").style.display = "none"; });
-document.addEventListener("keydown", e => { if (e.key === "Escape" && byId("privacy-modal").style.display === "flex") byId("privacy-modal").style.display = "none"; });
+// privacy-modal close/backdrop/Escape handled by the delegated listeners (data-action="close").
 // The server-truth half of the System Console: pull everything the concierge has
 // done since our last poll (embedder load, indexing, retrieval, every action,
 // inbound messages) and print it, plus the active embedding model — so the user can
@@ -1586,21 +1663,9 @@ function openIngestModal() {
   input.focus();
 }
 
-byId("reset-view").addEventListener("click", () => fitView());
 
 // Pillar A: pull Brave/Opera bookmarks into memory (they become searchable records).
-byId("bookmarks-sync").addEventListener("click", () => safely(async () => {
-  const st = byId("bookmarks-status"); clear(st);
-  st.appendChild(document.createTextNode("Syncing…"));
-  const res = await postJson("/api/bookmarks/sync", {});
-  clear(st);
-  const msg = res.added > 0
-    ? "Added " + res.added + " bookmark" + (res.added === 1 ? "" : "s") + " to memory."
-    : "Up to date — no new bookmarks.";
-  st.appendChild(document.createTextNode(msg));
-  logSystem("synced browser bookmarks · +" + (res.added || 0), "ok");
-  await Promise.all([loadNames(), loadStats()]);
-}));
+// bookmarks-sync handled by delegation (data-action="bookmarksSync").
 
 // Scale + translate the graph so its full extent is centered in the viewport.
 function fitView() {
@@ -1692,13 +1757,7 @@ async function loadNetwork() {
     map.append(card);
   });
 }
-byId("network-create").addEventListener("click", () => safely(async () => {
-  const name = byId("network-name").value.trim(); if (!name) return;
-  await postJson("/api/network/create", { name });
-  byId("network-name").value = "";
-  byId("newnet-modal").style.display = "none"; // close the small popup after creating
-  await loadNetwork();
-}));
+// network-create handled by delegation (data-action="networkCreate"; Enter via data-enter).
 
 // ── Pairing wizard: share this node with your other computer (or join one). A guided
 // offer → response → grant exchange (copy/paste between the two machines), with a safety
@@ -1814,8 +1873,7 @@ async function pairJoinWizard() {
   pairStep(body, node("div", "review", "Step 1 — paste the pairing offer your main computer gave you:"), paste, go);
 }
 
-byId("pair-share").addEventListener("click", () => safely(pairShareWizard));
-byId("pair-join").addEventListener("click", () => safely(pairJoinWizard));
+// pair-share / pair-join handled by delegation (data-action="pairShare" / "pairJoin").
 
 // ── Network discovery map: this node (center) + the peers libp2p discovers around it ──
 let discPoll = null;
@@ -2062,7 +2120,7 @@ async function loadPeers() {
   let data; try { data = await getJson("/api/peers"); } catch (e) { return; }
   renderDiscovery(data);
 }
-function startDiscPoll() { stopDiscPoll(); bindDiscInteractions(); safely(loadPeers); discPoll = setInterval(() => quietly(loadPeers), 4000); }
+function startDiscPoll() { stopDiscPoll(); bindDiscInteractions(); quietly(loadPeers); discPoll = setInterval(() => quietly(loadPeers), 4000); }
 function stopDiscPoll() { if (discPoll) { clearInterval(discPoll); discPoll = null; } }
 
 // ── Updates tab: app binary + signed safety rules ────────────────────────────────
@@ -2080,11 +2138,7 @@ async function loadUpdateStatus() {
     ? "Running version " + (data.app_version || "—") + ". Update " + appUpdate.release.version + " is available — it installs automatically on next launch."
     : "Running version " + (data.app_version || "—") + ". You're on the latest version.";
 }
-byId("update-check").addEventListener("click", () => safely(async () => {
-  const { release } = await postJson("/api/update/check", {});
-  notice(release && release.version ? "Update available: " + release.version : "You're on the latest version.");
-  await loadUpdateStatus();
-}));
+// update-check handled by delegation (data-action="updateCheck").
 
 // ── Brain tab: the sovereign LLM engine + the on-node embedder ───────────────────
 // A compact collapsible <pre> of raw JSON — used wherever a metric provider's exact
@@ -2103,19 +2157,28 @@ function brainRow(key, value) {
   row.append(node("span", "wallet-k", key), node("span", "wallet-v", value));
   return row;
 }
+// Last good harness/meta status per key, so a transient fetch failure on one of the
+// parallel requests falls back to the previous value instead of hiding a harness.
+const brainStatusCache = {};
 // The Concierge's PRIMARY brain is the host harness it's mounted to (e.g. Claude Code) — the
 // large model that drives it via MCP. The Sovereign LLM below is the optional private alternative.
 async function loadBrainHost() {
   // Fetch all harness statuses + meta in PARALLEL. The server handles each request
   // on its own thread, so this collapses six sequential round-trips — each doing a
   // filesystem scan — into one. Doing them one-at-a-time is what made the tab hang.
+  // On a transient fetch failure, fall back to the LAST good value so a momentary
+  // blip never hides a detected harness (which can look like "only 3 of 4 show").
+  const fetchStatus = async (url, key) => {
+    try { const v = await getJson(url); brainStatusCache[key] = v; return v; }
+    catch (e) { return brainStatusCache[key] || {}; }
+  };
   const [cc, aider, codex, gemini, cont, meta] = await Promise.all([
-    getJson("/api/claude-code/status").catch(() => ({})),
-    getJson("/api/aider/status").catch(() => ({})),
-    getJson("/api/codex/status").catch(() => ({})),
-    getJson("/api/gemini/status").catch(() => ({})),
-    getJson("/api/continue/status").catch(() => ({})),
-    getJson("/api/meta").catch(() => ({})),
+    fetchStatus("/api/claude-code/status", "cc"),
+    fetchStatus("/api/aider/status", "aider"),
+    fetchStatus("/api/codex/status", "codex"),
+    fetchStatus("/api/gemini/status", "gemini"),
+    fetchStatus("/api/continue/status", "continue"),
+    fetchStatus("/api/meta", "meta"),
   ]);
   const host = byId("brain-host");
   if (!host) return;
@@ -2138,62 +2201,65 @@ async function loadBrainHost() {
     host.append(head, det);
   }
   const declared = meta.mounted_model && meta.mounted_model !== "manual mount" && meta.mounted_model !== "not declared";
-  let any = false;
-  // A detected file-based harness (Aider/Codex/Gemini/Continue): one row + an
-  // opt-in attach toggle. Capture is local-only; their transcripts are private.
-  function adapterRow(st, key, label) {
-    if (!st || !st.available) return;
-    any = true;
-    const n = st.session_count || 0, t = st.transcript_count || 0;
-    const btn = node("button", "tool-button", st.attached ? "Detach" : "Attach");
-    btn.style.cssText = "margin-left:auto;padding:2px 12px;font-size:12px;";
-    if (!st.attached && capReached) {
-      btn.disabled = true;
-      btn.title = "Capture limit reached (" + HARNESS_CAP + " max) — detach another harness first.";
+  // Every harness the Concierge supports gets a row — detected ones show their
+  // session counts and a capture toggle; undetected ones read "not detected". This
+  // list grows as new adapters are added. `hostDriver` marks the MCP host (Claude
+  // Code), which drives the Concierge rather than being read off disk.
+  function harnessRow(st, key, label, hostDriver) {
+    const available = !!(st && st.available);
+    const attached = !!(st && st.attached);
+    const n = (st && st.session_count) || 0, t = (st && st.transcript_count) || 0;
+    let name, detail;
+    if (!available) {
+      name = label + " · not detected";
+      detail = "not detected — run " + label + " and its sessions will appear here to capture";
+    } else if (hostDriver) {
+      name = label + " · connected";
+      detail = (attached ? "capturing" : "detected — not attached") + " · " + n + " session" + (n === 1 ? "" : "s") + " · drives the Concierge via MCP";
     } else {
-      btn.addEventListener("click", () => safely(async () => {
-        await postJson("/api/" + key + (st.attached ? "/detach" : "/attach"), {});
-        await loadBrainHost();
-      }));
+      name = label + " · " + (attached ? "capturing" : "detected");
+      detail = n + " session" + (n === 1 ? "" : "s") + " across " + t + " transcript" + (t === 1 ? "" : "s") + (attached ? " · ingesting into memory" : " · attach to capture into memory");
     }
-    row(st.attached, label + " · " + (st.attached ? "capturing" : "detected"),
-      n + " session" + (n === 1 ? "" : "s") + " across " + t + " transcript" + (t === 1 ? "" : "s") + (st.attached ? " · ingesting into memory" : " · attach to capture into memory"),
-      btn);
+    let controls = null;
+    if (available) {
+      controls = node("div", "");
+      controls.style.cssText = "margin-left:auto;display:flex;gap:6px;align-items:center;";
+      // Manual one-time backfill of this harness's prior history (loading no longer
+      // auto-ingests it). Runs in the background on the server.
+      const ingest = node("button", "tool-button", "Ingest");
+      ingest.style.cssText = "padding:2px 12px;font-size:12px;";
+      ingest.title = "Backfill all of " + label + "'s past sessions into memory now (one-time).";
+      ingest.addEventListener("click", () => safely(async () => {
+        await postJson("/api/" + key + "/ingest", {});
+        notice("Ingesting " + label + " history in the background — watch the System Console.");
+      }));
+      const btn = node("button", "tool-button", attached ? "Detach" : "Attach");
+      btn.style.cssText = "padding:2px 12px;font-size:12px;";
+      if (!attached && capReached) {
+        btn.disabled = true;
+        btn.title = "Capture limit reached (" + HARNESS_CAP + " max) — detach another harness first.";
+      } else {
+        btn.addEventListener("click", () => safely(async () => {
+          await postJson("/api/" + key + (attached ? "/detach" : "/attach"), {});
+          await loadBrainHost();
+        }));
+      }
+      controls.append(ingest, btn);
+    }
+    row(available, name, detail, controls);
   }
-  // Claude Code (or a declared mounted model) — the host driving via MCP. Its
-  // capture toggle lives here in the Brain tab alongside the other harnesses.
-  if (cc.available) {
-    any = true;
-    const n = cc.session_count || 0;
-    const btn = node("button", "tool-button", cc.attached ? "Detach" : "Attach");
-    btn.style.cssText = "margin-left:auto;padding:2px 12px;font-size:12px;";
-    if (!cc.attached && capReached) {
-      btn.disabled = true;
-      btn.title = "Capture limit reached (" + HARNESS_CAP + " max) — detach another harness first.";
-    } else {
-      btn.title = cc.attached
-        ? "Pause Claude Code auto-capture (watched sessions stay ingested)."
-        : "Backfill and watch Claude Code sessions — local-only, nothing leaves your device.";
-      btn.addEventListener("click", () => safely(async () => {
-        await postJson("/api/claude-code/" + (cc.attached ? "detach" : "attach"), {});
-        await loadBrainHost();
-      }));
-    }
-    row(true, "Claude Code · connected",
-      (cc.attached ? "capturing" : "detected — not attached") + " · " + n + " session" + (n === 1 ? "" : "s") + " · drives the Concierge via MCP",
-      btn);
-  } else if (declared) {
-    any = true;
+  // The MCP host first. If a model other than Claude Code is declared as the mount,
+  // show it as the connected host; otherwise show the Claude Code harness row.
+  if (!cc.available && declared) {
     row(true, meta.mounted_model + " · mounted", "drives the Concierge via MCP");
+  } else {
+    harnessRow(cc, "claude-code", "Claude Code", true);
   }
-  // Additional file-based harnesses — each detected one gets an opt-in attach toggle.
-  adapterRow(aider, "aider", "Aider");
-  adapterRow(codex, "codex", "Codex");
-  adapterRow(gemini, "gemini", "Gemini");
-  adapterRow(cont, "continue", "Continue");
-  if (!any) {
-    row(false, "No host harness detected", "Run Claude Code or Aider — the Concierge mounts the one it detects.");
-  }
+  // Every supported file-based harness, detected or not.
+  harnessRow(aider, "aider", "Aider");
+  harnessRow(codex, "codex", "Codex");
+  harnessRow(gemini, "gemini", "Gemini");
+  harnessRow(cont, "continue", "Continue");
 }
 async function loadBrainMetrics() {
   loadBrainHost();
@@ -2285,40 +2351,27 @@ function renderBrainEmbedder(embedder) {
   wrap.append(brainRow("Queue depth", embedder.queue_depth == null ? "—" : String(embedder.queue_depth)));
   wrap.append(brainRow("Last latency", embedder.last_latency_ms == null ? "—" : embedder.last_latency_ms + " ms"));
 }
-byId("brain-model-apply").addEventListener("click", () => safely(async () => {
-  const model = byId("brain-model").value;
-  await postJson("/api/brain/model", { model });
-  notice(model ? "Active model set to " + model + "." : "Model selection cleared.");
-  await loadBrainMetrics();
-}));
+// brain-model-apply handled by delegation (data-action="brainModelApply").
 // Poll the Brain metrics only while its tab is open (same gating as the discovery map).
 let brainPoll = null;
-function startBrainPoll() { stopBrainPoll(); safely(loadBrainMetrics); brainPoll = setInterval(() => quietly(loadBrainMetrics), 4000); }
+function startBrainPoll() { stopBrainPoll(); quietly(loadBrainMetrics); brainPoll = setInterval(() => quietly(loadBrainMetrics), 4000); }
 function stopBrainPoll() { if (brainPoll) { clearInterval(brainPoll); brainPoll = null; } }
 
 document.querySelectorAll("[data-view]").forEach(button => button.addEventListener("click", () => {
-  // Clicking the Graph tab while focused on one root returns to the whole-store forest.
-  if (button.dataset.view === "graph" && state.rootMode === "fixed") {
-    state.rootMode = "default"; state.root = ""; state.selected = "";
-    state.fullGraph = null; state.visibleCids.clear();
-    safely(async () => { await Promise.all([loadGraph(), loadStats(), refreshPrivacy()]); });
-  }
   showView(button.dataset.view);
   stopDiscPoll(); walletStopPoll(); stopBrainPoll(); // only poll these while their tab is open
-  // The graph is drawn while hidden at boot (Studio is the landing view), so fit it
-  // to the real viewport the first time it's actually shown.
-  if (button.dataset.view === "graph") {
-    // Sync the SVG viewBox to the panel's real size every time the tab is shown, so the
-    // aspect ratio matches and right-side nodes don't fall into a click-swallowing dead band.
-    syncGraphViewBox();
-    if (!state.graphShown) { state.graphShown = true; safely(fitView); }
-  }
-  if (button.dataset.view === "names") byId("search-q").focus();
+  // The Graph tab is now a file tree of your memory (Month ▸ Day ▸ Session ▸ Record),
+  // built from the same /api/names path as Records.
+  if (button.dataset.view === "graph") quietly(loadGraphTree);
+  if (button.dataset.view === "graph") { const q = byId("search-q"); if (q) q.focus(); }
   // Network now hosts messaging too (the Messenger tab was merged in). Profile/
   // peers/requests and the private-network mesh load when their popups are opened.
+  // Tab-switch loads run in the background (quietly) so the view appears instantly
+  // and fills in — never a blocking spinner while the server responds.
   if (button.dataset.view === "network") { startDiscPoll(); }
-  if (button.dataset.view === "canvas") safely(cvLoadSites);
-  if (button.dataset.view === "wallet") { safely(walletInit); walletStartPoll(); }
-  if (button.dataset.view === "updates") safely(loadUpdateStatus);
+  if (button.dataset.view === "canvas") quietly(cvLoadSites);
+  if (button.dataset.view === "wallet") { quietly(walletInit); walletStartPoll(); }
+  if (button.dataset.view === "updates") quietly(loadUpdateStatus);
   if (button.dataset.view === "brain") startBrainPoll();
 }));
+// graph-filter input handled by the delegated input listener.

@@ -59,8 +59,9 @@ use read_routes::{
 #[cfg(test)]
 use read_routes::{node_and_links_from_record, PrivacyOverlay};
 use server::{
-    aider_status_json, claude_code_status_json, codex_status_json, continue_status_json,
-    gemini_status_json, mutation_aider_attach, mutation_claude_code_attach, mutation_codex_attach,
+    aider_ingest, aider_status_json, claude_code_ingest, claude_code_status_json, codex_ingest,
+    codex_status_json, continue_ingest, continue_status_json, gemini_ingest, gemini_status_json,
+    mutation_aider_attach, mutation_claude_code_attach, mutation_codex_attach,
     mutation_continue_attach, mutation_gemini_attach, mutation_sidekick, sidekick_status_json,
 };
 pub use server::{

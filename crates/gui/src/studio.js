@@ -6,8 +6,32 @@
 // its files in the editor
 // (saves straight to disk), and the preview always renders the live website. No more
 // separate Write vs Folder modes — writing IS editing the open folder.
-const cv = { token: null, folder: null, mtime: 0, poll: null, viewing: false, file: "index.html", collapsed: new Set(), lastFiles: [], lastHasIndex: false };
+const cv = { token: null, folder: null, pending: "", name: "", mtime: 0, poll: null, viewing: false, file: "index.html", collapsed: new Set(), lastFiles: [], lastHasIndex: false };
 function cvStatus(t) { const el = byId("cv-status"); if (el) el.textContent = t; }
+// Ask for the store password in a popup (used right before egress actions —
+// publish / pin). Resolves to the entered string, or null if cancelled.
+function promptPassword(message) {
+  return new Promise(resolve => {
+    const existing = byId("pw-prompt-overlay"); if (existing) existing.remove();
+    const overlay = node("div", "modal-overlay"); overlay.id = "pw-prompt-overlay";
+    const card = node("div", "pform modal-card");
+    card.append(node("div", "modal-title", "Store password"));
+    if (message) card.append(node("div", "review", message));
+    const input = node("input", "input"); input.type = "password"; input.placeholder = "store password";
+    input.autocomplete = "current-password"; input.style.cssText = "width:100%;box-sizing:border-box;margin:8px 0;";
+    const actions = node("div", "modal-actions");
+    const ok = node("button", "pbtn ckpt-load", "Continue"); ok.type = "button";
+    const cancel = node("button", "pbtn", "Cancel"); cancel.type = "button";
+    const finish = v => { overlay.remove(); resolve(v); };
+    ok.addEventListener("click", () => finish(input.value));
+    cancel.addEventListener("click", () => finish(null));
+    input.addEventListener("keydown", e => { if (e.key === "Enter") { e.preventDefault(); finish(input.value); } });
+    actions.append(ok, cancel); card.append(input, actions); overlay.append(card);
+    overlay.addEventListener("click", e => { if (e.target === overlay) finish(null); });
+    document.body.append(overlay);
+    setTimeout(() => input.focus(), 30);
+  });
+}
 function randId() { return Math.random().toString(36).slice(2, 10); }
 function cvBasename(p) { return (p || "").replace(/\/+$/, "").split("/").pop() || ""; }
 
@@ -50,9 +74,9 @@ async function cvCommitEditor() {
 // works — now unified onto the folder canvas. Seeds index.html with `html`.
 async function cvEnsureFolder(html) {
   if (cv.token) return;
-  const name = byId("cv-name").value.trim() || "draft";
+  const name = (cv.name || "").trim() || "draft";
   const snap = await postJson("/api/canvas/snapshot", { session: name, html: html || "" });
-  byId("cv-folder").value = snap.folder;
+  cv.pending = snap.folder;
   cv.file = "index.html";
   await cvOpen({ keepEditor: true });
 }
@@ -113,11 +137,11 @@ async function cvSelectFile(path) {
 }
 
 async function cvOpen(opts) {
-  const folder = byId("cv-folder").value.trim();
-  if (!folder) { notice("Enter or pick the folder to use as your canvas."); return; }
+  const folder = (cv.pending || "").trim();
+  if (!folder) { notice("Open or pick a project to use as your canvas."); return; }
   const res = await postJson("/api/canvas/open", { folder });
   cv.token = res.token; cv.folder = folder; cv.mtime = res.mtime;
-  if (!byId("cv-name").value.trim()) byId("cv-name").value = cvBasename(folder).toLowerCase().replace(/[^a-z0-9._-]+/g, "-");
+  if (!cv.name) cv.name = cvBasename(folder).toLowerCase().replace(/[^a-z0-9._-]+/g, "-");
   cvUpdateDomain();
   // Load index.html into the editor so the folder is immediately writeable — unless we
   // were told to keep what the user just typed (cvEnsureFolder seeded it already).
@@ -149,8 +173,8 @@ async function cvPoll() {
 function startCvPoll() { if (cv.poll) clearInterval(cv.poll); cv.poll = setInterval(() => quietly(cvPoll), 1000); }
 cvIdlePreview();
 async function cvPublish(platform = "ipfs") {
-  const name = byId("cv-name").value.trim();
-  if (!name) { byId("cv-name").focus(); notice("Give your site a name."); return; }
+  const name = (cv.name || "").trim();
+  if (!name) { notice("Open or create a project first (click + New)."); return; }
   // Connect gate: Web2 hosts need an account. If this one isn't connected yet,
   // open the guided connect walk-through instead of failing the publish.
   if (platform !== "ipfs") {
@@ -187,12 +211,12 @@ async function cvPublish(platform = "ipfs") {
     "Publish only if this exact destination and manifest are expected."
   ].join("\n");
   if (!window.confirm(summary)) return;
-  const password = byId("cv-password").value;
-  if (!password) { byId("cv-password").focus(); notice("Your store password is required after reviewing the exact egress plan."); return; }
+  const password = await promptPassword("Enter your store password to publish — this is public egress.");
+  if (password === null) return;   // cancelled
+  if (!password) { notice("Your store password is required to publish."); return; }
   notice("Publishing to " + platform.toUpperCase() + "…");
   logSystem("studio · publishing " + name + " to " + platform, "ok");
   const res = await postJson("/api/site/publish", { review_token: review.review_token, password });
-  byId("cv-password").value = "";
   if (res.url) {
     logSystem("studio · live at " + (res.ipns || res.url), "ok");
     if (res.ipns) cv.lastIpns = res.ipns;
@@ -259,21 +283,13 @@ byId("reach-view").addEventListener("click", () => cvOpenPublished());
 byId("reach-modal").addEventListener("click", e => { if (e.target === byId("reach-modal")) reachClose(); });
 document.addEventListener("keydown", e => { if (e.key === "Escape" && byId("reach-modal").style.display === "flex") reachClose(); });
 
-// ── AI write-access toggle ──
+// ── AI write-access ── always on (the toggle was removed). Ensure it's enabled.
 async function cvLoadMcp() {
-  let s; try { s = await getJson("/api/mcp/status"); } catch (e) { return; }
-  const b = byId("cv-mcp"); b.classList.toggle("on", !!s.write_enabled);
-  b.textContent = "AI writes: " + (s.write_enabled ? "ON" : "off");
+  try {
+    const s = await getJson("/api/mcp/status");
+    if (!s.write_enabled) await postJson("/api/mcp/write", { enabled: true });
+  } catch (e) {}
 }
-byId("cv-mcp").addEventListener("click", () => safely(async () => {
-  const on = byId("cv-mcp").classList.contains("on");
-  await postJson("/api/mcp/write", { enabled: !on });
-  await cvLoadMcp();
-  notice(!on
-    ? "Your AI can now write into the Concierge (MCP write tools enabled)."
-    : "AI write access turned off — the AI has read tools only.");
-  logSystem("mcp write tools " + (!on ? "enabled" : "disabled"), !on ? "warn" : "ok");
-}));
 async function cvLoadSites() {
   await cvLoadMcp();
   let data; try { data = await getJson("/api/sites"); } catch (e) { return; }
@@ -288,7 +304,7 @@ const CV_EXAMPLE_IPNS = "k51qzi5uqu5dlvj2baxnqndepeb86cbk3ng7n3i46uzyxzyqj2xjonz
 function cvIpnsShort(k) { return k.length > 22 ? k.slice(0, 14) + "…" + k.slice(-4) : k; }
 function cvUpdateDomain() {
   const el = byId("cv-domain"); if (!el) return;
-  const name = byId("cv-name").value.trim().toLowerCase();
+  const name = (cv.name || "").trim().toLowerCase();
   const match = (cv.sites || []).find(s => (s.name || "").toLowerCase() === name && s.ipns);
   clear(el);
   if (match) {
@@ -331,7 +347,6 @@ function cvUpdateDomain() {
     el.append(document.createTextNode(" (your unique k51… address is assigned on Publish)"));
   }
 }
-byId("cv-name").addEventListener("input", cvUpdateDomain);
 cvUpdateDomain();
 
 // Studio publish checkpoints: every Publish snapshots the page (timestamped + its
@@ -390,10 +405,10 @@ async function cvOpenCheckpoints() {
 async function cvRestoreCheckpoint(site, ts, overlay) {
   const d = await getJson("/api/site/checkpoint?site=" + encodeURIComponent(site) + "&ts=" + encodeURIComponent(ts));
   if (typeof d.html !== "string") { notice("Checkpoint has no saved HTML."); return; }
-  byId("cv-name").value = site;
+  cv.name = site;
   // Stage the restored HTML into a folder and open it as the live writeable canvas.
   const snap = await postJson("/api/canvas/snapshot", { session: site, html: d.html });
-  byId("cv-folder").value = snap.folder;
+  cv.pending = snap.folder;
   cv.token = null; cv.folder = null;   // force a fresh open of the restored folder
   await cvOpen();
   cvUpdateDomain();
@@ -447,8 +462,8 @@ async function cvCaptureAnimationIfNeeded() {
 }
 
 async function cvSaveCheckpoint() {
-  const name = byId("cv-name").value.trim();
-  if (!name) { byId("cv-name").focus(); notice("Give your site a name first."); return; }
+  const name = (cv.name || "").trim();
+  if (!name) { notice("Open or create a project first (click + New)."); return; }
   if (!cv.folder) {
     const html = byId("cv-src").value;
     if (!html.trim()) { notice("Open a folder or write your site first."); return; }
@@ -480,7 +495,7 @@ function cvOpenPublished() {
 // Open a folder directly from the path field (Enter), or browse the saved projects
 // under your canvas folder via the Open button's picker.
 async function cvOpenFolder(path) {
-  byId("cv-folder").value = path;
+  cv.pending = path;
   cv.token = null; cv.folder = null;   // force a fresh open of the chosen folder
   await cvOpen();
 }
@@ -501,6 +516,11 @@ async function cvOpenPicker() {
       const meta = node("div", "ckpt-meta");
       meta.append(node("div", "ckpt-when", "📁 " + p.name + (p.has_index ? "" : "  ·  ⚠ no index.html")));
       meta.append(node("div", "ckpt-sub", p.files + " file" + (p.files === 1 ? "" : "s") + (p.mtime ? "  ·  " + new Date(p.mtime * 1000).toLocaleString() : "")));
+      if (p.path) {
+        const pathLine = node("div", "ckpt-sub", p.path);
+        pathLine.style.cssText = "opacity:.7;word-break:break-all;";
+        meta.append(pathLine);
+      }
       const open = node("button", "pbtn ckpt-load", "Open");
       const go = () => safely(async () => { overlay.remove(); await cvOpenFolder(p.path); });
       open.addEventListener("click", e => { e.stopPropagation(); go(); });
@@ -515,7 +535,7 @@ async function cvOpenPicker() {
           logSystem("studio · deleted project " + p.name, "wn");
           // If the deleted project was the one open in the canvas, clear it.
           if (cv.folder && (cv.folder === p.path || String(cv.folder).replace(/\/+$/, "").endsWith("/" + p.name))) {
-            cv.token = null; cv.folder = null; byId("cv-folder").value = "";
+            cv.token = null; cv.folder = null; cv.pending = "";
           }
           overlay.remove();
           safely(cvOpenPicker);   // reopen with the refreshed list
@@ -537,7 +557,6 @@ async function cvOpenPicker() {
   document.body.append(overlay);
 }
 byId("cv-open").addEventListener("click", () => safely(cvOpenPicker));
-byId("cv-folder").addEventListener("keydown", e => { if (e.key === "Enter") safely(cvOpen); });
 document.addEventListener("keydown", e => { if (e.key === "Escape" && byId("cv-pick-overlay")) byId("cv-pick-overlay").remove(); });
 
 byId("cv-publish").addEventListener("click", () => { byId("publish-modal").style.display = "flex"; });
@@ -554,8 +573,8 @@ byId("cv-pub-firebase").addEventListener("click", () => safely(() => cvPublish("
 // Pin the site to an always-on pinning service (Filebase / Pinata / 4everland / any
 // PSA endpoint), so the /ipns/ link stays reachable even when this node is offline.
 async function cvPin(service) {
-  const name = byId("cv-name").value.trim();
-  if (!name) { byId("cv-name").focus(); notice("Give your site a name."); return; }
+  const name = (cv.name || "").trim();
+  if (!name) { notice("Open or create a project first (click + New)."); return; }
   // Connect gate: if this service isn't set up yet, open the guided walk-through.
   let status = {}; try { status = await getJson("/api/pin/credentials"); } catch (e) {}
   if (!status[service]) {
@@ -573,12 +592,12 @@ async function cvPin(service) {
   let hasIndex = cv.lastHasIndex;
   if (cv.token) { try { hasIndex = (await getJson("/api/canvas/files?token=" + cv.token)).has_index; } catch (e) {} }
   if (!hasIndex) { notice("Only websites can be pinned — this folder has no index.html. Add a web entry point and try again."); return; }
-  const password = byId("cv-password").value;
-  if (!password) { byId("cv-password").focus(); notice("Your store password is required — pinning is public egress."); return; }
+  const password = await promptPassword("Enter your store password to pin — pinning is public egress.");
+  if (password === null) return;   // cancelled
+  if (!password) { notice("Your store password is required to pin."); return; }
   cvStatus("pinning to " + (PIN_META[service] ? PIN_META[service].name : service) + "…");
   notice("Pinning to " + (PIN_META[service] ? PIN_META[service].name : service) + "… (publishing to IPFS + uploading to the service)");
   const res = await postJson("/api/site/pin", { name, folder, service, password });
-  byId("cv-password").value = "";
   if (res.ipns) cv.lastIpns = res.ipns;
   cvStatus("pinned · " + (res.status || "queued"));
   notice("Pinned to " + (PIN_META[service] ? PIN_META[service].name : service) + " (" + (res.status || "queued") + "). Live at " + res.url + " — stays up even when this node is off.");
@@ -608,6 +627,7 @@ byId("new-modal").addEventListener("click", e => { if (e.target === byId("new-mo
 document.addEventListener("keydown", e => { if (e.key === "Escape" && byId("new-modal").style.display === "flex") newClose(); });
 async function newProject(kind) {
   const name = byId("new-name").value.trim();
+  if (!name) { byId("new-status").textContent = "Enter a project name first."; byId("new-name").focus(); return; }
   byId("new-status").textContent = "Creating…";
   const res = await postJson("/api/canvas/new", { name, kind });
   newClose();
@@ -644,7 +664,7 @@ byId("git-vis").querySelectorAll(".pin-mode-btn").forEach(btn => btn.addEventLis
   byId("git-vis").querySelectorAll(".pin-mode-btn").forEach(b => b.classList.remove("active"));
   btn.classList.add("active");
 }));
-function gitFolder() { return cv.folder || byId("cv-folder").value.trim(); }
+function gitFolder() { return cv.folder || (cv.pending || "").trim(); }
 function gitClose() { byId("git-modal").style.display = "none"; byId("git-password").value = ""; }
 byId("cv-commit").addEventListener("click", () => safely(async () => {
   const folder = gitFolder();
@@ -1378,7 +1398,7 @@ async function cvDraftPoll() {
   let d; try { d = await getJson("/api/canvas/draft"); } catch (e) { return; }
   if (!d.folder || !d.mtime || d.mtime <= cvDraftMtime) return;
   cvDraftMtime = d.mtime;
-  byId("cv-folder").value = d.folder;                 // prefill the site-folder field
+  cv.pending = d.folder;                              // remember the AI's draft folder to open
   if (cv.folder === d.folder) return;                 // already the open canvas — cvPoll hot-reloads it
   if (!cv.token) {                                    // nothing open yet: surface the AI's site live
     await cvOpen();
@@ -1516,36 +1536,8 @@ function applyZoom() {
   }
 }
 
-byId("graph-view").addEventListener("wheel", event => {
-  event.preventDefault();
-  const zoomSpeed = 0.001;
-  state.zoom -= event.deltaY * zoomSpeed;
-  state.zoom = Math.max(0.1, Math.min(5, state.zoom));
-  applyZoom();
-}, { passive: false });
-
-let isDragging = false;
-let lastMouse = { x: 0, y: 0 };
-
-byId("graph-view").addEventListener("mousedown", event => {
-  if (event.target.closest(".graph-node")) return;
-  isDragging = true;
-  lastMouse = { x: event.clientX, y: event.clientY };
-});
-
-window.addEventListener("mousemove", event => {
-  if (!isDragging) return;
-  const dx = event.clientX - lastMouse.x;
-  const dy = event.clientY - lastMouse.y;
-  state.pan.x += dx;
-  state.pan.y += dy;
-  lastMouse = { x: event.clientX, y: event.clientY };
-  applyZoom();
-});
-
-window.addEventListener("mouseup", () => {
-  isDragging = false;
-});
+// (Removed: the old SVG graph pan/zoom handlers. The Graph tab is a file tree now,
+// and the wheel handler's preventDefault would block normal tree scrolling.)
 
 // Phase 8: the Sidekick (on-node embedding model) + its private Kubo node, which
 // enable together. Coupled — the Sidekick needs the node; the node only runs as
@@ -1622,7 +1614,7 @@ async function loadClaudeCodeStatus() {
       await postJson("/api/claude-code/attach", {});
       notice("Attached — backfilling and watching Claude Code sessions.");
       await loadClaudeCodeStatus();
-      quietly(async () => { await Promise.all([loadNames(), refreshGraphData(), loadStats()]); });
+      quietly(async () => { await Promise.all([refreshGraphData(), loadStats()]); });
     }));
     el.append(attach);
   }
@@ -1685,7 +1677,7 @@ quietly(pollActivity);
 quietly(loadSidekickStatus);
 quietly(loadClaudeCodeStatus);
 window.setInterval(() => quietly(async () => {
-  await Promise.all([loadNames(), refreshGraphData(), loadStats(), pollActivity(), loadSidekickStatus(), loadMe(), loadRequests(), loadContacts()]);
+  await Promise.all([refreshGraphData(), loadStats(), pollActivity(), loadSidekickStatus(), loadMe(), loadRequests(), loadContacts()]);
   if (!byId("privacy").querySelector("form")) await refreshPrivacy();
   if (state.room) await loadThread();
 }), 5000);

@@ -210,6 +210,13 @@ fn name_node_summary(
                 .get("created_at")
                 .and_then(|v| v.as_u64())
                 .unwrap_or(0);
+            // Does this record point at other records (a Merkle edge)? Computed from
+            // the JSON already in hand — no extra store round-trip. Lets the tree mark
+            // sessions whose records link out.
+            let linked = mem
+                .links_from_record_json(&body_json)
+                .map(|l| !l.is_empty())
+                .unwrap_or(false);
             Ok(serde_json::json!({
                 // Content is shown locally; the lock surfaces only as a badge (it
                 // guards egress, not viewing).
@@ -217,6 +224,7 @@ fn name_node_summary(
                 "created_at": created_at,
                 "preview": record_preview(&value),
                 "locked": privacy.is_fenced(cid),
+                "linked": linked,
                 "live": true,
             }))
         }

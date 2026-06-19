@@ -189,11 +189,17 @@
   .new-choice b { font: 11px var(--mono); letter-spacing: .08em; text-transform: uppercase; color: var(--pale-gold); }
   .new-choice small { color: var(--faint); font: 9px var(--mono); }
   /* Studio: HTML windows on top take all the room; the toolbars are compact at the bottom. */
-  .cv-toolbar { margin: 4px 0 0; gap: 5px; row-gap: 4px; }
+  /* Every tab's action toolbar is styled like the top tab bar: uppercase mono
+     "tabs" spread evenly across the width. (Shared via .messenger-tools.) */
+  .cv-toolbar { margin: 6px 0 0; border-top: 1px solid var(--line); padding-top: 3px; gap: 4px; }
   .cv-toolbar .canvas-status { padding: 4px 8px; font-size: 9px; }
-  /* Bottom toolbar: uniform HEIGHT + width so buttons and fields form one tidy strip. */
-  .cv-toolbar .tool-button { height: 30px; box-sizing: border-box; padding: 0 10px; font-size: 9px; min-width: 100px; display: inline-flex; align-items: center; justify-content: center; }
-  .cv-toolbar .input { height: 30px; box-sizing: border-box; padding: 0 8px; }
+  .messenger-tools .tool-button { flex: 0 0 auto; height: auto; min-width: 0; border: 0; border-bottom: 2px solid transparent; border-radius: 0; background: transparent; color: var(--faint); padding: 9px 9px; font: 9px var(--mono); text-transform: uppercase; letter-spacing: .05em; font-weight: 400; box-shadow: none; display: inline-flex; align-items: center; }
+  .messenger-tools .tool-button:hover { color: var(--gold); border-bottom-color: var(--gold); background: transparent; }
+  .messenger-tools .tool-button.on { color: var(--gold); background: transparent; border-bottom-color: var(--gold); }
+  /* Studio's primary actions stay gold-accented. */
+  .cv-toolbar #cv-publish, .cv-toolbar #cv-pin, .cv-toolbar #cv-commit { background: transparent; color: var(--gold); border-color: transparent; border-bottom: 2px solid transparent; box-shadow: none; font-weight: 700; padding: 9px 9px; }
+  .cv-toolbar #cv-publish:hover, .cv-toolbar #cv-pin:hover, .cv-toolbar #cv-commit:hover { background: transparent; color: var(--pale-gold); border-bottom-color: var(--gold); }
+  .cv-toolbar .input { flex: 0 0 auto; height: auto; min-width: 0; width: 120px; border: 0; border-bottom: 1px solid var(--line); border-radius: 0; background: transparent; padding: 8px 6px; color: var(--muted); font: 9px var(--mono); }
   .publish-group { position: relative; display: flex; }
   .publish-menu {
     position: absolute;
@@ -491,6 +497,33 @@
   .name-row span { color: var(--faint); font: 9px var(--mono); }
   /* NAMES as a human timeline: month -> day -> minute-by-minute records. */
   .names-tree { display: flex; flex-direction: column; gap: 8px; }
+  /* Graph tab as a file tree: Month ▸ Day ▸ Session ▸ Record (indented explorer). */
+  .file-tree { display: block; font: 11px var(--mono); padding: 4px 2px 24px; overflow-y: auto; }
+  .file-tree .ft-group { display: block; }
+  .file-tree .ft-indent { margin-left: 14px; border-left: 1px solid var(--line); padding-left: 4px; }
+  .file-tree .ft-body { display: block; }
+  .file-tree .ft-row { display: flex; align-items: center; gap: 7px; width: 100%; text-align: left; border: 0; background: transparent; color: var(--ink); padding: 5px 8px; cursor: pointer; border-radius: 4px; font: inherit; }
+  .file-tree .ft-row:hover { background: rgba(var(--patina-rgb), .08); color: #fff; }
+  .file-tree .ft-folder-row { color: var(--gold); }
+  .file-tree .ft-folder-row .ft-label { font-weight: 600; }
+  .file-tree .ft-file { color: var(--muted); }
+  .file-tree .ft-file.locked { opacity: .65; }
+  /* Merkle-link rows (past a record): the edge relation + the linked CID. */
+  .file-tree .ft-link { color: var(--faint); }
+  .file-tree .ft-link .event-cid { color: var(--patina); }
+  .file-tree .ft-rel { flex: 0 0 auto; color: var(--gold); font-size: 9px; text-transform: uppercase; letter-spacing: .04em; }
+  .file-tree .ft-link-badge { flex: 0 0 auto; color: var(--patina); font-size: 10px; margin-left: 2px; }
+  .file-tree .ft-empty { color: var(--faint); font-size: 9px; padding: 3px 8px 5px 24px; }
+  .file-tree .ft-caret { cursor: pointer; }
+  .file-tree .ft-caret:hover { color: var(--gold); }
+  .file-tree .ft-row .disclosure { flex: 0 0 auto; width: 10px; color: var(--faint); }
+  .file-tree .ft-icon { flex: 0 0 auto; }
+  .file-tree .ft-label { flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .file-tree .ft-row .count { flex: 0 0 auto; color: var(--faint); font-size: 9px; letter-spacing: .04em; }
+  .file-tree .ft-file .event-kind { color: var(--patina); font-size: 9px; text-transform: uppercase; letter-spacing: .04em; }
+  .file-tree .ft-file .event-desc { flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .file-tree .ft-file .event-time { flex: 0 0 auto; color: var(--faint); font-size: 9px; }
+  .file-tree .ft-file .event-cid { flex: 0 0 auto; color: var(--faint); font-size: 9px; }
   .month-group { border: 1px solid var(--line); border-radius: 6px; background: var(--deep); overflow: hidden; }
   .month-head, .day-head { width: 100%; display: flex; align-items: center; gap: 10px; border: 0; text-align: left; background: transparent; color: var(--ink); }
   .month-head { padding: 13px 14px; background: rgba(var(--gold-rgb),.04); }
@@ -516,7 +549,8 @@
   .event-desc { color: var(--ink); font: 12px var(--body); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .event-aliases { color: var(--patina); font: 9px var(--mono); }
   .event-cid { color: var(--faint); font: 8px var(--mono); white-space: nowrap; }
-  .messenger-tools, .search-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 14px; }
+  .messenger-tools { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 14px; }
+  .search-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 14px; }
   /* Records action buttons: uniform width + centered so they line up tidily. */
   .rec-tool { min-width: 140px; text-align: center; }
   /* Records toolbar: give every control the same height so buttons + fields align. */

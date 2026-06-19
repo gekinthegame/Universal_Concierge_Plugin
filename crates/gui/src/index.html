@@ -20,8 +20,7 @@
   <div class="header-right">
     <div class="header-tabs" role="tablist">
       <button class="tab" data-view="network">Network<span id="msg-badge" class="tab-badge" style="display:none">0</span></button>
-      <button class="tab" data-view="graph">Graph</button>
-      <button class="tab" data-view="names">Records</button>
+      <button class="tab" data-view="graph">InterPlanetary Merkle-DAG</button>
       <button class="tab" data-view="brain">Brain</button>
       <button class="tab" data-view="wallet">Wallet</button>
       <button class="tab" data-view="updates">Updates</button>
@@ -41,23 +40,34 @@
 
 <main>
   <section class="panel center">
-    <div id="graph-view" class="view">
-      <div class="graph-toolbar">
-        <button id="reset-view" class="reset-mini" title="Center and fit the whole graph">⤢ Reset view</button>
-        <button data-command="Ingest" class="reset-mini" title="Ingest a file, folder, or repo from disk">⊕ Ingest</button>
+    <div id="graph-view" class="view"><div class="content">
+      <div class="messenger-tools">
+        <form id="search-form" class="search-tools" style="flex:1;min-width:280px;">
+          <button id="search-go" class="tool-button" type="submit">Search</button>
+          <input id="search-q" class="input" placeholder="Search your memory (semantic + graph-gravity)…" autocomplete="off" style="flex:1;">
+          <select id="search-depth" class="input" style="max-width:120px;">
+            <option value="summary">Summary</option>
+            <option value="brief">Brief</option>
+            <option value="full">Full</option>
+          </select>
+          <label class="tool-button" style="display:flex;align-items:center;gap:6px;cursor:pointer;"><input id="search-related" type="checkbox"> + related</label>
+        </form>
+        <button data-command="Ingest" class="tool-button rec-tool" title="Ingest a file, folder, or repo from disk">⊕ Ingest</button>
+        <button id="bookmarks-sync" data-action="bookmarksSync" class="tool-button rec-tool" title="Pull your Brave/Opera bookmarks into memory (deduped). They become searchable records.">🔖 Bookmarks</button>
+        <button id="hot-manage" data-action="hotManage" class="tool-button rec-tool" title="Manage the records this node is keeping hot on your private swarm">🔥 Kept hot</button>
+        <span id="bookmarks-status" class="eyebrow"></span>
       </div>
-      <div class="swarm-badge"><img src="/api/swarm.png" alt="Swarm protocol"><span>Swarm protocol<br>protected node</span></div>
-      <div class="yarax-badge"><img src="/api/yarax.png" alt="YARA-X"><span>Built-in</span></div>
-      <div class="impeccable-badge"><span>Designed with</span><img src="/api/impeccable.png" alt="Impeccable"></div>
-      <svg id="graph" viewBox="0 0 1000 650" role="img" aria-label="Memory DAG"></svg>
-    </div>
-    <div id="record-modal" class="modal-overlay record-modal" style="display:none;" role="dialog" aria-label="Record">
+      <div id="search-results"></div>
+      <div id="graph-tree" class="names-tree file-tree"></div>
+      <svg id="graph" viewBox="0 0 1000 650" style="display:none" aria-hidden="true"></svg>
+    </div></div>
+    <div id="record-modal" data-close="closeRecordModal" class="modal-overlay record-modal" style="display:none;" role="dialog" aria-label="Record">
       <div class="modal-card record-card">
-        <button id="record-close" class="record-close" title="Close (Esc)" aria-label="Close">✕</button>
+        <button id="record-close" data-action="close" class="record-close" title="Close (Esc)" aria-label="Close">✕</button>
         <div id="record" class="content empty">Select a graph node or name to inspect it.</div>
       </div>
     </div>
-    <div id="reach-modal" class="modal-overlay record-modal" style="display:none;" role="dialog" aria-label="Make your site reachable">
+    <div id="reach-modal" data-close="reachClose" class="modal-overlay record-modal" style="display:none;" role="dialog" aria-label="Make your site reachable">
       <div class="modal-card">
         <div style="display:flex;align-items:center;justify-content:space-between;">
           <div class="modal-title">⚠ Make your site reachable from anywhere</div>
@@ -72,7 +82,7 @@
         </div>
       </div>
     </div>
-    <div id="deploy-modal" class="modal-overlay record-modal" style="display:none;" role="dialog" aria-label="Deploy settings">
+    <div id="deploy-modal" data-close="depClose" class="modal-overlay record-modal" style="display:none;" role="dialog" aria-label="Deploy settings">
       <div class="modal-card">
         <div style="display:flex;align-items:center;justify-content:space-between;">
           <div class="modal-title">🔌 Connect a publishing account</div>
@@ -96,7 +106,7 @@
         </div>
       </div>
     </div>
-    <div id="yt-modal" class="modal-overlay record-modal" style="display:none;" role="dialog" aria-label="Upload to YouTube">
+    <div id="yt-modal" data-close="ytClose" class="modal-overlay record-modal" style="display:none;" role="dialog" aria-label="Upload to YouTube">
       <div class="modal-card">
         <div style="display:flex;align-items:center;justify-content:space-between;">
           <div class="modal-title">▶ Upload to YouTube</div>
@@ -123,7 +133,7 @@
         <div id="new-status" class="eyebrow"></div>
       </div>
     </div>
-    <div id="git-modal" class="modal-overlay record-modal" style="display:none;" role="dialog" aria-label="Commit project to GitHub">
+    <div id="git-modal" data-close="gitClose" class="modal-overlay record-modal" style="display:none;" role="dialog" aria-label="Commit project to GitHub">
       <div class="modal-card">
         <div style="display:flex;align-items:center;justify-content:space-between;">
           <div class="modal-title">⬆ Commit project to GitHub</div>
@@ -144,7 +154,7 @@
         </div>
       </div>
     </div>
-    <div id="pin-modal" class="modal-overlay record-modal" style="display:none;" role="dialog" aria-label="Pinning settings">
+    <div id="pin-modal" data-close="pinClose" class="modal-overlay record-modal" style="display:none;" role="dialog" aria-label="Pinning settings">
       <div class="modal-card">
         <div style="display:flex;align-items:center;justify-content:space-between;">
           <div class="modal-title">📌 Connect a pinning service</div>
@@ -206,7 +216,7 @@
       <div class="modal-card">
         <div style="display:flex;align-items:center;justify-content:space-between;">
           <div class="modal-title">🔥 Kept hot on your node</div>
-          <button id="hot-close" class="record-close" title="Close (Esc)" aria-label="Close">✕</button>
+          <button id="hot-close" data-action="close" class="record-close" title="Close (Esc)" aria-label="Close">✕</button>
         </div>
         <div class="eyebrow">These records are encrypted and pinned on your private Kubo node, served to your paired devices over your private swarm while this node is up. Unpinning stops serving + frees them; the original record stays in your store.</div>
         <div id="hot-list"></div>
@@ -216,7 +226,7 @@
       <div class="modal-card" style="max-height:86vh;overflow:auto;display:flex;flex-direction:column;">
         <div style="display:flex;align-items:center;justify-content:space-between;">
           <div class="modal-title">Your profile</div>
-          <button id="profile-close" class="record-close" title="Close (Esc)" aria-label="Close">✕</button>
+          <button id="profile-close" data-action="close" class="record-close" title="Close (Esc)" aria-label="Close">✕</button>
         </div>
         <div class="eyebrow">Your self-asserted contact card — peers you connect to see this name. No registrar, no chain.</div>
         <div id="profile-editor" class="profile-editor"></div>
@@ -232,12 +242,12 @@
       <div class="modal-card" style="max-height:86vh;overflow:auto;display:flex;flex-direction:column;">
         <div style="display:flex;align-items:center;justify-content:space-between;">
           <div class="modal-title">Private network</div>
-          <button id="netmgr-close" class="record-close" title="Close (Esc)" aria-label="Close">✕</button>
+          <button id="netmgr-close" data-action="close" class="record-close" title="Close (Esc)" aria-label="Close">✕</button>
         </div>
         <div class="messenger-tools">
-          <button id="network-new" class="tool-button">New network</button>
-          <button id="pair-share" class="tool-button" title="Share this node with your other computer — generate a pairing offer">📲 Pair a device</button>
-          <button id="pair-join" class="tool-button" title="Join a network from another computer with a pairing offer">🔗 Join a network</button>
+          <button id="network-new" data-action="open" data-modal="newnet-modal" data-onopen="focusNetworkName" class="tool-button">New network</button>
+          <button id="pair-share" data-action="pairShare" class="tool-button" title="Share this node with your other computer — generate a pairing offer">📲 Pair a device</button>
+          <button id="pair-join" data-action="pairJoin" class="tool-button" title="Join a network from another computer with a pairing offer">🔗 Join a network</button>
         </div>
         <div class="eyebrow">Your private mesh. Each device keeps its own key — pairing never copies a secret. Private sync is capability-scoped and never authorizes public publication. Revoking advances the membership epoch; re-grant remaining devices.</div>
         <div id="network-identity" class="net-identity"></div>
@@ -248,7 +258,7 @@
       <div class="modal-card" style="max-height:86vh;overflow:auto;display:flex;flex-direction:column;">
         <div style="display:flex;align-items:center;justify-content:space-between;">
           <div class="modal-title">Threads</div>
-          <button id="thread-modal-close" class="record-close" title="Close (Esc)" aria-label="Close">✕</button>
+          <button id="thread-modal-close" data-action="close" class="record-close" title="Close (Esc)" aria-label="Close">✕</button>
         </div>
         <div class="eyebrow">Select a thread to view.</div>
         <div id="thread-picker" class="thread-picker"></div>
@@ -258,34 +268,16 @@
       <div class="modal-card" style="width:min(420px,92vw);display:flex;flex-direction:column;">
         <div style="display:flex;align-items:center;justify-content:space-between;">
           <div class="modal-title">New network</div>
-          <button id="newnet-close" class="record-close" title="Close (Esc)" aria-label="Close">✕</button>
+          <button id="newnet-close" data-action="close" class="record-close" title="Close (Esc)" aria-label="Close">✕</button>
         </div>
-        <input id="network-name" class="input" placeholder="New private network name">
+        <input id="network-name" data-enter="networkCreate" class="input" placeholder="New private network name">
         <div class="modal-actions">
-          <button id="network-create" class="tool-button">Create</button>
+          <button id="network-create" data-action="networkCreate" class="tool-button">Create</button>
         </div>
       </div>
     </div>
-    <div id="names-view" class="view"><div class="content">
-      <div class="messenger-tools">
-        <form id="search-form" class="search-tools" style="flex:1;min-width:280px;">
-          <button id="search-go" class="tool-button" type="submit">Search</button>
-          <input id="search-q" class="input" placeholder="Search your memory (semantic + graph-gravity)…" autocomplete="off" style="flex:1;">
-          <select id="search-depth" class="input" style="max-width:120px;">
-            <option value="summary">Summary</option>
-            <option value="brief">Brief</option>
-            <option value="full">Full</option>
-          </select>
-          <label class="tool-button" style="display:flex;align-items:center;gap:6px;cursor:pointer;"><input id="search-related" type="checkbox"> + related</label>
-        </form>
-        <button data-command="Ingest" class="tool-button rec-tool" title="Ingest a file, folder, or repo from disk">⊕ Ingest</button>
-        <button id="bookmarks-sync" class="tool-button rec-tool" title="Pull your Brave/Opera bookmarks into memory (deduped). They become searchable records.">🔖 Bookmarks</button>
-        <button id="hot-manage" class="tool-button rec-tool" title="Manage the records this node is keeping hot on your private swarm">🔥 Kept hot</button>
-        <span id="bookmarks-status" class="eyebrow"></span>
-      </div>
-      <div id="search-results"></div>
-      <div id="names" class="names-tree"></div>
-    </div></div>
+    <!-- Records merged into the Graph tab (the file tree + Merkle explorer). -->
+
     <div id="brain-view" class="view"><div class="content">
       <div class="msg-section">Host harness</div>
       <div class="eyebrow">The large model the Concierge is mounted to — your primary brain. The Concierge is its sidekick: the host drives it through the MCP tools, and its sessions are captured into your memory. The Concierge mounts the harness it detects.</div>
@@ -303,7 +295,7 @@
         <label class="wallet-field"><span class="wallet-k">Active model</span>
           <select id="brain-model" class="input"></select>
         </label>
-        <button id="brain-model-apply" class="tool-button" style="width:100%;">Apply model</button>
+        <button id="brain-model-apply" data-action="brainModelApply" class="tool-button" style="width:100%;">Apply model</button>
       </div>
       <div id="brain-rich" class="wallet-card" style="display:none;"></div>
       <div class="msg-section">Embedder</div>
@@ -326,10 +318,10 @@
       </div>
       </div>
       <div class="messenger-tools">
-        <button id="profile-open" class="tool-button">Your profile</button>
+        <button id="profile-open" data-action="open" data-modal="profile-modal" data-onopen="openProfileBundle" class="tool-button">Your profile</button>
         <button id="view-room" class="tool-button">View thread</button>
         <button id="human-only" class="tool-button">Human-only view</button>
-        <button id="netmgr-open" class="tool-button">Private network</button>
+        <button id="netmgr-open" data-action="open" data-modal="netmgr-modal" data-onopen="loadNetwork" class="tool-button">Private network</button>
       </div>
       <datalist id="room-list"></datalist>
       <div id="thread"></div>
@@ -347,11 +339,7 @@
       </div>
       <div id="cv-domain" class="cv-domain"></div>
       <div class="messenger-tools cv-toolbar">
-        <input id="cv-folder" class="input" placeholder="canvas project path under your Concierge canvas folder" autocomplete="off" style="flex:1 1 140px;min-width:120px;">
         <button id="cv-open" class="tool-button" title="Browse your saved projects">📁 Open ▾</button>
-        <button id="cv-mcp" class="tool-button" title="Let your host AI write into the Concierge over MCP (write tools: put_node / bind / write_site). Off by default — read-only.">AI writes: off</button>
-        <input id="cv-name" type="text" class="input" placeholder="site name" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" data-1p-ignore data-lpignore="true" style="max-width:150px;">
-        <input id="cv-password" class="input" type="password" placeholder="password" autocomplete="new-password" style="max-width:120px;">
         <button id="cv-publish" class="tool-button main-publish cv-pubpin" title="Publish your site">Publish</button>
         <button id="cv-pin" class="tool-button main-publish cv-pubpin" title="Keep the site online even when this node is off, by pinning it to an always-on service">📌 Pin</button>
         <button id="cv-commit" class="tool-button" title="Commit the whole project to a GitHub repo — git add + commit + push (creates the repo if needed)">⬆ Git commit</button>
@@ -425,7 +413,7 @@
       <div class="wallet-card">
         <div id="update-app" class="eyebrow"></div>
         <div class="modal-actions">
-          <button id="update-check" class="tool-button" style="flex:1;">Check for updates</button>
+          <button id="update-check" data-action="updateCheck" class="tool-button" style="flex:1;">Check for updates</button>
         </div>
       </div>
     </div></div>
@@ -445,7 +433,7 @@
   <div class="modal-card">
     <div style="display:flex;align-items:center;justify-content:space-between;">
       <div class="modal-title">🔒 Privacy &amp; Publication</div>
-      <button id="privacy-close" class="record-close" title="Close (Esc)" aria-label="Close">✕</button>
+      <button id="privacy-close" data-action="close" class="record-close" title="Close (Esc)" aria-label="Close">✕</button>
     </div>
     <div id="privacy" class="privacy"><div class="empty">Select a root in the graph to see its privacy &amp; publication state.</div></div>
   </div>

@@ -331,11 +331,13 @@ pub(super) fn aider_status_json(mem: &MemCli) -> CoreResult<String> {
 /// Background capture: while attached, re-ingest any changed Aider transcript on a
 /// short interval (cheap stat per file; idempotent by CID). Mirrors the Claude loop.
 fn spawn_aider_capture(mem: MemCli) {
-    use concierge_adapter_aider::capture_once;
+    use concierge_adapter_aider::{capture_once, seed_lens};
     let base = mem.working_dir().to_path_buf();
     std::thread::spawn(move || {
         let mut lens: std::collections::HashMap<std::path::PathBuf, u64> =
             std::collections::HashMap::new();
+        // Seed current sizes so loading does NOT backfill prior history.
+        seed_lens(&mut lens);
         loop {
             if aider_attached(&mem) {
                 let _ = capture_once(&mut lens, &mem, &base);
@@ -345,6 +347,17 @@ fn spawn_aider_capture(mem: MemCli) {
     });
 }
 
+/// Manual full backfill of Aider transcripts (the "Ingest" button) — runs in the
+/// background so the request returns immediately.
+pub(super) fn aider_ingest(mem: &MemCli) -> Response {
+    let mem = mem.clone();
+    let base = mem.working_dir().to_path_buf();
+    std::thread::spawn(move || {
+        let _ = concierge_adapter_aider::ingest_all(&mem, &base);
+    });
+    Response::json(serde_json::json!({ "ok": true, "started": true }).to_string())
+}
+
 // ── Additional file-based harnesses (Codex, Gemini, Continue) ────────────────
 // Each reads the harness's own on-disk session files and re-ingests changed ones
 // (CID-dedup makes the re-read idempotent), gated by a per-harness consent
@@ -352,7 +365,8 @@ fn spawn_aider_capture(mem: MemCli) {
 // attach sentinel helpers, the status JSON, and the background capture loop.
 macro_rules! harness_capture {
     ($flag:literal, $attached:ident, $set:ident, $status:ident, $spawn:ident,
-     $disc:path, $cap:path, $label:literal, $stagger:expr) => {
+     $disc:path, $cap:path, $label:literal, $stagger:expr,
+     $seed:path, $ingest:ident, $ingest_all:path) => {
         pub(super) fn $attached(mem: &MemCli) -> bool {
             mem.store_dir()
                 .ok()
@@ -398,6 +412,10 @@ macro_rules! harness_capture {
                 std::thread::sleep(std::time::Duration::from_secs($stagger));
                 let mut lens: std::collections::HashMap<std::path::PathBuf, u64> =
                     std::collections::HashMap::new();
+                // Seed current sizes so attaching/loading does NOT backfill all prior
+                // history — only growth from here is auto-captured. Use the Ingest
+                // button for a one-time full backfill.
+                $seed(&mut lens);
                 loop {
                     if $attached(&mem) {
                         let _ = $cap(&mut lens, &mem, &base);
@@ -407,6 +425,18 @@ macro_rules! harness_capture {
                     std::thread::sleep(std::time::Duration::from_secs(20));
                 }
             });
+        }
+
+        /// Manual full backfill (the "Ingest" button): runs the historical ingest in
+        /// a background thread so the request returns immediately and the UI stays
+        /// responsive while the System Console fills with progress.
+        pub(super) fn $ingest(mem: &MemCli) -> Response {
+            let mem = mem.clone();
+            let base = mem.working_dir().to_path_buf();
+            std::thread::spawn(move || {
+                let _ = $ingest_all(&mem, &base);
+            });
+            Response::json(serde_json::json!({ "ok": true, "started": true }).to_string())
         }
     };
 }
@@ -420,7 +450,10 @@ harness_capture!(
     concierge_adapter_codex::discovery,
     concierge_adapter_codex::capture_once,
     "codex",
-    4
+    4,
+    concierge_adapter_codex::seed_lens,
+    codex_ingest,
+    concierge_adapter_codex::ingest_all
 );
 harness_capture!(
     "capture-gemini",
@@ -431,7 +464,10 @@ harness_capture!(
     concierge_adapter_gemini::discovery,
     concierge_adapter_gemini::capture_once,
     "gemini",
-    10
+    10,
+    concierge_adapter_gemini::seed_lens,
+    gemini_ingest,
+    concierge_adapter_gemini::ingest_all
 );
 harness_capture!(
     "capture-continue",
@@ -442,7 +478,10 @@ harness_capture!(
     concierge_adapter_continue::discovery,
     concierge_adapter_continue::capture_once,
     "continue",
-    16
+    16,
+    concierge_adapter_continue::seed_lens,
+    continue_ingest,
+    concierge_adapter_continue::ingest_all
 );
 
 /// Where per-file ingest offsets are persisted across relaunches, so a restart
@@ -496,13 +535,17 @@ pub(super) fn save_capture_offsets(
 /// loaded at start and persisted whenever they advance, so a relaunch resumes the
 /// tail rather than re-scanning the whole history.
 fn spawn_claude_code_capture(mem: MemCli) {
-    use concierge_adapter_claude_code::{capture_once, discovery};
+    use concierge_adapter_claude_code::{capture_once, discovery, seed_offsets};
     let Some(projects_dir) = discovery::claude_projects_dir() else {
         return;
     };
     let base = mem.working_dir().to_path_buf();
     std::thread::spawn(move || {
         let mut offsets = load_capture_offsets(&mem);
+        // Seed any not-yet-tracked session to its end so a first attach does NOT
+        // backfill all prior history (already-tracked sessions keep their position).
+        seed_offsets(&projects_dir, &mut offsets);
+        save_capture_offsets(&mem, &offsets);
         loop {
             if claude_code_attached(&mem) {
                 let ingested = capture_once(&projects_dir, &mut offsets, &mem, &base);
@@ -513,6 +556,21 @@ fn spawn_claude_code_capture(mem: MemCli) {
             std::thread::sleep(std::time::Duration::from_secs(3));
         }
     });
+}
+
+/// Manual full backfill of Claude Code sessions (the "Ingest" button) — re-reads
+/// every session from byte 0 in a background thread so the request returns at once.
+pub(super) fn claude_code_ingest(mem: &MemCli) -> Response {
+    use concierge_adapter_claude_code::{discovery, ingest_all};
+    let Some(projects_dir) = discovery::claude_projects_dir() else {
+        return Response::error("Claude Code projects directory not found".to_string());
+    };
+    let mem = mem.clone();
+    let base = mem.working_dir().to_path_buf();
+    std::thread::spawn(move || {
+        let _ = ingest_all(&projects_dir, &mem, &base);
+    });
+    Response::json(serde_json::json!({ "ok": true, "started": true }).to_string())
 }
 
 /// Sidekick/node status for the Data Platter (the embedding model + its private
