@@ -497,43 +497,51 @@ impl MemCli {
         visited: &mut BTreeSet<Cid>,
         out: &mut Vec<(Cid, MessageEnvelope)>,
     ) -> Result<()> {
-        if !visited.insert(cid.clone()) {
-            return Ok(());
-        }
-        // Read the envelope WITHOUT failing the whole thread on a single bad node.
-        // A message written by an earlier build (different signing format/key) or an
-        // otherwise corrupt/tombstoned node must never block the entire conversation
-        // from rendering — this mirrors the tolerance the send path already has via
-        // `read_message_link`. We still only *display* a message whose signature
-        // verifies (below), so a forged node is traversed but hidden.
-        let env = match self.read_message_link(cid) {
-            Ok(env) => env,
-            Err(_) => return Ok(()), // tombstoned / unreadable: nothing to walk
-        };
-        for entry in &env.next {
-            // `next` entries are parent *message ids* (signatures); resolve each to
-            // its local block CID via the index. Fall back to treating the entry as
-            // a block CID directly (legacy/manually-built links), and skip any
-            // ancestor not present locally (a partial cross-install thread).
-            let parent_cid = self
-                .resolve(&message_id_name(entry))
-                .unwrap_or_else(|_| Cid(entry.clone()));
-            if matches!(
-                self.get(&CidOrName::Cid(parent_cid.clone())),
-                Ok(Record::Live { .. })
-            ) {
-                self.collect_thread(room, book, &parent_cid, visited, out)?;
+        // Iterative walk with an explicit stack — NOT recursion. A long thread used
+        // to recurse once per message and could overflow the call stack and crash the
+        // process (a stack overflow can't be caught/unwound). Order doesn't matter:
+        // `room_thread` sorts the result by (clock, AgentID) afterward.
+        let mut stack = vec![cid.clone()];
+        while let Some(cid) = stack.pop() {
+            if !visited.insert(cid.clone()) {
+                continue;
             }
-        }
-        // Only display a message whose signature verifies against its author key.
-        // An unverifiable node (legacy signing format, corruption, or forgery) is
-        // walked-through above so its descendants still link, but is hidden here —
-        // a single bad message no longer breaks the whole thread view.
-        let verified =
-            crate::identity::verify(&AgentId(env.key.clone()), &env.signing_bytes(), &env.sig)
-                .unwrap_or(false);
-        if verified && !book.is_muted(room, &env.key) {
-            out.push((cid.clone(), env));
+            // Read the envelope WITHOUT failing the whole thread on a single bad node.
+            // A message written by an earlier build (different signing format/key) or
+            // an otherwise corrupt/tombstoned node must never block the conversation
+            // from rendering — mirroring the tolerance the send path has via
+            // `read_message_link`. We still only *display* a message whose signature
+            // verifies (below), so a forged node is traversed but hidden.
+            let env = match self.read_message_link(&cid) {
+                Ok(env) => env,
+                Err(_) => continue, // tombstoned / unreadable: nothing to walk
+            };
+            for entry in &env.next {
+                // `next` entries are parent *message ids* (signatures); resolve each
+                // to its local block CID via the index. Fall back to treating the
+                // entry as a block CID directly (legacy/manually-built links), and
+                // skip any ancestor not present locally (a partial cross-install
+                // thread).
+                let parent_cid = self
+                    .resolve(&message_id_name(entry))
+                    .unwrap_or_else(|_| Cid(entry.clone()));
+                if matches!(
+                    self.get(&CidOrName::Cid(parent_cid.clone())),
+                    Ok(Record::Live { .. })
+                ) {
+                    stack.push(parent_cid);
+                }
+            }
+            // Only display a message whose signature verifies against its author key.
+            // An unverifiable node (legacy signing format, corruption, or forgery) is
+            // walked-through above so its descendants still link, but is hidden here —
+            // a single bad message no longer breaks the whole thread view.
+            let verified =
+                crate::identity::verify(&AgentId(env.key.clone()), &env.signing_bytes(), &env.sig)
+                    .unwrap_or(false);
+            if verified && !book.is_muted(room, &env.key) {
+                out.push((cid.clone(), env));
+            }
         }
         Ok(())
     }

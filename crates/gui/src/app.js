@@ -153,7 +153,7 @@ async function loadMeta() {
   const meta = await getJson("/api/meta");
   csrfToken = meta.csrf_token || "";
   startLifecycle();
-  byId("model").textContent = meta.mounted_model;
+  { const m = byId("model"); if (m) m.textContent = meta.mounted_model; } // moved into Brain tab
   const option = node("option", "", meta.store);
   byId("store").replaceChildren(option);
 }
@@ -1864,14 +1864,14 @@ function discDmPeer(username) {
   const msg = byId("chat-msg"); if (msg) msg.focus();
   notice("Ready to DM " + username.slice(0, 10) + "… — username copied; type a message and Send.");
 }
-// A small pulsating white LED — a generic network node, like a star in the night sky.
+// A plain white network-node dot. No halo/glow and no per-element twinkle
+// animation — at hundreds of peers those (a second circle + an infinite CSS
+// animation each) were the map's main render cost. Just one cheap circle now.
 function discStar(cx, cy, connected) {
-  const g = svgNode("g", { class: "disc-star " + (connected ? "on" : "off") });
-  const halo = svgNode("circle", { cx: cx, cy: cy, r: connected ? 0.95 : 0.75, class: "disc-star-halo" });
-  const core = svgNode("circle", { cx: cx, cy: cy, r: connected ? 0.42 : 0.32, class: "disc-star-core" });
-  core.style.animationDelay = (Math.random() * 2.4).toFixed(2) + "s"; // twinkle out of unison
-  g.append(halo, core);
-  return g;
+  return svgNode("circle", {
+    cx: cx, cy: cy, r: connected ? 0.6 : 0.45,
+    class: "disc-star " + (connected ? "on" : "off"),
+  });
 }
 // ── Discovery map zoom + pan ──────────────────────────────────────────────
 // All drawn content lives in a single <g id="disc-zoom-root"> so one transform
@@ -2021,6 +2021,41 @@ function renderDiscovery(data) {
   if (!online) stat.textContent = "Node offline — open this tab to bring it online and start discovering peers.";
   else if (!peers.length) stat.textContent = "Searching the network… no peers yet. mDNS finds LAN peers instantly; the DHT and rendezvous take a moment.";
   else stat.textContent = total + " node" + (total === 1 ? "" : "s") + " discovered on the libp2p network (mDNS · DHT · rendezvous) — Concierges as brains, others as stars · " + located + " at real geo-IP location · Geo © DB-IP (CC BY 4.0)";
+  renderConciergeList(peers);
+}
+// The left-hand roster: every discovered Concierge node, clickable to start a DM
+// (same as clicking its brain on the map). Non-Concierge "star" nodes are omitted.
+function renderConciergeList(peers) {
+  const list = byId("disc-concierge-list"); if (!list) return;
+  clear(list);
+  list.append(node("div", "dcl-title", "Concierge nodes"));
+  const brains = (peers || []).filter(p => p.is_concierge);
+  // Connected first, then a stable order by id.
+  brains.sort((a, b) =>
+    (a.status === "connected" ? 0 : 1) - (b.status === "connected" ? 0 : 1)
+    || (a.peer_id || "").localeCompare(b.peer_id || ""));
+  if (!brains.length) {
+    list.append(node("div", "dcl-empty", "No Concierge peers discovered yet — they appear here as they join the network."));
+    return;
+  }
+  brains.forEach(p => {
+    const connected = p.status === "connected";
+    const row = node("button", "disc-cn" + (connected ? " on" : ""));
+    const dot = node("span", "dcl-dot");
+    dot.style.background = connected ? "var(--patina)" : "var(--faint)";
+    if (connected) dot.style.boxShadow = "0 0 6px var(--patina)";
+    row.append(dot, node("span", "dcl-name", (p.peer_id || "").slice(-6) || "node"),
+      node("span", "dcl-meta", connected ? "connected" : (p.status || "discovered")));
+    if (p.username) {
+      row.title = "Click to DM " + p.username.slice(0, 12) + "…";
+      row.addEventListener("click", () => discDmPeer(p.username));
+    } else {
+      row.classList.add("no-dm");
+      row.disabled = true;
+      row.title = "This Concierge hasn't published a username yet — can't DM.";
+    }
+    list.append(row);
+  });
 }
 async function loadPeers() {
   await loadWorldMap();
@@ -2071,16 +2106,24 @@ function brainRow(key, value) {
 // The Concierge's PRIMARY brain is the host harness it's mounted to (e.g. Claude Code) — the
 // large model that drives it via MCP. The Sovereign LLM below is the optional private alternative.
 async function loadBrainHost() {
-  let cc = {}, aider = {}, codex = {}, gemini = {}, cont = {}, meta = {};
-  try { cc = await getJson("/api/claude-code/status"); } catch (e) {}
-  try { aider = await getJson("/api/aider/status"); } catch (e) {}
-  try { codex = await getJson("/api/codex/status"); } catch (e) {}
-  try { gemini = await getJson("/api/gemini/status"); } catch (e) {}
-  try { cont = await getJson("/api/continue/status"); } catch (e) {}
-  try { meta = await getJson("/api/meta"); } catch (e) {}
+  // Fetch all harness statuses + meta in PARALLEL. The server handles each request
+  // on its own thread, so this collapses six sequential round-trips — each doing a
+  // filesystem scan — into one. Doing them one-at-a-time is what made the tab hang.
+  const [cc, aider, codex, gemini, cont, meta] = await Promise.all([
+    getJson("/api/claude-code/status").catch(() => ({})),
+    getJson("/api/aider/status").catch(() => ({})),
+    getJson("/api/codex/status").catch(() => ({})),
+    getJson("/api/gemini/status").catch(() => ({})),
+    getJson("/api/continue/status").catch(() => ({})),
+    getJson("/api/meta").catch(() => ({})),
+  ]);
   const host = byId("brain-host");
   if (!host) return;
   clear(host);
+  // At most HARNESS_CAP harnesses may capture at once — enforced here by greying
+  // out the Attach buttons once the cap is reached (detaching one re-enables them).
+  const HARNESS_CAP = 2;
+  const capReached = [cc, aider, codex, gemini, cont].filter(s => s && s.attached).length >= HARNESS_CAP;
   // One row per detected harness — the Concierge auto-mounts whichever it finds.
   function row(connected, name, detail, toggle) {
     const head = node("div", "model");
@@ -2104,20 +2147,41 @@ async function loadBrainHost() {
     const n = st.session_count || 0, t = st.transcript_count || 0;
     const btn = node("button", "tool-button", st.attached ? "Detach" : "Attach");
     btn.style.cssText = "margin-left:auto;padding:2px 12px;font-size:12px;";
-    btn.addEventListener("click", () => safely(async () => {
-      await postJson("/api/" + key + (st.attached ? "/detach" : "/attach"), {});
-      await loadBrainHost();
-    }));
+    if (!st.attached && capReached) {
+      btn.disabled = true;
+      btn.title = "Capture limit reached (" + HARNESS_CAP + " max) — detach another harness first.";
+    } else {
+      btn.addEventListener("click", () => safely(async () => {
+        await postJson("/api/" + key + (st.attached ? "/detach" : "/attach"), {});
+        await loadBrainHost();
+      }));
+    }
     row(st.attached, label + " · " + (st.attached ? "capturing" : "detected"),
       n + " session" + (n === 1 ? "" : "s") + " across " + t + " transcript" + (t === 1 ? "" : "s") + (st.attached ? " · ingesting into memory" : " · attach to capture into memory"),
       btn);
   }
-  // Claude Code (or a declared mounted model) — the host driving via MCP.
+  // Claude Code (or a declared mounted model) — the host driving via MCP. Its
+  // capture toggle lives here in the Brain tab alongside the other harnesses.
   if (cc.available) {
     any = true;
     const n = cc.session_count || 0;
+    const btn = node("button", "tool-button", cc.attached ? "Detach" : "Attach");
+    btn.style.cssText = "margin-left:auto;padding:2px 12px;font-size:12px;";
+    if (!cc.attached && capReached) {
+      btn.disabled = true;
+      btn.title = "Capture limit reached (" + HARNESS_CAP + " max) — detach another harness first.";
+    } else {
+      btn.title = cc.attached
+        ? "Pause Claude Code auto-capture (watched sessions stay ingested)."
+        : "Backfill and watch Claude Code sessions — local-only, nothing leaves your device.";
+      btn.addEventListener("click", () => safely(async () => {
+        await postJson("/api/claude-code/" + (cc.attached ? "detach" : "attach"), {});
+        await loadBrainHost();
+      }));
+    }
     row(true, "Claude Code · connected",
-      (cc.attached ? "capturing" : "detected — not attached") + " · " + n + " session" + (n === 1 ? "" : "s") + " · drives the Concierge via MCP");
+      (cc.attached ? "capturing" : "detected — not attached") + " · " + n + " session" + (n === 1 ? "" : "s") + " · drives the Concierge via MCP",
+      btn);
   } else if (declared) {
     any = true;
     row(true, meta.mounted_model + " · mounted", "drives the Concierge via MCP");
@@ -2229,7 +2293,7 @@ byId("brain-model-apply").addEventListener("click", () => safely(async () => {
 }));
 // Poll the Brain metrics only while its tab is open (same gating as the discovery map).
 let brainPoll = null;
-function startBrainPoll() { stopBrainPoll(); safely(loadBrainMetrics); brainPoll = setInterval(() => quietly(loadBrainMetrics), 2000); }
+function startBrainPoll() { stopBrainPoll(); safely(loadBrainMetrics); brainPoll = setInterval(() => quietly(loadBrainMetrics), 4000); }
 function stopBrainPoll() { if (brainPoll) { clearInterval(brainPoll); brainPoll = null; } }
 
 document.querySelectorAll("[data-view]").forEach(button => button.addEventListener("click", () => {

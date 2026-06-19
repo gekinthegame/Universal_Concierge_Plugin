@@ -55,8 +55,13 @@
   .header-top-row .console-mini { flex: 1 1 auto; max-width: none; }
   .header-top-row .rail-mini { flex: 0 0 auto; }
   /* The tab bar, relocated from the panel head to under the System Console. */
-  .header-tabs { display: flex; align-items: stretch; gap: 2px; min-width: 0; overflow-x: auto; scrollbar-width: thin; border-top: 1px solid var(--line); padding-top: 2px; }
+  /* No overflow here: overflow-x:auto would force overflow-y to auto too and clip
+     the System Console dropdown that drops below the bar. */
+  .header-tabs { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; min-width: 0; }
   .header-tabs .tab { flex: 0 0 auto; padding: 7px 11px; white-space: nowrap; }
+  /* System Console lives at the far right of the tab bar (right of Studio);
+     space-between spreads the tabs evenly across the width. */
+  .header-tabs .console-mini { flex: 0 1 auto; max-width: 300px; }
   .rail-mini { display: flex; align-items: center; gap: 5px; min-width: 0; overflow-x: auto; flex: 1 1 auto; scrollbar-width: thin; }
   .rail-mini button { flex: 0 0 auto; min-height: 0; padding: 6px 9px; border: 1px solid var(--line); border-radius: 4px; background: var(--graphite); color: var(--muted); font: 9px var(--mono); letter-spacing: .04em; text-transform: uppercase; cursor: pointer; white-space: nowrap; transition: .15s; }
   .rail-mini button:hover, .rail-mini button.active { color: var(--black); background: var(--gold); border-color: var(--pale-gold); }
@@ -388,6 +393,19 @@
   .graph-plus { fill: var(--gold); font: 700 15px var(--mono); pointer-events: none; }
   /* Network discovery map — your node + the peers it discovers, each a small
      pulsating brain (same glyph as the graph centre, scaled down). */
+  .discovery-layout { display: flex; gap: 12px; align-items: stretch; margin: 6px 0 16px; }
+  .discovery-layout > .discovery-wrap { flex: 1 1 auto; min-width: 0; margin: 0; }
+  /* Left-hand roster of discovered Concierge nodes — click one to start a DM,
+     same as clicking its brain on the map. */
+  .disc-concierge-list { flex: 0 0 188px; max-width: 188px; min-height: 460px; max-height: 76vh; overflow-y: auto; border: 1px solid rgba(60,110,210,.28); border-radius: 8px; background: #050813; padding: 8px; display: flex; flex-direction: column; gap: 5px; }
+  .disc-concierge-list .dcl-title { font: 10px var(--mono); text-transform: uppercase; letter-spacing: .08em; color: var(--faint); padding: 2px 4px 6px; }
+  .disc-concierge-list .dcl-empty { font: 10px var(--mono); color: var(--faint); padding: 4px; line-height: 1.5; }
+  .disc-cn { display: flex; align-items: center; gap: 7px; text-align: left; width: 100%; border: 1px solid var(--line); border-radius: 5px; background: var(--deep); color: var(--ink); padding: 7px 8px; cursor: pointer; font: 11px var(--mono); }
+  .disc-cn:hover:not(:disabled) { border-color: var(--patina); color: #fff; }
+  .disc-cn .dcl-dot { width: 7px; height: 7px; border-radius: 50%; flex: 0 0 auto; }
+  .disc-cn .dcl-name { flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .disc-cn .dcl-meta { flex: 0 0 auto; font-size: 9px; color: var(--faint); }
+  .disc-cn.no-dm { opacity: .55; cursor: default; }
   .discovery-wrap { position: relative; margin: 6px 0 16px; border: 1px solid rgba(60,110,210,.28); border-radius: 8px; background: radial-gradient(130% 130% at 50% 30%, rgba(40,90,190,.10), transparent 70%), #050813; padding: 6px 6px 10px; }
   #discovery-svg { width: 100%; height: auto; max-height: 76vh; min-height: 460px; display: block; touch-action: none; cursor: grab; }
   #discovery-svg.disc-panning { cursor: grabbing; }
@@ -402,13 +420,11 @@
   /* World map backdrop — blue HUD coastlines/borders on a faint grid */
   .disc-grid line { stroke: rgba(70,120,220,.11); stroke-width: .5; }
   .disc-land { fill: none; stroke: rgba(64,140,255,.55); stroke-width: .45; stroke-linejoin: round; pointer-events: none; }
-  /* Generic network node = a twinkling white LED, like a star in the night sky */
-  /* No blur filter: at thousands of stars per-element blur is the main perf cost,
-     and at this radius a soft opacity disc reads the same. */
-  .disc-star-halo { fill: #fff; opacity: .22; pointer-events: none; }
-  .disc-star-core { fill: #fff; animation: disc-twinkle 2.6s ease-in-out infinite; }
+  /* Generic network node = a plain white dot. No glow halo and no per-element
+     twinkle animation — at hundreds of nodes those were the map's main render
+     cost. A single static circle keeps the map cheap to draw and repaint. */
+  .disc-star { fill: #fff; pointer-events: none; }
   .disc-star.off { opacity: .5; }
-  @keyframes disc-twinkle { 0%, 100% { opacity: 1; } 50% { opacity: .32; } }
   .disc-halo { fill: var(--synapse); opacity: .12; filter: blur(4px); pointer-events: none; animation: disc-pulse 1.9s ease-in-out infinite; }
   .disc-node.discovered .disc-halo { fill: var(--muted); }
   .disc-self .disc-halo { fill: var(--gold); animation-duration: 1.4s; }
@@ -534,6 +550,7 @@
   .input { flex: 1 1 240px; }
   .tool-button { color: var(--muted); }
   .tool-button.on { color: var(--black); background: var(--gold); }
+  .tool-button:disabled { opacity: .4; cursor: not-allowed; }
   .net-identity { display: flex; flex-wrap: wrap; gap: 14px; padding: 9px 11px; margin: 4px 0 10px; background: var(--deep); border: 1px solid var(--line); border-radius: 6px; font: 10px var(--mono); color: var(--muted); }
   .net-identity b { color: var(--ink); }
   .net-card { padding: 11px; margin: 8px 0; background: var(--deep); border: 1px solid var(--line); border-radius: 6px; }

@@ -401,16 +401,33 @@ pub fn capture_once<B: CoreBinding>(
 ) -> usize {
     let mut total = 0usize;
     for session in discovery::discover() {
-        let len = std::fs::metadata(&session.file)
-            .map(|m| m.len())
-            .unwrap_or(0);
+        let Ok(meta) = std::fs::metadata(&session.file) else {
+            continue;
+        };
+        let len = meta.len();
         if lens.get(&session.file).copied() == Some(len) {
+            continue; // unchanged since last ingest
+        }
+        // Debounce: a live session file changes every few seconds while the harness
+        // writes to it, and re-reading + re-ingesting the WHOLE file each time is the
+        // main cost. Wait until it has been quiet briefly, then ingest once. We do NOT
+        // update `lens` here, so the next pass reconsiders it once it settles.
+        let busy = meta
+            .modified()
+            .ok()
+            .and_then(|m| m.elapsed().ok())
+            .map(|since| since < std::time::Duration::from_secs(10))
+            .unwrap_or(false);
+        if busy {
             continue;
         }
         if let Ok(report) = ingest_file(&session.file, binding, base_dir) {
             total += report.events;
         }
         lens.insert(session.file, len);
+        // Yield between files so a backfill of many sessions can't monopolise the
+        // CPU and starve the web server.
+        std::thread::sleep(std::time::Duration::from_millis(30));
     }
     total
 }

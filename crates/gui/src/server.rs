@@ -352,7 +352,7 @@ fn spawn_aider_capture(mem: MemCli) {
 // attach sentinel helpers, the status JSON, and the background capture loop.
 macro_rules! harness_capture {
     ($flag:literal, $attached:ident, $set:ident, $status:ident, $spawn:ident,
-     $disc:path, $cap:path, $label:literal) => {
+     $disc:path, $cap:path, $label:literal, $stagger:expr) => {
         pub(super) fn $attached(mem: &MemCli) -> bool {
             mem.store_dir()
                 .ok()
@@ -393,13 +393,18 @@ macro_rules! harness_capture {
         fn $spawn(mem: MemCli) {
             let base = mem.working_dir().to_path_buf();
             std::thread::spawn(move || {
+                // Stagger startup so the harness loops don't all backfill at once
+                // (a simultaneous burst across loops can starve the web server).
+                std::thread::sleep(std::time::Duration::from_secs($stagger));
                 let mut lens: std::collections::HashMap<std::path::PathBuf, u64> =
                     std::collections::HashMap::new();
                 loop {
                     if $attached(&mem) {
                         let _ = $cap(&mut lens, &mem, &base);
                     }
-                    std::thread::sleep(std::time::Duration::from_secs(5));
+                    // Capture is not real-time and re-ingesting changed files is heavy,
+                    // so poll gently — this keeps the HTTP server responsive.
+                    std::thread::sleep(std::time::Duration::from_secs(20));
                 }
             });
         }
@@ -414,7 +419,8 @@ harness_capture!(
     spawn_codex_capture,
     concierge_adapter_codex::discovery,
     concierge_adapter_codex::capture_once,
-    "codex"
+    "codex",
+    4
 );
 harness_capture!(
     "capture-gemini",
@@ -424,7 +430,8 @@ harness_capture!(
     spawn_gemini_capture,
     concierge_adapter_gemini::discovery,
     concierge_adapter_gemini::capture_once,
-    "gemini"
+    "gemini",
+    10
 );
 harness_capture!(
     "capture-continue",
@@ -434,7 +441,8 @@ harness_capture!(
     spawn_continue_capture,
     concierge_adapter_continue::discovery,
     concierge_adapter_continue::capture_once,
-    "continue"
+    "continue",
+    16
 );
 
 /// Where per-file ingest offsets are persisted across relaunches, so a restart
@@ -562,6 +570,8 @@ pub(super) fn claude_code_status_json(mem: &MemCli) -> CoreResult<String> {
 
 /// Attach/detach capture (consent). CSRF-gated like every mutation; the password
 /// is not involved — capture is local-only and writes only to the user's store.
+/// The 2-harness limit is enforced in the UI (the Attach buttons grey out); no
+/// server-side cap check is needed.
 pub(super) fn mutation_claude_code_attach(mem: &MemCli, attached: bool) -> Response {
     if let Err(error) = set_claude_code_attached(mem, attached) {
         return Response::error(format!("could not update capture state: {error}"));
