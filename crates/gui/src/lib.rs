@@ -74,8 +74,8 @@ use server::{
     opendevin_ingest, opendevin_status_json, sidekick_status_json,
 };
 pub use server::{
-    brave_path, open_app, open_browser, opera_path, pick_free_port, running_gui_port, serve,
-    serve_with_options, wallet_browser, WalletBrowser,
+    brave_path, open_app, open_app_window, open_browser, opera_path, pick_free_port,
+    running_gui_port, serve, serve_with_options, wallet_browser, WalletBrowser,
 };
 #[cfg(test)]
 use server::{
@@ -221,22 +221,6 @@ pub struct GuiOptions {
     /// The GUI polls `/api/activity?since=<seq>` and prints it so the user can see
     /// the plugin does what it says (no hidden network or model activity).
     activity: Arc<Mutex<ActivityLog>>,
-    /// Open GUI windows. Each window heartbeats `/api/heartbeat` while it's open and
-    /// beacons `/api/closing` on unload; the lifecycle watchdog (only when this process
-    /// opened a browser) shuts the GUI server down once the last window closes.
-    /// Kernel/Sidekick lifecycle is owned by the kernel in Phase 5. Maps window-id
-    /// → last seen; `seen_any` guards the startup race.
-    clients: Arc<Mutex<ClientPresence>>,
-}
-
-/// Window-presence tracker behind [`GuiOptions::clients`].
-#[derive(Debug, Default)]
-struct ClientPresence {
-    /// True once any window has heartbeated — until then the watchdog must not shut down
-    /// (the server is up before the first window has loaded).
-    seen_any: bool,
-    /// window-id → last heartbeat instant. Pruned by the watchdog; emptied → time to exit.
-    last_seen: HashMap<String, Instant>,
 }
 
 /// One line in the System Console feed.
@@ -364,7 +348,6 @@ impl Default for GuiOptions {
             canvas: Arc::new(Mutex::new(HashMap::new())),
             preview_dirs: Arc::new(Mutex::new(HashMap::new())),
             activity: Arc::new(Mutex::new(ActivityLog::default())),
-            clients: Arc::new(Mutex::new(ClientPresence::default())),
         }
     }
 }

@@ -102,10 +102,30 @@ pub fn serve_with_options(mem: MemCli, addr: &str, options: GuiOptions) -> CoreR
     if let Ok(local) = listener.local_addr() {
         write_gui_lock(&mem, local.port());
     }
+    // Launch the app window in a wallet browser we *own* (a dedicated, persistent
+    // `--user-data-dir`), then watch that child process. Closing the window — or a crash
+    // or force-quit — exits the child, which is the reliable "the app is gone" signal that
+    // shuts the server down. A backgrounded or minimized window keeps the process alive, so
+    // it no longer triggers a spurious shutdown (the bug the old heartbeat watchdog had).
+    // With no wallet browser we fall back to the default browser (nothing to watch) and
+    // rely on Ctrl-C / the harness `watch_pid`.
     if options.open_browser {
-        let _ = open_app(&format!("http://{addr}"));
+        let url = format!("http://{addr}");
+        match mem.store_dir().ok().map(|dir| dir.join("brave-profile")) {
+            Some(profile) => {
+                if let Some(child) = open_app_window(&url, &profile) {
+                    spawn_browser_watch(mem.clone(), child);
+                }
+            }
+            None => {
+                let _ = open_app(&url);
+            }
+        }
     }
 
+    // A harness that launched us headless (`--no-open`) passes its own PID; when that
+    // parent dies we exit too. This watches a PID that is *not* our child, so a liveness
+    // probe (not `try_wait`) is the right tool.
     if let Some(pid) = options.watch_pid {
         let mem_watch = mem.clone();
         std::thread::spawn(move || loop {
@@ -121,48 +141,6 @@ pub fn serve_with_options(mem: MemCli, addr: &str, options: GuiOptions) -> CoreR
             let alive = true;
             if !alive {
                 shutdown(&mem_watch);
-            }
-        });
-    }
-
-    // Hitting the GUI window's X closes this GUI server. Each window heartbeats
-    // `/api/heartbeat` while open and beacons `/api/closing` on unload; when the
-    // last window is gone (after at least one connected), shut the server down.
-    // Only the process that owns a window does this — a headless `--no-open`
-    // server is governed by watch_pid instead. A generous STALE tolerates
-    // background-tab timer throttling (the beacon catches real closes fast);
-    // GRACE outlives a page reload before deciding the window is gone.
-    if options.open_browser {
-        let mem_life = mem.clone();
-        let clients = options.clients.clone();
-        std::thread::spawn(move || {
-            const STALE: std::time::Duration = std::time::Duration::from_secs(75);
-            const GRACE: std::time::Duration = std::time::Duration::from_secs(6);
-            let mut empty_since: Option<std::time::Instant> = None;
-            loop {
-                std::thread::sleep(std::time::Duration::from_secs(2));
-                let (seen_any, empty) = {
-                    let Ok(mut presence) = clients.lock() else {
-                        continue;
-                    };
-                    let now = std::time::Instant::now();
-                    presence
-                        .last_seen
-                        .retain(|_, seen| now.duration_since(*seen) < STALE);
-                    (presence.seen_any, presence.last_seen.is_empty())
-                };
-                if !seen_any {
-                    continue; // no window has connected yet — don't exit during startup
-                }
-                if empty {
-                    match empty_since {
-                        Some(since) if since.elapsed() >= GRACE => shutdown(&mem_life),
-                        Some(_) => {}
-                        None => empty_since = Some(std::time::Instant::now()),
-                    }
-                } else {
-                    empty_since = None; // a window is back (e.g. a reload) — cancel shutdown
-                }
             }
         });
     }
@@ -934,6 +912,55 @@ pub fn open_browser(url: &str) -> CoreResult<()> {
         .map_err(|error| Error::Io(format!("open browser: {error}")))
 }
 
+/// Launch the Concierge **app window** in a wallet browser using a dedicated, persistent
+/// profile we own (`--user-data-dir`), so the spawned process *is* the browser instance —
+/// no Chromium singleton hand-off to an already-running Brave — and we can watch it as a
+/// child to know when the window closes. Returns the owned child on success. Falls back to
+/// the default browser (returns `None`, nothing watchable) when no wallet browser is
+/// installed or `CONCIERGE_NO_BRAVE` is set. The profile is created on first use and
+/// persists, so the in-browser wallet and bookmarks survive across runs.
+pub fn open_app_window(url: &str, profile_dir: &std::path::Path) -> Option<std::process::Child> {
+    if std::env::var_os("CONCIERGE_NO_BRAVE").is_none() {
+        if let Some((_, exe)) = wallet_browser() {
+            let _ = std::fs::create_dir_all(profile_dir);
+            if let Ok(child) = Command::new(&exe)
+                .arg(format!("--app={url}"))
+                .arg(format!("--user-data-dir={}", profile_dir.display()))
+                .arg("--no-first-run")
+                .arg("--no-default-browser-check")
+                .spawn()
+            {
+                return Some(child);
+            }
+        }
+    }
+    let _ = open_browser(url);
+    None
+}
+
+/// Watch the app-window browser child and shut the GUI down when it exits. `try_wait`
+/// observes the child's death directly (no zombie or PID-reuse races), so closing the
+/// window, a crash, or a force-quit all reap the server reliably — while a merely
+/// backgrounded or minimized window, whose process stays alive, never does. A child that
+/// dies within the first few seconds is treated as a singleton hand-off / failed launch
+/// rather than a real close: we stop watching and leave the server up for Ctrl-C.
+fn spawn_browser_watch(mem: MemCli, mut child: std::process::Child) {
+    let started = std::time::Instant::now();
+    std::thread::spawn(move || loop {
+        std::thread::sleep(std::time::Duration::from_secs(2));
+        match child.try_wait() {
+            Ok(Some(_)) => {
+                if started.elapsed() < std::time::Duration::from_secs(3) {
+                    return; // hand-off / failed launch — not a user close
+                }
+                shutdown(&mem); // never returns
+            }
+            Ok(None) => continue,    // window still open
+            Err(_) => return,        // can't observe the child — don't risk a spurious exit
+        }
+    });
+}
+
 pub(super) fn serve_connection(
     mem: &MemCli,
     options: &GuiOptions,
@@ -971,11 +998,6 @@ pub(super) fn route_request(
         .target
         .split_once('?')
         .unwrap_or((&request.target, ""));
-    // Window-lifecycle pings are CSRF-gated by loopback_gate above but are NOT privacy
-    // mutations — exempt them from the mutation rate limiter (the page pings every few seconds).
-    if request.method == "POST" && (path == "/api/heartbeat" || path == "/api/closing") {
-        return handle_lifecycle(options, path, &request.body);
-    }
     if request.method == "POST" && !options.allow_mutation() {
         return Response::too_many_requests();
     }
@@ -984,33 +1006,6 @@ pub(super) fn route_request(
         "POST" => handle_mutation(mem, options, path, &request.body),
         _ => Response::method_not_allowed(),
     }
-}
-
-/// Record a window heartbeat (`/api/heartbeat`) or close beacon (`/api/closing`). The
-/// open-window watchdog reads this presence to decide when the last window has gone and the
-/// server should fully shut down. Body is `{"id":"<window-id>"}`.
-fn handle_lifecycle(options: &GuiOptions, path: &str, body: &str) -> Response {
-    let id = serde_json::from_str::<serde_json::Value>(body)
-        .ok()
-        .and_then(|value| {
-            value
-                .get("id")
-                .and_then(|id| id.as_str())
-                .map(str::to_string)
-        })
-        .unwrap_or_default();
-    if id.is_empty() {
-        return Response::bad_request("missing window id");
-    }
-    if let Ok(mut presence) = options.clients.lock() {
-        presence.seen_any = true;
-        if path == "/api/heartbeat" {
-            presence.last_seen.insert(id, std::time::Instant::now());
-        } else {
-            presence.last_seen.remove(&id);
-        }
-    }
-    Response::json("{\"ok\":true}".to_string())
 }
 
 /// The result of reading one request off the socket.

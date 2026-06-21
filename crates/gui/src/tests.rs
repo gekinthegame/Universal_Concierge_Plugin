@@ -1264,66 +1264,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn window_heartbeat_and_closing_track_presence_and_bypass_the_rate_limiter() {
-        let (_dir, mem) = store();
-        let options = options_with_csrf("tok");
-        let beat = |id: &str, path: &str| {
-            post(
-                path,
-                &format!("{{\"id\":\"{id}\"}}"),
-                Some("127.0.0.1:4173"),
-                Some("http://127.0.0.1:4173"),
-                Some("tok"),
-            )
-        };
-
-        // A heartbeat is accepted and records the window as present.
-        let res = route_request(&mem, &options, &beat("win-a", "/api/heartbeat"));
-        assert_eq!(res.status, 200);
-        {
-            let presence = options.clients.lock().unwrap();
-            assert!(presence.seen_any);
-            assert!(presence.last_seen.contains_key("win-a"));
-        }
-
-        // Heartbeats are NOT rate-limited (the page pings every few seconds): far more than
-        // MUTATION_RATE_MAX in a row all succeed, where a normal mutation would 429.
-        for _ in 0..(MUTATION_RATE_MAX + 5) {
-            assert_eq!(
-                route_request(&mem, &options, &beat("win-a", "/api/heartbeat")).status,
-                200
-            );
-        }
-
-        // A second window is tracked independently; closing one leaves the other present.
-        route_request(&mem, &options, &beat("win-b", "/api/heartbeat"));
-        route_request(&mem, &options, &beat("win-a", "/api/closing"));
-        {
-            let presence = options.clients.lock().unwrap();
-            assert!(!presence.last_seen.contains_key("win-a"));
-            assert!(presence.last_seen.contains_key("win-b"));
-        }
-
-        // Closing the last window empties the set — the watchdog's signal to shut down.
-        route_request(&mem, &options, &beat("win-b", "/api/closing"));
-        assert!(options.clients.lock().unwrap().last_seen.is_empty());
-
-        // A missing id is rejected, not silently tracked.
-        let bad = route_request(
-            &mem,
-            &options,
-            &post(
-                "/api/heartbeat",
-                "{}",
-                Some("127.0.0.1:4173"),
-                Some("http://127.0.0.1:4173"),
-                Some("tok"),
-            ),
-        );
-        assert_eq!(bad.status, 400);
-    }
-
     fn post(
         path: &str,
         body: &str,
@@ -2261,8 +2201,13 @@ mod tests {
     }
 
     #[test]
-    fn app_starts_window_lifecycle_after_loading_csrf_token() {
-        assert!(APP_JS.contains("csrfToken = meta.csrf_token || \"\";\n  startLifecycle();"));
+    fn app_does_not_heartbeat_lifecycle_is_server_owned() {
+        // Lifecycle is owned by the server (it watches the browser process it spawned), so the
+        // page must not ping /api/heartbeat or /api/closing — a backgrounded tab stopping those
+        // pings is exactly what used to kill the server.
+        assert!(!APP_JS.contains("/api/heartbeat"));
+        assert!(!APP_JS.contains("/api/closing"));
+        assert!(!APP_JS.contains("startLifecycle"));
     }
 
     #[test]
