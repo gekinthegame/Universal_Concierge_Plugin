@@ -69,7 +69,16 @@ impl KernelState {
     pub fn start_background(self: &Arc<Self>) {
         self.warm_index_from_snapshot();
         crate::capture::spawn_all(Arc::clone(self));
-        let _ = self.ensure_node();
+        // Bring the libp2p discovery node up OFF the startup path. Building the tokio
+        // runtime and binding TCP/QUIC/mDNS can be slow — and because `serve()` runs
+        // this before entering the accept loop, any slowness here means the socket is
+        // bound but not yet accepting, so clients connect and then block forever
+        // (the Windows "spins forever" symptom). The daemon must answer store reads
+        // immediately; the network node warms up in the background.
+        let node_state = Arc::clone(self);
+        std::thread::spawn(move || {
+            let _ = node_state.ensure_node();
+        });
     }
 
     pub(crate) fn mem(&self) -> MemCli {

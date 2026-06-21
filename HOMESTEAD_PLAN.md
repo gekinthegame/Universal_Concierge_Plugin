@@ -43,8 +43,15 @@ parallel machinery.
 > between a user's own spaces.
 >
 > **Public vs. private boundaries.** Public Lands serve the whole web (storefronts,
-> portfolios, public guides); Private Lands stay behind the user's private swarm. A
-> portal links the two, gated by the Consent Gate.
+> portfolios, public guides) and are readable by normal web browsers without a Concierge
+> client. Anyone can visit a public world map/atlas, walk the spaces, and view public assets.
+> Private Lands stay behind the user's private swarm. A portal links the two, gated by
+> the Consent Gate.
+>
+> **Remote Private Access.** The node owner can securely connect to and log into their
+> home node from any remote browser (including mobile devices) via a password/passkey-gated
+> secure endpoint. Once authenticated, they have full access to their private spaces,
+> files, and can chat directly with their resident AI on the go.
 >
 > **Sovereign by default.** Homes map onto the world; an Anonymity Switch relocates a
 > node to a random ocean coordinate — an archipelago of sovereign outposts.
