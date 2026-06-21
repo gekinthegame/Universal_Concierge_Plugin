@@ -146,8 +146,22 @@ The seed crystal. No economy, no stitching, no multi-agent.
   it does not add crypto.
 - **New:** `concierge-land.json` manifest + a "Publish Virtual Land" Studio action that
   CAR-packages the homestead, pins via the chosen path (public PSA vs private capability),
-  and records the manifest. Be precise in copy: PSA pinning is durable-while-paid, **not**
-  "forever free."
+  and records the manifest.
+  The `concierge-land.json` contains:
+  ```json
+  {
+    "name": "My Workspace",
+    "coordinates": { "x": 12, "y": -45 },
+    "tilemap": "assets/maps/workspace_map.json",
+    "tilesets": ["assets/tilesets/terrain.png"],
+    "portals": [
+      { "portal_id": "exit_east", "target": "ipns://k51qzi5u...", "spawn": { "x": 5, "y": 10 } }
+    ],
+    "residents": [
+      { "name": "indexer", "type": "embedder_droid" }
+    ]
+  }
+  ```
 - **Verify:** publish a public land → reachable via a gateway while this node is offline;
   publish a private land → its blocks are ciphertext on the swarm, unreadable without the
   sealed capability.
@@ -166,12 +180,12 @@ The seed crystal. No economy, no stitching, no multi-agent.
 
 ### Phase 6 — Decentralized stitching + geo (ocean default)
 - **Reuse:** libp2p peer discovery / gossip already in the node.
-- **New:** fetch neighbor `concierge-land.json` at map edges and stitch terrain;
-  **auto-generate portals** between a user's own multiple spaces; geo placement using the
+- **New:** fetch neighbor `concierge-land.json` manifests at map edges and stitch terrain;
+  **auto-generate portals** between a user's own multiple spaces; build a visual **World Map / Atlas** view in the GUI by parsing coordinates and portal destination links from the local node's crawled manifests; geo placement using the
   bundled `dbip-city-lite.mmdb.gz` — **ocean/anonymous by default**, GeoIP strictly
   opt-in via the Anonymity Switch (default = on/anonymous).
 - **Verify:** walk to a map edge → a neighbor's land renders; add a second local space →
-  a portal auto-spawns; fresh node → placed in the ocean until the user opts into geo.
+  a portal auto-spawns; open the GUI Atlas → see coordinate points mapped as islands in an ocean; fresh node → placed in the ocean until the user opts into geo.
 
 ### Phase 7 — The multi-resident city
 - **Reuse:** Phase 2's supervised-process model.

@@ -208,6 +208,8 @@ mod daemon {
             let path = lockfile_path();
             if let Some(parent) = path.parent() {
                 std::fs::create_dir_all(parent)?;
+                // Owner-only on Unix; on Windows the profile dir's NTFS ACL applies.
+                #[cfg(unix)]
                 std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700))?;
             }
             let tmp = path.with_extension("lock.tmp");
@@ -217,6 +219,7 @@ mod daemon {
             })
             .to_string();
             std::fs::write(&tmp, body)?;
+            #[cfg(unix)]
             std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600))?;
             std::fs::rename(&tmp, &path)?;
             Ok(Self { path })
