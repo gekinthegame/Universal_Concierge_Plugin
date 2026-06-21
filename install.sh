@@ -3,14 +3,15 @@
 #
 #   curl -fsSL https://github.com/gekinthegame/Universal_Concierge_Plugin/releases/latest/download/install.sh | sh
 #
-# Downloads the matching prebuilt `concierge-plugin` binary from the latest GitHub
-# Release, verifies its checksum, and installs it to ~/.local/bin. No separate mem,
-# database, or cloud; Kubo/IPFS is optional (only for publishing / the Sidekick).
+# Downloads the matching prebuilt Concierge binaries from the latest GitHub
+# Release, verifies the checksum, and installs them to ~/.local/bin. No separate
+# mem, database, or cloud; Kubo/IPFS is optional (only for publishing / the Sidekick).
 set -eu
 
 # ── the repo to install from ────────────────────────────────────────────────
 REPO="${CONCIERGE_REPO:-gekinthegame/Universal_Concierge_Plugin}"
 BIN="concierge-plugin"
+KERNEL_BIN="concierge-kernel"
 PREFIX="${PREFIX:-$HOME/.local/bin}"
 
 # ── detect platform ─────────────────────────────────────────────────────────
@@ -100,13 +101,19 @@ fi
 # ── install ─────────────────────────────────────────────────────────────────
 tar -xzf "$tmp/${asset}.tar.gz" -C "$tmp"
 src="$tmp/${asset}/${BIN}"
+kernel_src="$tmp/${asset}/${KERNEL_BIN}"
 [ -f "$src" ] || { echo "error: ${BIN} not found in the archive." >&2; exit 1; }
+[ -f "$kernel_src" ] || { echo "error: ${KERNEL_BIN} not found in the archive." >&2; exit 1; }
 
 mkdir -p "$PREFIX"
 if install -m 0755 "$src" "$PREFIX/$BIN" 2>/dev/null; then :; else
   cp "$src" "$PREFIX/$BIN" && chmod 0755 "$PREFIX/$BIN"
 fi
+if install -m 0755 "$kernel_src" "$PREFIX/$KERNEL_BIN" 2>/dev/null; then :; else
+  cp "$kernel_src" "$PREFIX/$KERNEL_BIN" && chmod 0755 "$PREFIX/$KERNEL_BIN"
+fi
 echo "Installed → $PREFIX/$BIN"
+echo "Installed → $PREFIX/$KERNEL_BIN"
 
 # ── connect to Claude Code as an MCP server (best-effort) ────────────────────
 echo

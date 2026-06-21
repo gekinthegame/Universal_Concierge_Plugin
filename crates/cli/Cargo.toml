@@ -20,6 +20,11 @@ concierge-adapter-claude-code = { path = "../adapter-claude-code" }
 concierge-gui = { path = "../gui" }
 concierge-net = { path = "../net" }
 concierge-mcp = { path = "../mcp" }
+# Share the kernel's warm index: `retrieve` routes through a running kernel (auto-
+# spawned/restarted) instead of building its own, falling back to in-process only
+# for --standalone or when the kernel is unreachable. The CLI only needs the client
+# API, so it depends on the dependency-light client crate.
+concierge-kernel-client = { path = "../kernel-client" }
 notify = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

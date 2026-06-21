@@ -423,9 +423,9 @@ mod tests {
         std::env::set_var("CONCIERGE_BOOKMARKS_FILE", &bm_file);
 
         // Two unique URLs ingested (the duplicate is deduped).
-        assert_eq!(mem.sync_browser_bookmarks().expect("sync"), 2);
+        assert_eq!(mem.sync_browser_bookmarks().expect("sync").len(), 2);
         // Re-sync adds nothing (URL-keyed dedup via the bound name).
-        assert_eq!(mem.sync_browser_bookmarks().expect("re-sync"), 0);
+        assert_eq!(mem.sync_browser_bookmarks().expect("re-sync").len(), 0);
 
         // Each is a retrievable `memory` node bound under bookmark:<url-hash>.
         let key = crate::browser::url_key("https://libp2p.io");

@@ -1,6 +1,6 @@
 #[cfg(test)]
 mod tests {
-    use super::{envelope_declares_room, forbidden_security_flag, HELP};
+    use super::{envelope_declares_room, forbidden_security_flag, retrieve_query, HELP};
 
     #[test]
     fn inbound_envelope_must_declare_the_subscribed_room() {
@@ -32,5 +32,21 @@ mod tests {
             forbidden_security_flag(&["export-car".into(), "--force".into()]),
             Some("--force")
         );
+    }
+
+    #[test]
+    fn retrieve_query_skips_boolean_and_value_flags() {
+        let args = vec![
+            "retrieve".to_string(),
+            "rust".to_string(),
+            "--standalone".to_string(),
+            "ownership".to_string(),
+            "--budget".to_string(),
+            "2000".to_string(),
+            "--external".to_string(),
+            "--kind".to_string(),
+            "memory,decision".to_string(),
+        ];
+        assert_eq!(retrieve_query(&args), "rust ownership");
     }
 }

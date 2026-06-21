@@ -453,7 +453,9 @@ fn pagerank(nodes: &[String], out_edges: &HashMap<String, Vec<String>>) -> HashM
 }
 
 /// One indexed node: its embedding, searchable text, token cost, and graph
-/// signals (normalized to [0, 1]).
+/// signals (normalized to [0, 1]). Serializable so the whole index can be
+/// snapshotted to disk (kernel persistence) and reloaded on startup.
+#[derive(serde::Serialize, serde::Deserialize)]
 struct IndexEntry {
     cid: String,
     kind: String,
@@ -515,6 +517,13 @@ pub struct Librarian<E: Embedder> {
 }
 
 impl<E: Embedder> Librarian<E> {
+    /// Start with an empty warm index and add records incrementally. Used by the
+    /// kernel capture path when a fresh store starts accreting records before the
+    /// first full search.
+    pub fn empty(embedder: E) -> Self {
+        Self::finish(embedder, Vec::new())
+    }
+
     /// Index every content-bearing node reachable from `roots` (the capability
     /// scope). Pass all named roots for the whole local store; pass a single
     /// subtree root to confine the index to that capability segment — no node
@@ -579,10 +588,9 @@ impl<E: Embedder> Librarian<E> {
             .map(|c| Cid(c.clone()))
             .collect();
         let records = mem.get_many(&cids)?;
-        // 3. Build entries (content-bearing live nodes only), restricting links
-        //    to the scope so the gravity graph never reaches outside it.
+        // Build entries (content-bearing live nodes only) via the shared builder,
+        // restricting links to the scope so the gravity graph never reaches outside it.
         let mut entries = Vec::new();
-        let mut out_edges: HashMap<String, Vec<String>> = HashMap::new();
         for cid in &cids {
             let Some(Record::Live {
                 kind, body_json, ..
@@ -590,65 +598,105 @@ impl<E: Embedder> Librarian<E> {
             else {
                 continue;
             };
-            if is_scaffolding(kind) {
-                continue;
+            if let Some(entry) = Self::build_entry(
+                &embedder,
+                mem,
+                &cid.0,
+                kind,
+                body_json,
+                &scope,
+                cache.as_deref_mut(),
+            ) {
+                entries.push(entry);
             }
-            let text = searchable_text(body_json);
-            if text.trim().is_empty() {
-                continue;
-            }
-            let links: Vec<String> = mem
-                .links_from_record_json(body_json)
-                .unwrap_or_default()
-                .into_iter()
-                .map(|c| c.0)
-                .filter(|t| scope.contains(t))
-                .collect();
-            out_edges.insert(cid.0.clone(), links.clone());
-            let tokens = (text.len() / CHARS_PER_TOKEN).max(1);
-            // Reuse a cached vector when available (and the right length), else
-            // embed and store it.
-            let vector = match cache.as_deref_mut() {
-                // The cache is model-tagged by `embedder.id()`, so a stored vector
-                // is trusted; the length check is a secondary guard, skipped when
-                // the embedder's dims are not yet known (e.g. a lazy HTTP backend).
-                Some(c) => match c.vectors.get(&cid.0) {
-                    Some(v) if embedder.dims() == 0 || v.len() == embedder.dims() => v.clone(),
-                    _ => {
-                        let v = embedder.embed(&text);
-                        c.vectors.insert(cid.0.clone(), v.clone());
-                        v
-                    }
-                },
-                None => embedder.embed(&text),
-            };
-            let created_at = serde_json::from_str::<serde_json::Value>(body_json)
-                .ok()
-                .and_then(|v| v.get("created_at").and_then(serde_json::Value::as_u64));
-            entries.push(IndexEntry {
-                cid: cid.0.clone(),
-                kind: kind.clone(),
-                vector,
-                text,
-                tokens,
-                outbound: links,
-                created_at,
-                gravity: 0.0,
-                density: 0.0,
-                recency: 0.0,
-            });
         }
-        Ok(Self::finish(embedder, entries, &out_edges))
+        Ok(Self::finish(embedder, entries))
     }
 
-    /// Compute the graph signals (PageRank gravity + density) and recency, normalized.
-    fn finish(
-        embedder: E,
-        mut entries: Vec<IndexEntry>,
-        out_edges: &HashMap<String, Vec<String>>,
-    ) -> Self {
-        let node_ids: Vec<String> = entries.iter().map(|e| e.cid.clone()).collect();
-        let pr = pagerank(&node_ids, out_edges);
+    /// Build one [`IndexEntry`] from a live record: extract its searchable text,
+    /// filter its links to the in-index `scope`, and embed it — reusing the
+    /// persistent cache when present, else computing and storing the vector.
+    /// Returns `None` for scaffolding, empty, or non-content nodes. Shared by the
+    /// full index pass and the append-only path so both build entries identically
+    /// (one place, no drift).
+    fn build_entry(
+        embedder: &E,
+        mem: &MemCli,
+        cid: &str,
+        kind: &str,
+        body_json: &str,
+        scope: &HashSet<String>,
+        cache: Option<&mut EmbedCache>,
+    ) -> Option<IndexEntry> {
+        if is_scaffolding(kind) {
+            return None;
+        }
+        let text = searchable_text(body_json);
+        if text.trim().is_empty() {
+            return None;
+        }
+        let links: Vec<String> = mem
+            .links_from_record_json(body_json)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|c| c.0)
+            .filter(|t| scope.contains(t))
+            .collect();
+        let tokens = (text.len() / CHARS_PER_TOKEN).max(1);
+        // Reuse a cached vector when available (and the right length), else embed
+        // and store it. The cache is model-tagged by `embedder.id()`, so a stored
+        // vector is trusted; the length check is a secondary guard, skipped when
+        // the embedder's dims are not yet known (e.g. a lazy HTTP backend).
+        let vector = match cache {
+            Some(c) => match c.vectors.get(cid) {
+                Some(v) if embedder.dims() == 0 || v.len() == embedder.dims() => v.clone(),
+                _ => {
+                    let v = embedder.embed(&text);
+                    c.vectors.insert(cid.to_string(), v.clone());
+                    v
+                }
+            },
+            None => embedder.embed(&text),
+        };
+        let created_at = serde_json::from_str::<serde_json::Value>(body_json)
+            .ok()
+            .and_then(|v| v.get("created_at").and_then(serde_json::Value::as_u64));
+        Some(IndexEntry {
+            cid: cid.to_string(),
+            kind: kind.to_string(),
+            vector,
+            text,
+            tokens,
+            outbound: links,
+            created_at,
+            gravity: 0.0,
+            density: 0.0,
+            recency: 0.0,
+        })
+    }
+
+    /// Build the index from its entries, then compute graph signals once. The
+    /// out-edge graph is derived from each entry's own `outbound`, so entries are
+    /// the single source of truth — an appended node carries its own edges and no
+    /// separate edge map has to be threaded through.
+    fn finish(embedder: E, entries: Vec<IndexEntry>) -> Self {
+        let mut me = Self { embedder, entries };
+        me.recompute_signals();
+        me
+    }
+
+    /// Compute PageRank gravity + link density + recency over the entries,
+    /// normalized to [0, 1] — the graph-aware part of ranking. The out-edge graph
+    /// is derived from each entry's own `outbound`, so entries are the single
+    /// source of truth and no separate edge map has to be threaded through.
+    fn recompute_signals(&mut self) {
+        let out_edges: HashMap<String, Vec<String>> = self
+            .entries
+            .iter()
+            .map(|e| (e.cid.clone(), e.outbound.clone()))
+            .collect();
+        let node_ids: Vec<String> = self.entries.iter().map(|e| e.cid.clone()).collect();
+        let pr = pagerank(&node_ids, &out_edges);
         let max_pr = pr
             .values()
             .copied()
@@ -656,13 +704,14 @@ impl<E: Embedder> Librarian<E> {
             .max(f32::EPSILON);
         let density_of =
             |e: &IndexEntry| e.outbound.len() as f32 / (e.text.len() as f32 / 1024.0).max(1.0);
-        let max_density = entries
+        let max_density = self
+            .entries
             .iter()
             .map(density_of)
             .fold(0.0f32, f32::max)
             .max(f32::EPSILON);
         let now = now_secs();
-        for e in &mut entries {
+        for e in &mut self.entries {
             e.gravity = pr.get(&e.cid).copied().unwrap_or(0.0) / max_pr;
             e.density = density_of(e) / max_density;
             // Exponential recency decay; nodes with no timestamp get no boost (0).
@@ -672,7 +721,6 @@ impl<E: Embedder> Librarian<E> {
                 None => 0.0,
             };
         }
-        Self { embedder, entries }
     }
 
     pub fn len(&self) -> usize {
@@ -681,6 +729,126 @@ impl<E: Embedder> Librarian<E> {
 
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
+    }
+
+    /// Append specific records to the warm index without rebuilding — the kernel's
+    /// incremental, event-driven path (capture/ingest hand it the CIDs they just
+    /// wrote). Embeds only the new CIDs (reusing the persistent embed-cache), adds
+    /// their entries, and recomputes graph signals once. Already-indexed,
+    /// quarantined, scaffolding, and empty CIDs are skipped. Returns how many
+    /// entries were added — O(new), never O(store), and never a `scope_all` walk.
+    pub fn append_records(&mut self, mem: &MemCli, cids: &[Cid]) -> Result<usize> {
+        let mut scope: HashSet<String> = self.entries.iter().map(|e| e.cid.clone()).collect();
+        let quarantine = mem.quarantine_registry().unwrap_or_default();
+        let fresh: Vec<Cid> = cids
+            .iter()
+            .filter(|c| !scope.contains(&c.0) && !quarantine.is_quarantined(&c.0))
+            .cloned()
+            .collect();
+        if fresh.is_empty() {
+            return Ok(0);
+        }
+        // The new CIDs become linkable targets for one another within the batch.
+        for c in &fresh {
+            scope.insert(c.0.clone());
+        }
+        let cache_path = mem.store_dir().ok().map(|dir| dir.join("embed-cache.json"));
+        let mut cache = cache_path
+            .as_ref()
+            .map(|path| EmbedCache::load(path, &self.embedder.id()));
+        let records = mem.get_many(&fresh)?;
+        let mut added = 0usize;
+        for cid in &fresh {
+            let Some(Record::Live {
+                kind, body_json, ..
+            }) = records.get(&cid.0)
+            else {
+                continue;
+            };
+            if let Some(entry) = Self::build_entry(
+                &self.embedder,
+                mem,
+                &cid.0,
+                kind,
+                body_json,
+                &scope,
+                cache.as_mut(),
+            ) {
+                self.entries.push(entry);
+                added += 1;
+            }
+        }
+        if added > 0 {
+            if let (Some(cache), Some(path)) = (&cache, &cache_path) {
+                cache.save(path);
+            }
+            self.recompute_signals();
+        }
+        Ok(added)
+    }
+
+    /// Reconcile the warm index against the store: append every content CID not yet
+    /// indexed. Returns how many were added. The kernel calls this **when capture
+    /// has written new records** — growth driven by real activity, not a rebuild and
+    /// not an idle timer. Appends are O(new); the only whole-store cost is the cheap
+    /// single-open `scope_all` walk to discover what's new.
+    pub fn reconcile(&mut self, mem: &MemCli) -> Result<usize> {
+        let known: HashSet<String> = self.entries.iter().map(|e| e.cid.clone()).collect();
+        let fresh: Vec<Cid> = scope_all(mem)?
+            .into_iter()
+            .filter(|c| !known.contains(c))
+            .map(Cid)
+            .collect();
+        if fresh.is_empty() {
+            return Ok(0);
+        }
+        self.append_records(mem, &fresh)
+    }
+
+    /// Persist the assembled index to `<store>/index-snapshot.json` so the next
+    /// startup LOADS it instead of rebuilding. Atomic (temp + rename), tagged with
+    /// the embedder model id + a format version so a model/schema change is
+    /// detected on load and safely ignored. Self-contained (vectors stored inline).
+    pub fn save_snapshot(&self, mem: &MemCli) {
+        let Some(path) = mem
+            .store_dir()
+            .ok()
+            .map(|dir| dir.join(INDEX_SNAPSHOT_FILE))
+        else {
+            return;
+        };
+        let snap = IndexSnapshotRef {
+            version: INDEX_SNAPSHOT_VERSION,
+            model: self.embedder.id(),
+            entries: &self.entries,
+        };
+        let Ok(bytes) = serde_json::to_vec(&snap) else {
+            return;
+        };
+        let tmp = path.with_extension("json.tmp");
+        if std::fs::write(&tmp, &bytes).is_ok() {
+            let _ = std::fs::rename(&tmp, &path);
+        }
+    }
+
+    /// Load a persisted index snapshot if present and valid for this embedder
+    /// (matching model id + format version), else `None` (the caller rebuilds). The
+    /// embedder is supplied fresh; everything else is restored as-is, so search is
+    /// ready with no re-read, re-embed, or re-rank.
+    pub fn load_snapshot(mem: &MemCli, embedder: &E) -> Option<Self>
+    where
+        E: Clone,
+    {
+        let path = mem.store_dir().ok()?.join(INDEX_SNAPSHOT_FILE);
+        let bytes = std::fs::read(&path).ok()?;
+        let snap: IndexSnapshotOwned = serde_json::from_slice(&bytes).ok()?;
+        if snap.version != INDEX_SNAPSHOT_VERSION || snap.model != embedder.id() {
+            return None;
+        }
+        Some(Self {
+            embedder: embedder.clone(),
+            entries: snap.entries,
+        })
     }
 
     /// Whether a CID is in this (capability-scoped) index.
@@ -834,6 +1002,11 @@ impl<E: Embedder> Librarian<E> {
 /// same way the Data Platter forest does.
 fn scope_all(mem: &MemCli) -> Result<HashSet<String>> {
     let mut scope: HashSet<String> = HashSet::new();
+    // Collect the content roots, then expand them all in ONE store open via
+    // `reachable_union`. The old code called `mem.walk` per root, and `walk` does
+    // a `get` per node which re-opens the store (re-parsing `names.json`) every
+    // time — O(nodes) store opens, minutes on a large store. This is one open.
+    let mut roots: Vec<Cid> = Vec::new();
     for (name, cid) in mem.names()? {
         if let Some(date) = name.strip_prefix("day-") {
             for (_key, event) in mem.day_events(date).unwrap_or_default() {
@@ -843,14 +1016,35 @@ fn scope_all(mem: &MemCli) -> Result<HashSet<String>> {
             continue; // calendar scaffolding, not content
         } else {
             scope.insert(cid.0.clone());
-            if let Ok(reachable) = mem.walk(&cid) {
-                for reached in reachable {
-                    scope.insert(reached.0);
-                }
-            }
+            roots.push(cid);
         }
     }
+    scope.extend(mem.reachable_union(&roots)?);
     Ok(scope)
+}
+
+/// The assembled-index snapshot lives next to the embed-cache in the store dir.
+const INDEX_SNAPSHOT_FILE: &str = "index-snapshot.json";
+/// Bump when the on-disk index schema changes, so old snapshots are ignored
+/// (rebuilt) rather than deserialized into the wrong shape.
+const INDEX_SNAPSHOT_VERSION: u32 = 1;
+
+/// What `save_snapshot` writes — borrows the live index so serialization copies
+/// nothing. `model` ties the snapshot to its embedder (vectors are model-specific)
+/// and `version` to the schema; both are checked on load.
+#[derive(serde::Serialize)]
+struct IndexSnapshotRef<'a> {
+    version: u32,
+    model: String,
+    entries: &'a [IndexEntry],
+}
+
+/// The owned counterpart `load_snapshot` deserializes into.
+#[derive(serde::Deserialize)]
+struct IndexSnapshotOwned {
+    version: u32,
+    model: String,
+    entries: Vec<IndexEntry>,
 }
 
 /// A persisted, model-tagged map of CID → embedding vector, so re-indexing skips
@@ -978,12 +1172,10 @@ mod tests {
         /// As [`from_raw`] but with an explicit `created_at` per node, to test recency.
         fn from_raw_dated(raw: Vec<(&str, &str, Vec<&str>, Option<u64>)>) -> Self {
             let embedder = LexicalEmbedder::default();
-            let mut out_edges = HashMap::new();
             let entries = raw
                 .into_iter()
                 .map(|(cid, text, outbound, created_at)| {
                     let outbound: Vec<String> = outbound.into_iter().map(String::from).collect();
-                    out_edges.insert(cid.to_string(), outbound.clone());
                     IndexEntry {
                         cid: cid.to_string(),
                         kind: "memory".to_string(),
@@ -998,7 +1190,7 @@ mod tests {
                     }
                 })
                 .collect();
-            Librarian::finish(embedder, entries, &out_edges)
+            Librarian::finish(embedder, entries)
         }
     }
 
@@ -1017,7 +1209,6 @@ mod tests {
             "semantic similarity should beat lexical overlap: near {near} vs far {far}"
         );
     }
-
     #[test]
     fn http_embedder_calls_a_model_server_and_normalizes() {
         use std::io::{Read, Write};
@@ -1318,6 +1509,42 @@ mod tests {
             0,
             "second build reuses every cached vector — no re-embedding"
         );
+    }
+
+    #[test]
+    fn snapshot_load_can_reconcile_records_written_after_save() {
+        let dir = tempfile::tempdir().unwrap();
+        let mem = MemCli::new(dir.path());
+        let first = mem
+            .put_node(&Node {
+                kind: "memory".to_string(),
+                fields_json: r#"{"text":"first indexed memory","kind":"reference"}"#.to_string(),
+            })
+            .unwrap();
+        mem.bind("first", &first).unwrap();
+
+        let lib = Librarian::index_all_persistent(&mem, LexicalEmbedder::default()).unwrap();
+        assert!(lib.contains(&first.0));
+        lib.save_snapshot(&mem);
+
+        let second = mem
+            .put_node(&Node {
+                kind: "memory".to_string(),
+                fields_json: r#"{"text":"second memory after snapshot","kind":"reference"}"#
+                    .to_string(),
+            })
+            .unwrap();
+        mem.bind("second", &second).unwrap();
+
+        let mut loaded = Librarian::load_snapshot(&mem, &LexicalEmbedder::default())
+            .expect("valid snapshot loads");
+        assert!(
+            !loaded.contains(&second.0),
+            "snapshot alone predates the second record"
+        );
+
+        assert_eq!(loaded.reconcile(&mem).unwrap(), 1);
+        assert!(loaded.contains(&second.0));
     }
 
     #[test]

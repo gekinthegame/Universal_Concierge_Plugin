@@ -28,11 +28,29 @@ pub(super) fn handle_mutation(
         "/api/gemini/detach" => mutation_gemini_attach(mem, false),
         "/api/continue/attach" => mutation_continue_attach(mem, true),
         "/api/continue/detach" => mutation_continue_attach(mem, false),
+        "/api/antigravity/attach" => mutation_antigravity_attach(mem, true),
+        "/api/antigravity/detach" => mutation_antigravity_attach(mem, false),
+        "/api/openclaw/attach" => mutation_openclaw_attach(mem, true),
+        "/api/openclaw/detach" => mutation_openclaw_attach(mem, false),
+        "/api/cline/attach" => mutation_cline_attach(mem, true),
+        "/api/cline/detach" => mutation_cline_attach(mem, false),
+        "/api/cursor/attach" => mutation_cursor_attach(mem, true),
+        "/api/cursor/detach" => mutation_cursor_attach(mem, false),
+        "/api/opendevin/attach" => mutation_opendevin_attach(mem, true),
+        "/api/opendevin/detach" => mutation_opendevin_attach(mem, false),
+        "/api/copilot/attach" => mutation_copilot_attach(mem, true),
+        "/api/copilot/detach" => mutation_copilot_attach(mem, false),
         "/api/claude-code/ingest" => claude_code_ingest(mem),
         "/api/aider/ingest" => aider_ingest(mem),
         "/api/codex/ingest" => codex_ingest(mem),
         "/api/gemini/ingest" => gemini_ingest(mem),
         "/api/continue/ingest" => continue_ingest(mem),
+        "/api/antigravity/ingest" => antigravity_ingest(mem),
+        "/api/openclaw/ingest" => openclaw_ingest(mem),
+        "/api/cline/ingest" => cline_ingest(mem),
+        "/api/cursor/ingest" => cursor_ingest(mem),
+        "/api/opendevin/ingest" => opendevin_ingest(mem),
+        "/api/copilot/ingest" => copilot_ingest(mem),
         "/api/sidekick/enable" => mutation_sidekick(mem, true),
         "/api/sidekick/disable" => mutation_sidekick(mem, false),
         "/api/update/check" => mutation_update_check(mem),
@@ -127,6 +145,18 @@ fn mutation_label(path: &str) -> Option<&'static str> {
         "/api/gemini/detach" => "detached the Gemini adapter",
         "/api/continue/attach" => "attached the Continue adapter",
         "/api/continue/detach" => "detached the Continue adapter",
+        "/api/antigravity/attach" => "attached the Antigravity adapter",
+        "/api/antigravity/detach" => "detached the Antigravity adapter",
+        "/api/openclaw/attach" => "attached the OpenClaw adapter",
+        "/api/openclaw/detach" => "detached the OpenClaw adapter",
+        "/api/cline/attach" => "attached the Cline adapter",
+        "/api/cline/detach" => "detached the Cline adapter",
+        "/api/cursor/attach" => "attached the Cursor adapter",
+        "/api/cursor/detach" => "detached the Cursor adapter",
+        "/api/opendevin/attach" => "attached the OpenDevin adapter",
+        "/api/opendevin/detach" => "detached the OpenDevin adapter",
+        "/api/copilot/attach" => "attached the Copilot adapter",
+        "/api/copilot/detach" => "detached the Copilot adapter",
         "/api/sidekick/enable" => "enabling Sidekick (private Kubo node + on-node embedder)",
         "/api/sidekick/disable" => "disabled Sidekick",
         "/api/update/check" => "checked for an app update",
@@ -175,6 +205,12 @@ fn mutation_label(path: &str) -> Option<&'static str> {
         "/api/codex/ingest" => "started a Codex history backfill",
         "/api/gemini/ingest" => "started a Gemini history backfill",
         "/api/continue/ingest" => "started a Continue history backfill",
+        "/api/antigravity/ingest" => "started an Antigravity history backfill",
+        "/api/openclaw/ingest" => "started an OpenClaw history backfill",
+        "/api/cline/ingest" => "started a Cline history backfill",
+        "/api/cursor/ingest" => "started a Cursor history backfill",
+        "/api/opendevin/ingest" => "started an OpenDevin history backfill",
+        "/api/copilot/ingest" => "started a Copilot history backfill",
         "/api/petname" => "set a petname",
         "/api/profile" => "updated your contact card",
         "/api/network/create" => "created a network / certificate",
@@ -1222,9 +1258,31 @@ pub(super) fn reachability_json(mem: &MemCli) -> CoreResult<String> {
 
 /// Pillar A: pull the wallet browser's (Brave/Opera) bookmarks into memory. Returns
 /// how many *new* bookmarks were ingested (deduped by URL).
+/// Summary of a freshly-appended record, in the same shape `/api/names` emits — so
+/// the UI can insert just this one row into the tree (IPLD is append-only) instead of
+/// re-deriving the whole view. Shared by every write that returns new records.
+fn appended_record(
+    cid: &Cid,
+    kind: &str,
+    preview: &str,
+    linked: bool,
+    name: &str,
+) -> serde_json::Value {
+    serde_json::json!({ "cid": cid.0, "kind": kind, "preview": preview, "linked": linked, "names": [name] })
+}
+
 fn mutation_bookmarks_sync(mem: &MemCli) -> Response {
     match mem.sync_browser_bookmarks() {
-        Ok(added) => Response::json(serde_json::json!({ "ok": true, "added": added }).to_string()),
+        Ok(added) => {
+            let records: Vec<serde_json::Value> = added
+                .iter()
+                .map(|(cid, name, preview)| appended_record(cid, "memory", preview, false, name))
+                .collect();
+            Response::json(
+                serde_json::json!({ "ok": true, "added": added.len(), "records": records })
+                    .to_string(),
+            )
+        }
         Err(error) => Response::error(error.to_string()),
     }
 }
@@ -1505,20 +1563,6 @@ pub(super) fn profile_json(mem: &MemCli) -> CoreResult<String> {
         "agent_id": mem.identity().map(|id| id.agent_id().0).unwrap_or_default(),
     })
     .to_string())
-}
-
-/// `GET /api/resolve?q=` — reverse name lookup (the disambiguation set for `@name`).
-pub(super) fn resolve_response(mem: &MemCli, query: &str) -> Response {
-    let params = parse_query(query);
-    let q = params.get("q").map(String::as_str).unwrap_or("");
-    let matches: Vec<serde_json::Value> = mem
-        .resolve_name(q)
-        .into_iter()
-        .map(|(agent_id, name)| {
-            serde_json::json!({ "agent_id": agent_id, "name": name.text, "source": name.source, "verified": name.verified })
-        })
-        .collect();
-    Response::json(serde_json::json!({ "matches": matches }).to_string())
 }
 
 /// Compact the store: run GC to reclaim unreferenced (superseded) blocks and trim
@@ -2217,11 +2261,17 @@ fn mutation_ingest_path(mem: &MemCli, body: &str) -> Response {
         if let Err(error) = mem.bind(&name, &run) {
             return mutation_error(&error);
         }
+        let preview = ingest_preview(&path, raw);
+        let linked = mem
+            .outbound_links(&run)
+            .map(|l| !l.is_empty())
+            .unwrap_or(false);
         return Response::json(
             serde_json::json!({
                 "ok": true, "kind": "folder", "root": run.0, "name": name,
                 "files": acc.files, "bytes": acc.bytes,
                 "ignored": acc.ignored, "ignored_examples": acc.ignored_examples,
+                "records": [appended_record(&run, "ingest_run", &preview, linked, &name)],
             })
             .to_string(),
         );
@@ -2280,13 +2330,26 @@ fn mutation_ingest_path(mem: &MemCli, body: &str) -> Response {
     if let Err(error) = mem.bind(&name, &file_ref) {
         return mutation_error(&error);
     }
+    let preview = ingest_preview(&path, raw);
+    let linked = mem
+        .outbound_links(&file_ref)
+        .map(|l| !l.is_empty())
+        .unwrap_or(false);
     Response::json(
         serde_json::json!({
             "ok": true, "kind": "file", "root": file_ref.0, "name": name,
             "files": acc.files, "bytes": acc.bytes, "ignored": acc.ignored,
+            "records": [appended_record(&file_ref, "file", &preview, linked, &name)],
         })
         .to_string(),
     )
+}
+
+/// A readable preview for an ingested path: its basename (falls back to the raw path).
+fn ingest_preview(path: &std::path::Path, raw: &str) -> String {
+    path.file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| raw.to_string())
 }
 
 /// Ingest an uploaded JSONL event stream into the store. The body is

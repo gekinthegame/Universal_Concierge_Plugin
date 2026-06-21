@@ -34,7 +34,7 @@ use std::io::{BufRead, Seek, SeekFrom};
 use std::path::Path;
 
 use concierge_adapter_jsonl::{ingest_envelopes, IngestReport};
-use concierge_core::{CoreBinding, Envelope, Event, ImportedFrom, Reasoning, ReasoningSource};
+use concierge_core::{Cid, CoreBinding, Envelope, Event, ImportedFrom, Reasoning, ReasoningSource};
 use serde::Deserialize;
 
 pub mod discovery;
@@ -398,7 +398,7 @@ pub fn ingest_file_from_offset<B: CoreBinding>(
 
 /// One incremental capture pass over a whole `projects` directory: ingest any
 /// newly-appended lines across every session, advancing the per-file offsets.
-/// Returns the number of new events ingested. Cheap when nothing changed — a
+/// Returns the CIDs of new records ingested. Cheap when nothing changed — a
 /// stat plus a seek-to-EOF per file — so it is safe to call on a short interval
 /// from the app's background capture loop (Phase C). The first call (empty
 /// offsets) performs the full backfill; subsequent calls are the live tail.
@@ -407,18 +407,18 @@ pub fn capture_once<B: CoreBinding>(
     offsets: &mut HashMap<std::path::PathBuf, u64>,
     binding: &B,
     base_dir: &Path,
-) -> usize {
-    let mut total = 0usize;
+) -> Vec<Cid> {
+    let mut captured = Vec::new();
     for session in discovery::enumerate_sessions(projects_dir) {
         let start = offsets.get(&session.session_file).copied().unwrap_or(0);
         if let Ok((report, new_offset)) =
             ingest_file_from_offset(&session.session_file, start, binding, base_dir)
         {
             offsets.insert(session.session_file, new_offset);
-            total += report.events;
+            captured.extend(report.record_cids);
         }
     }
-    total
+    captured
 }
 
 /// Seed the offset of every CURRENTLY-EXISTING session to its end WITHOUT ingesting,
@@ -437,7 +437,7 @@ pub fn seed_offsets(projects_dir: &Path, offsets: &mut HashMap<std::path::PathBu
 /// "Ingest" action). Idempotent via CID dedup. Returns the number of events ingested.
 pub fn ingest_all<B: CoreBinding>(projects_dir: &Path, binding: &B, base_dir: &Path) -> usize {
     let mut offsets = HashMap::new();
-    capture_once(projects_dir, &mut offsets, binding, base_dir)
+    capture_once(projects_dir, &mut offsets, binding, base_dir).len()
 }
 
 /// Render a node→host [`ContextSuggested`] (Phase 8 §2) into the text block a
@@ -641,13 +641,18 @@ mod tests {
         let mut offsets = std::collections::HashMap::new();
         // First pass backfills the existing session.
         let first = capture_once(&projects, &mut offsets, &mem, store.path());
-        assert!(first >= 2, "backfilled the opening lines");
+        assert!(first.len() >= 2, "backfilled the opening lines");
         // Idempotent: a second pass with no changes ingests nothing new.
-        assert_eq!(capture_once(&projects, &mut offsets, &mem, store.path()), 0);
+        assert!(capture_once(&projects, &mut offsets, &mem, store.path()).is_empty());
         // A new session file appears and is picked up.
         let mut f = std::fs::File::create(slug.join("s2.jsonl")).unwrap();
-        writeln!(f, "{USER_LINE}").unwrap();
-        assert!(capture_once(&projects, &mut offsets, &mem, store.path()) >= 2);
+        writeln!(
+            f,
+            r#"{{"type":"user","sessionId":"s2","uuid":"u2","timestamp":"t","cwd":"/p","message":{{"role":"user","content":"new session"}}}}"#
+        )
+        .unwrap();
+        drop(f);
+        assert!(capture_once(&projects, &mut offsets, &mem, store.path()).len() >= 2);
     }
 
     #[test]

@@ -1527,21 +1527,39 @@ async function loadProfile() {
   box.append(nameI, siteI, bioI, save, node("div", "profile-did", "did:key  " + (p.did || "").slice(0, 40) + "…"));
 }
 
-function applyZoom() {
-  const svg = byId("graph");
-  if (!svg) return;
-  const content = svg.querySelector("g.graph-content");
-  if (content) {
-    content.setAttribute("transform", `translate(${state.pan.x}, ${state.pan.y}) scale(${state.zoom})`);
-  }
-}
-
 // (Removed: the old SVG graph pan/zoom handlers. The Graph tab is a file tree now,
 // and the wheel handler's preventDefault would block normal tree scrolling.)
 
 // Phase 8: the Sidekick (on-node embedding model) + its private Kubo node, which
 // enable together. Coupled — the Sidekick needs the node; the node only runs as
 // part of the Sidekick.
+function sleep(ms) { return new Promise(resolve => setTimeout(resolve, ms)); }
+
+// Start the private Kubo node — only ever from an explicit user click. It never
+// autostarts. Shows an honest "starting…" *while this launch is actually in flight*,
+// polls until the node is reachable (or gives up), then settles to the real status.
+async function startSidekick() {
+  state.sidekickStarting = true;
+  await loadSidekickStatus();
+  try {
+    await postJson("/api/sidekick/enable", {});
+    notice("Starting your private Kubo node…");
+  } catch (error) {
+    state.sidekickStarting = false;
+    await loadSidekickStatus();
+    throw error;
+  }
+  let up = false;
+  for (let i = 0; i < 15; i++) {
+    const s = await getJson("/api/sidekick/status").catch(() => null);
+    if (s && s.node_running) { up = true; break; }
+    await sleep(1000);
+  }
+  state.sidekickStarting = false;
+  if (!up) notice("Kubo node didn’t come up. Check that Kubo is installed, then try again.");
+  await loadSidekickStatus();
+}
+
 async function loadSidekickStatus() {
   const el = byId("sidekick-ctl");
   let s;
@@ -1559,66 +1577,35 @@ async function loadSidekickStatus() {
   const btn = node("button", "node-toggle"); btn.append(node("span", "dot", ""));
   const label = txt => btn.append(node("span", "", txt));
   if (s.operational) {
+    state.sidekickStarting = false;
     btn.classList.add("on"); label("Kubo node sidekick: ON");
     btn.title = "On-node embedding model + private Kubo node running. Click to disable.";
     btn.addEventListener("click", () => safely(async () => {
       await postJson("/api/sidekick/disable", {}); notice("Sidekick disabled."); await loadSidekickStatus();
     }));
-  } else if (s.enabled && !s.node_running) {
+  } else if (state.sidekickStarting) {
+    // Only shown while a click-initiated launch is genuinely in progress.
     btn.classList.add("warn"); label("Kubo node sidekick: starting…");
-    btn.title = "The private Kubo node is coming up. Click to re-launch.";
-    btn.addEventListener("click", () => safely(async () => {
-      await postJson("/api/sidekick/enable", {}); notice("Re-launching the private Kubo node…"); await loadSidekickStatus();
-    }));
+    btn.title = "Your private Kubo node is launching.";
   } else if (!s.kubo_installed) {
     btn.classList.add("warn"); label("Kubo node sidekick: needs Kubo");
     btn.title = "The sidekick (on-node embedding model) runs as part of a private Kubo node. Install Kubo to enable it.";
     btn.addEventListener("click", () => window.open("https://docs.ipfs.tech/install/", "_blank", "noopener,noreferrer"));
   } else {
+    // Not running. It never starts on its own — a click starts it. This covers both
+    // "never enabled" and "enabled before but currently down", so the label is honest
+    // instead of claiming to be starting when nothing is.
     label("Kubo node sidekick: OFF");
-    btn.title = s.disclaimer || "Enable the on-node embedding model + private Kubo node.";
-    btn.addEventListener("click", () => safely(async () => {
-      await postJson("/api/sidekick/enable", {}); notice("Enabling Sidekick — launching your private Kubo node."); await loadSidekickStatus();
-    }));
+    btn.title = s.disclaimer || "Click to start your private Kubo node + on-node embedding model. It does not start on its own.";
+    btn.addEventListener("click", () => safely(startSidekick));
   }
   el.append(btn);
 }
 
 // Claude Code auto-capture control (opt-in). Renders into the header control bar:
 // "Detach" when capturing, "Attach" when sessions are found, nothing otherwise.
-async function loadClaudeCodeStatus() {
-  const el = byId("cc-ctl");
-  let status;
-  try { status = await getJson("/api/claude-code/status"); }
-  catch (_) { if (el) clear(el); return; }
-  if (!el) return;
-  clear(el);
-  if (!status.available || (!status.attached && !status.session_count)) return;
-  const n = status.session_count;
-  if (status.attached) {
-    el.append(node("span", "cc-live", ""));
-    el.append(node("span", "cc-cap", "Capturing Claude Code · " + n + " session" + (n === 1 ? "" : "s")));
-    const detach = node("button", "cc-detach", "Detach");
-    detach.title = "Pause Claude Code auto-capture (watched sessions stay ingested).";
-    detach.addEventListener("click", () => safely(async () => {
-      await postJson("/api/claude-code/detach", {});
-      notice("Detached — Claude Code capture paused.");
-      await loadClaudeCodeStatus();
-    }));
-    el.append(detach);
-  } else {
-    el.append(node("span", "cc-cap", n + " Claude Code session" + (n === 1 ? "" : "s") + " found"));
-    const attach = node("button", "cc-attach", "Attach");
-    attach.title = "Backfill and watch Claude Code sessions — local-only, nothing leaves your device.";
-    attach.addEventListener("click", () => safely(async () => {
-      await postJson("/api/claude-code/attach", {});
-      notice("Attached — backfilling and watching Claude Code sessions.");
-      await loadClaudeCodeStatus();
-      quietly(async () => { await Promise.all([refreshGraphData(), loadStats()]); });
-    }));
-    el.append(attach);
-  }
-}
+// (Removed loadClaudeCodeStatus — the Brain-tab harness roster replaced the old
+// header capture control; this targeted #cc-ctl, which no longer exists.)
 
 // Phase 8 §1 — the Librarian's semantic-search bar. Ranks by meaning × graph
 // gravity, packed to a token budget; clicking a hit opens that node's record.
@@ -1637,7 +1624,6 @@ async function runSearch() {
     clear(out); out.append(node("div", "pblockers", error.message)); return;
   }
   clear(out);
-  flashSynapses(); // a search is memory recall → fire the current on the graph
   logSystem("recall “" + q + "” → " + data.items.length + " hit(s) over " + data.indexed + " nodes", "ev");
   out.append(node("div", "search-summary",
     data.items.length + " hit(s) over " + data.indexed + " indexed node(s) · " + data.used_tokens + "/" + data.budget_tokens + " tokens"));
@@ -1666,7 +1652,6 @@ showView("canvas");
 safely(cvLoadSites);
 safely(async () => {
   await Promise.all([loadMeta(), loadNames(), loadRooms(), loadMe(), loadRequests(), loadContacts(), loadProfile()]);
-  await loadGraph();
   await refreshPrivacy();
 });
 // Stats (the store/DAG rail) are informational and the slowest call, so they
@@ -1675,9 +1660,8 @@ logSystem("data platter mounted — watching the concierge", "ok");
 quietly(loadStats);
 quietly(pollActivity);
 quietly(loadSidekickStatus);
-quietly(loadClaudeCodeStatus);
 window.setInterval(() => quietly(async () => {
-  await Promise.all([refreshGraphData(), loadStats(), pollActivity(), loadSidekickStatus(), loadMe(), loadRequests(), loadContacts()]);
+  await Promise.all([loadStats(), pollActivity(), loadSidekickStatus(), loadMe(), loadRequests(), loadContacts()]);
   if (!byId("privacy").querySelector("form")) await refreshPrivacy();
   if (state.room) await loadThread();
 }), 5000);

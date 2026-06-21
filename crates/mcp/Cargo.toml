@@ -7,6 +7,10 @@ license.workspace = true
 
 [dependencies]
 concierge-core = { path = "../core" }
+# Share the kernel's warm index for `retrieve` (auto-spawn/restart), so the AI's
+# retrievals hit the same index as the GUI and CLI. Depends on the dependency-light
+# client crate, not the full kernel, so the MCP server stays lean (no libp2p/tokio).
+concierge-kernel-client = { path = "../kernel-client" }
 serde_json = { workspace = true }
 
 [dev-dependencies]

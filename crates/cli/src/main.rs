@@ -52,10 +52,11 @@ COMMANDS:
     checkpoint --name N  Write a checkpoint over the current root      [Phase 2]
     import <source> <path> Backfill an existing store (use --dry-run)  [Phase 2.5]
     recall <name>        Resolve a name and show its record            [Phase 1/2]
-    retrieve <query…> [--budget N] [--depth brief|summary|full] [--hops N] [--kind a,b] [--external]
+    retrieve <query…> [--budget N] [--depth brief|summary|full] [--hops N] [--kind a,b] [--standalone] [--external]
                          Librarian: semantic + graph-gravity + recency retrieval;
                          --hops pulls related context, --kind filters by node kind;
-                         --external also federates to connected sources       [Phase 8]
+                         --standalone skips the kernel, --external also federates
+                         to connected sources                                [Phase 8]
     connect <list|add <http-url> <alias>|remove <alias>|search <query…> [--limit N]>
                          External knowledge connectors: federate a query to
                          decentralized indices, returning untrusted CID refs  [Phase 8]
@@ -226,24 +227,79 @@ fn cmd_recall(name: Option<&str>) -> ExitCode {
 /// (Phase 8 §1, Decision 0022): semantic + graph-gravity retrieval over the local
 /// store, packed into a token budget. Uses the zero-dependency lexical embedder;
 /// a small semantic model is a feature-gated backend behind the same trait.
-fn cmd_retrieve(args: &[String]) -> ExitCode {
-    // The query is the positional args that aren't flags or flag values.
+/// Print a kernel `/api/search` JSON result in the same shape `retrieve` prints
+/// locally, so routing through the kernel is output-identical to the in-process path.
+fn print_retrieve_json(value: &Value) {
+    let items = value
+        .get("items")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+    let indexed = value.get("indexed").and_then(|v| v.as_u64()).unwrap_or(0);
+    if items.is_empty() && indexed == 0 {
+        println!("nothing indexed yet — capture or ingest some sessions first");
+        return;
+    }
+    let used = value
+        .get("used_tokens")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    let budget = value
+        .get("budget_tokens")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    println!(
+        "retrieve: {} hit(s) over {} indexed node(s) · {}/{} tokens",
+        items.len(),
+        indexed,
+        used,
+        budget
+    );
+    for hit in &items {
+        let hop = hit.get("hop").and_then(|v| v.as_u64()).unwrap_or(0);
+        let tag = if hop > 0 {
+            format!("  related (hop {hop})")
+        } else {
+            String::new()
+        };
+        println!(
+            "\n[{score:.3}  sim {sim:.3}  gravity {grav:.3}]  {kind}  {cid}{tag}",
+            score = hit.get("score").and_then(|v| v.as_f64()).unwrap_or(0.0),
+            sim = hit
+                .get("similarity")
+                .and_then(|v| v.as_f64())
+                .unwrap_or(0.0),
+            grav = hit.get("gravity").and_then(|v| v.as_f64()).unwrap_or(0.0),
+            kind = hit.get("kind").and_then(|v| v.as_str()).unwrap_or(""),
+            cid = hit.get("cid").and_then(|v| v.as_str()).unwrap_or(""),
+        );
+        let preview = hit.get("preview").and_then(|v| v.as_str()).unwrap_or("");
+        println!("  {}", preview.replace('\n', "\n  "));
+    }
+}
+
+fn retrieve_query(args: &[String]) -> String {
     let mut query_parts: Vec<&str> = Vec::new();
     let mut i = 1;
     while i < args.len() {
         match args[i].as_str() {
             "--budget" | "--depth" | "--hops" | "--kind" => i += 2, // skip flag + its value
-            "--external" => i += 1,                                 // boolean flag
+            "--external" | "--standalone" => i += 1,                // boolean flags
             other => {
                 query_parts.push(other);
                 i += 1;
             }
         }
     }
-    let query = query_parts.join(" ");
+    query_parts.join(" ")
+}
+
+fn cmd_retrieve(args: &[String]) -> ExitCode {
+    // The query is the positional args that aren't flags or flag values.
+    let query = retrieve_query(args);
     if query.trim().is_empty() {
         eprintln!(
-            "usage: concierge-plugin retrieve <query…> [--budget N] [--depth brief|summary|full]"
+            "usage: concierge-plugin retrieve <query…> [--budget N] [--depth brief|summary|full] [--standalone]"
         );
         return ExitCode::from(2);
     }
@@ -266,6 +322,36 @@ fn cmd_retrieve(args: &[String]) -> ExitCode {
             .map(String::from)
             .collect()
     });
+
+    // Phase 5: share the kernel's warm index when one is reachable — and auto-spawn
+    // it, or auto-restart it if it crashed, surfacing a one-line index notice.
+    // `--standalone` forces a local one-shot build; `--external` keeps the local
+    // path (federation runs there).
+    #[cfg(any(unix, windows))]
+    if !args
+        .iter()
+        .any(|a| a == "--standalone" || a == "--external")
+    {
+        let depth_raw = flag_value(args, "--depth").unwrap_or_else(|| "summary".to_string());
+        let kinds_raw = flag_value(args, "--kind");
+        if let Ok((resp, lifecycle)) = concierge_kernel_client::client::search_supervised(
+            &query,
+            budget,
+            &depth_raw,
+            hops,
+            kinds_raw.as_deref(),
+        ) {
+            if resp.ok {
+                if let Some(notice) = lifecycle.index_notice() {
+                    eprintln!("{notice}");
+                }
+                let value: Value = serde_json::from_str(&resp.body).unwrap_or(Value::Null);
+                print_retrieve_json(&value);
+                return ExitCode::SUCCESS;
+            }
+        }
+        // Kernel unreachable / errored → fall through to the in-process build below.
+    }
 
     let mem = MemCli::new(workdir());
     // Gated on the Sidekick: Nomic (in-process) when the node is enabled, else lexical.

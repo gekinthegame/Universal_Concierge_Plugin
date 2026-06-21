@@ -171,7 +171,18 @@ async function bookmarksSync() {
     ? "Added " + res.added + " bookmark" + (res.added === 1 ? "" : "s") + " to memory."
     : "Up to date — no new bookmarks.")); }
   logSystem("synced browser bookmarks · +" + (res.added || 0), "ok");
-  await Promise.all([loadNames(), loadStats()]);
+  // Append the new records into the tree — one leaf each, no full re-render. Only if
+  // the tree is already on screen; otherwise it renders fresh on next open. Falls back
+  // to a single reload if a target folder doesn't exist yet (first record of the day).
+  const tree = byId("graph-tree");
+  if (tree && tree.children.length && (res.records || []).length) {
+    const now = Math.floor(Date.now() / 1000);
+    const allInserted = res.records.every(r => insertTreeRecord({
+      cid: r.cid, created_at: now, kind: r.kind, preview: r.preview, linked: r.linked, names: r.names,
+    }));
+    if (!allInserted) await loadGraphTree();
+  }
+  await loadStats();
 }
 async function networkCreate() {
   const f = byId("network-name"); const name = (f && f.value.trim()) || ""; if (!name) return;
@@ -195,7 +206,8 @@ const ACTIONS = {
   open:  el => { showModal(el.dataset.modal); const fn = el.dataset.onopen && window[el.dataset.onopen]; if (typeof fn === "function") safely(fn); },
   close: el => closeOverlay(el.closest(".modal-overlay")),
   hotManage: () => safely(loadHotManager),
-  bookmarksSync: () => safely(bookmarksSync),
+  bookmarksSync: () => quietly(bookmarksSync),
+  refreshTree: () => quietly(loadGraphTree),
   pairShare: () => safely(pairShareWizard),
   pairJoin: () => safely(pairJoinWizard),
   networkCreate: () => safely(networkCreate),
@@ -236,14 +248,6 @@ async function loadMeta() {
 async function loadNames() { return loadGraphTree(); }
 function appendChildren(parent, ...children) { children.forEach(child => parent.append(child)); return parent; }
 
-async function selectRoot(cid) {
-  state.root = cid;
-  state.rootMode = "fixed";
-  setSelected(cid);
-  state.fullGraph = null;
-  state.visibleCids.clear();
-  await Promise.all([loadGraph(), loadStats(), refreshPrivacy()]);
-}
 
 // ── Graph tab: a file tree of your memory (Month ▸ Day ▸ Session ▸ Record), built
 // from the SAME /api/names path the Records tab uses, on the canonical UTC axis. ──
@@ -262,6 +266,7 @@ async function loadGraphTree() {
 }
 function ftFolder(open, icon, label, count, key, body, badge) {
   const head = node("button", "ft-row ft-folder-row" + (open ? " open" : ""));
+  head.dataset.key = key; // so an incremental insert can find this folder
   head.append(node("span", "disclosure", open ? "▾" : "▸"), node("span", "ft-icon", icon),
     node("span", "ft-label", label));
   // A session whose records link out (Merkle edges) gets a link badge.
@@ -380,436 +385,50 @@ function renderGraphTree(names, container) {
     container.append(mGroup);
   });
 }
+// Append ONE record into the already-rendered tree at its month/day/session — no
+// re-render. IPLD is append-only, so a write is just a new leaf + bumped counts.
+// Returns false if the target folder isn't present yet (caller reloads once).
+function insertTreeRecord(entry) {
+  const tree = byId("graph-tree"); if (!tree) return false;
+  const seconds = Number(entry.created_at || 0); if (seconds <= 0) return false;
+  const d = new Date(seconds * 1000);
+  const m = d.getUTCFullYear() + "-" + String(d.getUTCMonth() + 1).padStart(2, "0");
+  const day = m + "-" + String(d.getUTCDate()).padStart(2, "0");
+  const sKey = "g:" + day + ":" + sessionOf(entry.names);
+  const sHead = tree.querySelector('.ft-folder-row[data-key="' + sKey + '"]');
+  if (!sHead) return false; // session folder not rendered → caller falls back to reload
+  const sBody = sHead.parentElement && sHead.parentElement.querySelector(":scope > .ft-body");
+  if (!sBody) return false;
+  sBody.append(fileLeaf(entry));
+  bumpFolderCount(tree, sKey);
+  bumpFolderCount(tree, "g:" + day);
+  bumpFolderCount(tree, "g:" + m);
+  if (entry.linked) ensureSessionBadge(sHead);
+  return true;
+}
+function bumpFolderCount(tree, key) {
+  const head = tree.querySelector('.ft-folder-row[data-key="' + key + '"]'); if (!head) return;
+  const c = head.querySelector(".count"); if (!c) return;
+  c.textContent = ((parseInt(c.textContent, 10) || 0) + 1) + " rec";
+}
+function ensureSessionBadge(sHead) {
+  if (sHead.querySelector(".ft-link-badge")) return;
+  const b = node("span", "ft-link-badge", "🔗");
+  b.title = "Contains records that link out (Merkle edges)";
+  sHead.insertBefore(b, sHead.querySelector(".count") || null);
+}
 function isSynthetic(cid) {
   return cid.startsWith("store:") || cid.startsWith("session:") ||
          cid.startsWith("year:") || cid.startsWith("month:") || cid.startsWith("day:");
 }
 
-// Every cid reachable downward from `cid` in the loaded graph.
-function descendantsOf(cid) {
-  const out = new Set();
-  const stack = [cid];
-  while (stack.length) {
-    const current = stack.pop();
-    for (const e of state.fullGraph.edges) {
-      if (e.from === current && !out.has(e.to)) { out.add(e.to); stack.push(e.to); }
-    }
-  }
-  return out;
-}
-
-// Toggle a node: collapse it if its children are already shown, otherwise
-// expand (lazy-fetching a record's subgraph the first time it is opened).
-async function toggleNode(cid) {
-  setSelected(cid);
-  if (!state.fullGraph) return;
-
-  const children = state.fullGraph.edges.filter(e => e.from === cid).map(e => e.to);
-  const expanded = children.length > 0 && children.every(child => state.visibleCids.has(child));
-  if (expanded) {
-    for (const cidToHide of descendantsOf(cid)) state.visibleCids.delete(cidToHide);
-    drawGraph(state.fullGraph);
-    safely(refreshPrivacy);
-    return;
-  }
-
-  // Synthetic forest nodes (store/session) and any node whose children are
-  // already loaded just reveal their children locally — no record to fetch.
-  const childrenLoaded = children.length > 0;
-  if (!isSynthetic(cid) && !childrenLoaded) {
-    const g = await getJson("/api/graph?cid=" + encodeURIComponent(cid));
-    // The store-wide graph can be reset (tab switch, ingest, re-root) while this
-    // fetch is in flight; bail rather than dereference a now-null fullGraph.
-    if (!state.fullGraph) return;
-    const seen = new Set(state.fullGraph.nodes.map(n => n.cid));
-    for (const n of g.nodes) {
-      if (!seen.has(n.cid)) {
-        state.fullGraph.nodes.push(n);
-        seen.add(n.cid);
-      }
-    }
-    const seenEdges = new Set(state.fullGraph.edges.map(e => e.from + "|" + e.to));
-    for (const e of g.edges) {
-      if (!seenEdges.has(e.from + "|" + e.to)) {
-        state.fullGraph.edges.push(e);
-        seenEdges.add(e.from + "|" + e.to);
-      }
-    }
-  }
-
-  // Reveal the clicked node and its immediate children.
-  state.visibleCids.add(cid);
-  for (const e of state.fullGraph.edges) {
-    if (e.from === cid) state.visibleCids.add(e.to);
-  }
-
-  drawGraph(state.fullGraph);
-  safely(refreshPrivacy);
-}
-
-async function loadGraph() {
-  const query = state.rootMode === "fixed" && state.root ? "?cid=" + encodeURIComponent(state.root) : "";
-  const graph = await getJson("/api/graph" + query);
-  state.root = graph.root;
-  const rootNote = byId("root-note");
-  if (rootNote) rootNote.textContent = graph.forest
-    ? " / whole store" + (graph.truncated ? " / first " + graph.total + " records" : "")
-    : " / " + shortCid(graph.root) + (graph.truncated ? " / first 96 nodes" : "");
-
-  if (!state.fullGraph) {
-    state.fullGraph = graph;
-    state.viewInitialized = false; // a freshly loaded graph re-centers on first draw
-    state.visibleCids.clear();
-    state.visibleCids.add(state.root);
-    // Initially show the root and its immediate children
-    for (const e of graph.edges) {
-      if (e.from === state.root) {
-        state.visibleCids.add(e.to);
-      }
-    }
-  }
-  drawGraph(state.fullGraph);
-}
-
-// Re-fetch the graph and copy lock/preview state onto the already-loaded nodes,
-// so a lock/unlock is reflected immediately without collapsing expansions.
-// A whole-store graph fetch can take many seconds; guard against overlapping
-// runs (the periodic poll) and against fullGraph being reset mid-fetch.
-let graphRefreshInFlight = false;
-async function refreshGraphData() {
-  if (!state.fullGraph) { await loadGraph(); return; }
-  if (graphRefreshInFlight) return;
-  graphRefreshInFlight = true;
-  try {
-    const query = state.rootMode === "fixed" && state.root ? "?cid=" + encodeURIComponent(state.root) : "";
-    const fresh = await getJson("/api/graph" + query);
-    if (!state.fullGraph) return; // reset (tab switch / ingest / re-root) while awaiting
-    const freshById = new Map(fresh.nodes.map(n => [n.cid, n]));
-    for (const n of state.fullGraph.nodes) {
-      const f = freshById.get(n.cid);
-      if (!f) continue;
-      n.fenced = f.fenced; n.cleared = f.cleared;
-      n.known_public = f.known_public; n.quarantined = f.quarantined;
-      n.encrypted_private = f.encrypted_private; n.kind = f.kind; n.preview = f.preview;
-    }
-    drawGraph(state.fullGraph);
-  } finally {
-    graphRefreshInFlight = false;
-  }
-}
-
-function drawGraph(graph) {
-  const svg = byId("graph"); clear(svg);
-  if (!graph.nodes.length) { svg.append(svgNode("text", { x: 40, y: 50, class: "graph-preview" }, "No reachable nodes.")); return; }
-
-  const container = svgNode("g", { class: "graph-content" });
-  svg.append(container);
-
-  // Filter to visible nodes and edges
-  const visibleNodes = graph.nodes.filter(n => state.visibleCids.has(n.cid));
-  const visibleEdges = graph.edges.filter(e => state.visibleCids.has(e.from) && state.visibleCids.has(e.to));
-
-  const incoming = new Map();
-  visibleNodes.forEach(n => incoming.set(n.cid, 0));
-  visibleEdges.forEach(e => {
-    if (incoming.has(e.to)) incoming.set(e.to, incoming.get(e.to) + 1);
-  });
-
-  const depths = new Map();
-  visibleNodes.forEach(n => depths.set(n.cid, 0));
-
-  let changed = true;
-  let iters = 0;
-  while(changed && iters < 1000) {
-    changed = false;
-    iters++;
-    for (const e of visibleEdges) {
-      if (depths.has(e.from) && depths.has(e.to)) {
-        if (depths.get(e.to) <= depths.get(e.from)) {
-          depths.set(e.to, depths.get(e.from) + 1);
-          changed = true;
-        }
-      }
-    }
-  }
-
-  const byDepth = new Map();
-  visibleNodes.forEach(n => {
-    const d = depths.get(n.cid);
-    if (!byDepth.has(d)) byDepth.set(d, []);
-    byDepth.get(d).push(n);
-  });
-
-  const positions = new Map();
-  // Which way a node's subtree fans out: -1 = left of the platter, +1 = right.
-  // Labels follow the same direction so left-side nodes read leftward.
-  const nodeDir = new Map();
-  let minX = 0, minY = 0, maxX = 1000, maxY = 800;
-  const centerX = 800, centerY = 600; // Move center a bit to give room for horizontal expansion
-
-  const rootNode = visibleNodes.find(n => n.kind === "store") || visibleNodes.find(n => incoming.get(n.cid) === 0);
-  if (rootNode) { positions.set(rootNode.cid, { x: centerX, y: centerY }); nodeDir.set(rootNode.cid, 1); }
-
-  const sessions = byDepth.get(1) || [];
-  const sessionSubtrees = new Map(); // sessionCid -> Array of nodes in its horizontal breakdown
-
-  // Assign each node at depth > 1 to a session
-  visibleNodes.forEach(n => {
-    const d = depths.get(n.cid);
-    if (d <= 1) return;
-    // Walk back to find session ancestor
-    let current = n.cid;
-    while (true) {
-        const parentEdge = visibleEdges.find(e => e.to === current);
-        if (!parentEdge) break;
-        if (depths.get(parentEdge.from) === 1) {
-            const sCid = parentEdge.from;
-            if (!sessionSubtrees.has(sCid)) sessionSubtrees.set(sCid, []);
-            sessionSubtrees.get(sCid).push(n);
-            break;
-        }
-        current = parentEdge.from;
-    }
-  });
-
-  // Position sessions in a circle around the root
-  sessions.forEach((s, idx) => {
-    const angle = (idx / sessions.length) * 2 * Math.PI;
-    const radius = 300;
-    const sx = centerX + radius * Math.cos(angle);
-    const sy = centerY + radius * Math.sin(angle);
-    positions.set(s.cid, { x: sx, y: sy });
-    // Label side: left half of the platter reads leftward, right half rightward.
-    const dir = Math.cos(angle) >= 0 ? 1 : -1;
-    nodeDir.set(s.cid, dir);
-
-    // The subtree breaks out along the SAME radial ray as the session, so it
-    // keeps fanning outward from the platter (instead of only left/right).
-    // `outward` is the unit ray center→session; `perp` spreads siblings apart
-    // across that ray.
-    const outX = Math.cos(angle), outY = Math.sin(angle);
-    const perpX = -outY, perpY = outX;
-    const DEPTH_STEP = 350;  // distance between successive depth rings
-    const SIBLING_GAP = 76;  // spread between siblings at the same depth
-
-    const subtree = sessionSubtrees.get(s.cid) || [];
-    const subtreeByDepth = new Map();
-    subtree.forEach(n => {
-        const d = depths.get(n.cid);
-        if (!subtreeByDepth.has(d)) subtreeByDepth.set(d, []);
-        subtreeByDepth.get(d).push(n);
-    });
-
-    for (const [d, arr] of subtreeByDepth.entries()) {
-        const ring = (d - 1) * DEPTH_STEP;  // how far out along the ray
-        arr.forEach((n, i) => {
-            const spread = (i - (arr.length - 1) / 2) * SIBLING_GAP;
-            const px = sx + outX * ring + perpX * spread;
-            const py = sy + outY * ring + perpY * spread;
-            positions.set(n.cid, { x: px, y: py });
-            nodeDir.set(n.cid, dir);
-            if (px > maxX) maxX = px; if (py > maxY) maxY = py;
-            if (px < minX) minX = px; if (py < minY) minY = py;
-        });
-    }
-  });
-
-  // Capture the real extent of every placed node (root, sessions, subtrees) so
-  // Reset View can fit-and-center the whole graph. Pad right for the node labels,
-  // which extend ~250px past each dot.
-  let bx0 = Infinity, by0 = Infinity, bx1 = -Infinity, by1 = -Infinity;
-  positions.forEach(p => {
-    if (p.x < bx0) bx0 = p.x; if (p.y < by0) by0 = p.y;
-    if (p.x > bx1) bx1 = p.x; if (p.y > by1) by1 = p.y;
-  });
-  if (!isFinite(bx0)) { bx0 = 0; by0 = 0; bx1 = 1000; by1 = 650; }
-  // Pad for labels: they extend ~280px left (left-side nodes) or ~300px right.
-  state.graphBounds = { x: bx0 - 280, y: by0 - 40, w: (bx1 - bx0) + 580, h: (by1 - by0) + 80 };
-
-  // The SVG fills the viewport (no native scroll); all pan/zoom is done through
-  // the content group's transform so Reset View can place it deterministically.
-  const view = byId("graph-view");
-  const vw = view.clientWidth || 1000, vh = view.clientHeight || 650;
-  svg.style.width = "100%";
-  svg.style.height = "100%";
-  svg.setAttribute("viewBox", "0 0 " + vw + " " + vh);
-
-  // Nodes are small LED buttons
-  function radiusOf(item) { return item.kind === "store" ? 32 : 8; }
-  function geom(item, pos) {
-    const r = radiusOf(item);
-    const cx = pos.x, cy = pos.y;
-    // Edge connections return to center-based for radial lines,
-    // but subtrees might benefit from horizontal logic.
-    // For simplicity, we connect centers.
-    return { r, cx, cy, center: { x: cx, y: cy } };
-  }
-  const nodeById = new Map(visibleNodes.map(n => [n.cid, n]));
-  const allById = new Map(graph.nodes.map(n => [n.cid, n]));
-  // A session reflects its records: fully locked if every record is locked,
-  // partially locked if some are.
-  // Decision 0026: everything is fenced from egress by default, so we surface the
-  // *exceptions* — roots cleared for export. "cleared" = this record can leave the
-  // device; "partial" = a tier whose descendants are only partly cleared.
-  function egressStateOf(item) {
-    if (item.cleared) return "cleared";
-    // A calendar tier (or legacy session) reflects its records: fully cleared if
-    // every descendant record is cleared, partial if only some are.
-    if (["session", "year", "month", "day"].includes(item.kind)) {
-      const kids = graph.edges.filter(e => e.from === item.cid).map(e => allById.get(e.to)).filter(Boolean);
-      if (kids.length && kids.every(n => n.cleared || egressStateOf(n) === "cleared")) return "cleared";
-      if (kids.some(n => n.cleared || ["partial","cleared"].includes(egressStateOf(n)))) return "partial";
-    }
-    return "";
-  }
-
-  visibleEdges.forEach(edge => {
-    const fp = positions.get(edge.from), tp = positions.get(edge.to);
-    if (!fp || !tp) return;
-    const a = geom(nodeById.get(edge.from), fp).center;
-    const b = geom(nodeById.get(edge.to), tp).center;
-    container.append(svgNode("line", { x1: a.x, y1: a.y, x2: b.x, y2: b.y, class: "graph-edge" }));
-  });
-  visibleNodes.forEach(item => {
-    const pos = positions.get(item.cid);
-    const g = geom(item, pos);
-    const childEdges = graph.edges.filter(e => e.from === item.cid);
-    const unloadedExpandable = item.expandable && childEdges.length === 0;
-    const hasChildren = childEdges.length > 0 || unloadedExpandable;
-    const hasHiddenChildren = unloadedExpandable || childEdges.some(e => !state.visibleCids.has(e.to));
-
-    const egressState = egressStateOf(item);
-    const isStore = item.kind === "store";
-    const classes = ["graph-node", "led-node"];
-    if (item.cid === state.selected) classes.push("active");
-    if (egressState === "cleared") classes.push("cleared-root");
-    else if (egressState === "partial") classes.push("partial-cleared");
-    if (item.known_public) classes.push("known-public");
-    if (item.quarantined) classes.push("quarantined");
-    if (item.encrypted_private) classes.push("encrypted-private");
-    const group = svgNode("g", { class: classes.join(" "), tabindex: "0", role: "button" });
-
-    // Labels sit on the same side the node fans out toward, so left-side
-    // subtrees read leftward instead of overlapping the platter.
-    const leftSide = (nodeDir.get(item.cid) || 1) < 0;
-    const labelX = leftSide ? g.cx - 15 : g.cx + 15;
-    const labelAnchor = leftSide ? "end" : "start";
-
-    // A generous, side-aware transparent hit area so the entire labeled node is
-    // clickable — not just the 8px dot. Sized symmetrically on whichever side the
-    // label sits, so left- and right-hand records behave identically. (Before
-    // this, only the tiny dot caught the pointer, so right-side records that the
-    // user aimed at by their label effectively never opened.)
-    if (!isStore) {
-      const HIT_W = 210, HIT_H = 56;
-      const hitX = leftSide ? g.cx - 15 - HIT_W : g.cx - 14;
-      group.append(svgNode("rect", {
-        x: hitX, y: g.cy - 26, width: HIT_W + 29, height: HIT_H, rx: 4,
-        style: "fill:transparent;stroke:none;pointer-events:all"
-      }));
-    }
-
-    if (item.kind === "store") {
-      group.append(brainGlyph(g.cx, g.cy, 64, "var(--patina)"));
-    } else {
-      group.append(svgNode("circle", { cx: g.cx, cy: g.cy, r: g.r, class: "graph-dot led" }));
-    }
-
-    if (item.kind === "store") {
-      // CENTER: THE DATA PLATTER (brain icon replaces text)
-    } else if (item.kind === "session") {
-      const when = item.started_at ? new Date(item.started_at * 1000) : null;
-      const date = when
-        ? when.toLocaleDateString(undefined, { month: "short", day: "numeric" }) + " " +
-          when.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" })
-        : "undated";
-      group.append(
-        svgNode("text", { x: labelX, y: g.cy - 7, "text-anchor": labelAnchor, class: "graph-kind" }, date),
-        svgNode("text", { x: labelX, y: g.cy + 9, "text-anchor": labelAnchor, class: "graph-preview" }, (item.description || item.preview || "session").slice(0, 34)),
-        svgNode("text", { x: labelX, y: g.cy + 24, "text-anchor": labelAnchor, class: "graph-cid" }, (item.count || 0) + " records")
-      );
-    } else if (item.kind === "year" || item.kind === "month" || item.kind === "day") {
-      // Calendar tier ring: store → year → month → day → event.
-      const sub = item.kind === "day" ? ((item.count || 0) + " records") : "";
-      group.append(
-        svgNode("text", { x: labelX, y: g.cy - 5, "text-anchor": labelAnchor, class: "graph-kind" }, item.kind),
-        svgNode("text", { x: labelX, y: g.cy + 11, "text-anchor": labelAnchor, class: "graph-preview" }, item.preview || ""),
-        svgNode("text", { x: labelX, y: g.cy + 25, "text-anchor": labelAnchor, class: "graph-cid" }, sub)
-      );
-    } else {
-      group.append(
-        svgNode("text", { x: labelX, y: g.cy - 12, "text-anchor": labelAnchor, class: "graph-kind" }, item.kind),
-        svgNode("text", { x: labelX, y: g.cy + 4, "text-anchor": labelAnchor, class: "graph-preview" }, (item.preview || "").slice(0, 30)),
-        svgNode("text", { x: labelX, y: g.cy + 18, "text-anchor": labelAnchor, class: "graph-cid" }, shortCid(item.cid)),
-        svgNode("text", { x: labelX, y: g.cy + 30, "text-anchor": labelAnchor, class: "graph-cid" }, fmtWhen(item.created_at))
-      );
-    }
-
-    // Egress badge + expand/collapse affordance. Fenced is the default (no badge);
-    // we mark the *exceptions* — subgraphs cleared for export / already known-public.
-    // Leaf exceptions show the badge centered; parents keep +/− and get a corner badge.
-    const exposed = egressState === "cleared" || item.known_public;
-    const badgeColor = exposed ? "var(--vermilion)" : "var(--gold)";
-    const showBadge = !!egressState || !!item.known_public;
-    if (hasChildren) {
-      group.append(svgNode("text", { x: g.cx, y: g.cy + 5, "text-anchor": "middle", class: "graph-plus" }, hasHiddenChildren ? "+" : "−"));
-      if (showBadge) group.append(lockGlyph(g.cx + g.r - 1, g.cy - g.r + 1, badgeColor));
-    } else if (showBadge) {
-      group.append(lockGlyph(g.cx, g.cy, badgeColor));
-    }
-
-    const choose = () => safely(async () => {
-      await toggleNode(item.cid);
-      if (!isSynthetic(item.cid)) await loadRecord(item.cid, true);
-    });
-    group.addEventListener("click", choose);
-    group.addEventListener("keydown", event => { if (event.key === "Enter" || event.key === " ") choose(); });
-    container.append(group);
-  });
-  // First draw of a graph fits + centers it; later redraws (expand/collapse,
-  // lock refresh) keep the user's current pan/zoom.
-  if (!state.viewInitialized) { fitView(); state.viewInitialized = true; }
-  else applyZoom();
-}
-
-// Synapse current: when memory is recalled/accessed/used, glowing pulses flow along
-// the graph edges *inward to the brain* at the center — the user sees memory in use.
-// Appends to the same transformed group as the edges, so it tracks pan/zoom. Each
-// pulse travels from the endpoint farther from the brain to the one nearer it.
-function flashSynapses() {
-  const svg = byId("graph");
-  if (!svg) return;
-  const container = svg.querySelector(".graph-content");
-  if (!container) return;
-  const cx = 800, cy = 600; // graph center (the brain) — matches drawGraph
-  container.querySelectorAll(".graph-edge").forEach((edge, idx) => {
-    const x1 = +edge.getAttribute("x1"), y1 = +edge.getAttribute("y1");
-    const x2 = +edge.getAttribute("x2"), y2 = +edge.getAttribute("y2");
-    const inner1 = (x1 - cx) ** 2 + (y1 - cy) ** 2 <= (x2 - cx) ** 2 + (y2 - cy) ** 2;
-    const ox = inner1 ? x2 : x1, oy = inner1 ? y2 : y1; // outer (start)
-    const ix = inner1 ? x1 : x2, iy = inner1 ? y1 : y2; // inner (toward brain)
-    const dot = svgNode("circle", { cx: ox, cy: oy, r: 3, class: "synapse-dot" });
-    container.appendChild(dot);
-    const run = dot.animate(
-      [
-        { transform: "translate(0px,0px)", opacity: 0 },
-        { opacity: 1, offset: 0.25 },
-        { opacity: 1, offset: 0.8 },
-        { transform: "translate(" + (ix - ox) + "px," + (iy - oy) + "px)", opacity: 0 },
-      ],
-      { duration: 900, delay: (idx % 8) * 70, easing: "ease-in" }
-    );
-    run.onfinish = () => dot.remove();
-  });
-}
 // The record is a popup window, not a tab: it opens only when a record is
 // explicitly selected (Records tab, graph node, search hit, or a link within it).
 // Passive refreshes (after a lock/clear) update the content but never pop it open.
 function openRecordModal() { byId("record-modal").style.display = "flex"; }
 function closeRecordModal() { byId("record-modal").style.display = "none"; }
 async function loadRecord(cid, open = false) {
-  setSelected(cid);
-  flashSynapses(); // accessing a record = memory used → fire the current
+  setSelected(cid); // privacy panel targets the opened record (advances privacySeq)
   logSystem("access " + shortCid(cid), "dim");
   safely(refreshPrivacy);
   const record = await getJson("/api/record?cid=" + encodeURIComponent(cid));
@@ -1194,7 +813,7 @@ function openClearReview(target, info) {
         if (!window.confirm(warning)) return;
         await postJson("/api/clear-for-egress", { target, password: password.value });
         notice("Cleared " + shortCid(target) + " for export.");
-        await Promise.all([refreshPrivacy(), loadStats(), refreshGraphData()]);
+        await Promise.all([refreshPrivacy(), loadStats()]);
         if (state.selected) await loadRecord(state.selected);
       } finally {
         password.value = "";
@@ -1249,7 +868,7 @@ async function renderSessionPrivacy(panel, sessionCid, seq) {
       const n = await eachRecord("/api/refence", {});
       childNodes.forEach(node => { node.cleared = false; });
       notice("Re-fenced " + n + " record(s).");
-      await Promise.all([refreshGraphData(), loadStats(), refreshPrivacy()]);
+      await Promise.all([loadStats(), refreshPrivacy()]);
       if (state.selected) await loadRecord(state.selected);
     }));
     panel.append(refence);
@@ -1265,7 +884,7 @@ async function renderSessionPrivacy(panel, sessionCid, seq) {
         const n = await eachRecord("/api/clear-for-egress", { password });
         childNodes.forEach(node => { node.cleared = true; });
         notice("Cleared " + n + " record(s) for export.");
-        await Promise.all([refreshGraphData(), loadStats(), refreshPrivacy()]);
+        await Promise.all([loadStats(), refreshPrivacy()]);
       }));
     } else {
       panel.append(passwordAction("Clear session for export (" + remaining + " record" + (remaining === 1 ? "" : "s") + ")", async password => {
@@ -1273,7 +892,7 @@ async function renderSessionPrivacy(panel, sessionCid, seq) {
         const n = await eachRecord("/api/clear-for-egress", { password });
         childNodes.forEach(node => { node.cleared = true; });
         notice("Cleared " + n + " record(s) for export.");
-        await Promise.all([refreshGraphData(), loadStats(), refreshPrivacy()]);
+        await Promise.all([loadStats(), refreshPrivacy()]);
         if (state.selected) await loadRecord(state.selected);
       }));
     }
@@ -1341,7 +960,7 @@ async function refreshPrivacyBody() {
         await postJson("/api/set-password", { password, confirm_password: confirmPassword });
         await postJson("/api/clear-for-egress", { target, password });
         notice("Cleared " + shortCid(target) + " for export.");
-        await Promise.all([refreshPrivacy(), loadStats(), refreshGraphData()]);
+        await Promise.all([refreshPrivacy(), loadStats()]);
         if (state.selected) await loadRecord(state.selected);
       }));
     }
@@ -1353,7 +972,7 @@ async function refreshPrivacyBody() {
     info.blocking_locks.forEach(hit => {
       const label = "focus " + shortCid(hit.lock_root) + " / " + hit.intersecting_count + " node(s) / " + hit.intersecting_file_paths.length + " file path(s)" + (hit.lock_label ? " (" + hit.lock_label + ")" : "");
       const focus = node("button", "", label);
-      focus.addEventListener("click", () => safely(async () => { await selectRoot(hit.lock_root); await loadRecord(hit.lock_root); }));
+      focus.addEventListener("click", () => safely(() => loadRecord(hit.lock_root, true)));
       blockers.append(focus);
     });
     panel.append(blockers);
@@ -1368,7 +987,7 @@ async function refreshPrivacyBody() {
       if (!window.confirm("Re-fence this subgraph? It will be local-only again and can no longer be exported.")) return;
       await postJson("/api/refence", { target });
       notice("Re-fenced — subgraph is local-only again.");
-      await Promise.all([refreshPrivacy(), loadStats(), refreshGraphData()]);
+      await Promise.all([refreshPrivacy(), loadStats()]);
       if (state.selected) await loadRecord(state.selected);
     }));
     panel.append(refence);
@@ -1439,7 +1058,7 @@ function openPrivateReview(target) {
             node("pre", "", JSON.stringify(result.capability, null, 2))
           );
           form.replaceChildren(capability);
-          await Promise.all([refreshPrivacy(), loadStats(), refreshGraphData()]);
+          await Promise.all([refreshPrivacy(), loadStats()]);
         } finally {
           password.value = "";
         }
@@ -1486,7 +1105,7 @@ async function openPublishReview(target) {
         if (!ack.checked) throw new Error("Acknowledge irreversibility first.");
         const receipt = await postJson("/api/authorize-publish", { review_token: plan.review_token, password: password.value, acknowledge_irreversible: true });
         notice("Published " + shortCid(receipt.root) + " via " + receipt.backend + "; one-shot authorization consumed.");
-        await Promise.all([refreshPrivacy(), loadStats(), refreshGraphData()]);
+        await Promise.all([refreshPrivacy(), loadStats()]);
       } finally {
         password.value = "";
       }
@@ -1581,7 +1200,7 @@ async function loadThread(room) {
     const mine = !!state.myUsername && message.author === state.myUsername;
     const item = node("article", "message " + (mine ? "mine" : "theirs")); const head = node("div", "message-head");
     const label = message.nickname || shortCid(message.author);
-    head.append(node("span", "", "[" + message.clock + "] " + label + " / " + (state.roles.get(message.author) || "unclassified")));
+    head.append(node("span", "", "[" + message.clock + "] " + label));
     const role = node("button", "", state.roles.get(message.author) === "ai" ? "mark human" : "mark AI");
     role.addEventListener("click", () => { state.roles.set(message.author, state.roles.get(message.author) === "ai" ? "human" : "ai"); loadThread(); });
     const mute = node("button", "", "mute participant");
@@ -1589,10 +1208,8 @@ async function loadThread(room) {
     const reveal = node("button", "", "reveal CID");
     reveal.addEventListener("click", () => { reveal.textContent = message.cid; });
     head.append(role, mute, reveal);
-    // Phase I — trust thermometer + structural importance + follow lens (all local).
-    const tier = node("span", "trust-tier trust-" + (message.trust_tier || "unverified"), message.trust_label || "Unverified");
-    tier.title = "Authentication tier this message crossed (honest auth-strength, not reputation)";
-    head.append(tier);
+    // Phase I — structural importance + follow lens (all local). The trust-tier badge
+    // was removed from the bubble header for a friendlier, less cluttered chat.
     if (message.followed) head.append(Object.assign(node("span", "trust-follow", "following"), { title: "Authored by someone you follow" }));
     if (message.importance > 0) head.append(Object.assign(node("span", "trust-importance", "ties " + message.importance), { title: "How many decisions/files this message ties together (structural importance, not popularity)" }));
     item.append(head, node("p", "", message.payload)); container.append(item);
@@ -1650,10 +1267,15 @@ function openIngestModal() {
         }
         notice(message);
         overlay.remove();
-        // Rebuild the whole-store forest so the new import/session appears.
-        state.fullGraph = null; state.rootMode = "default"; state.root = ""; state.selected = "";
-        state.visibleCids.clear();
-        await Promise.all([loadGraph(), loadStats(), loadNames()]);
+        // Append the new import as a single leaf (folder/file ingest returns the
+        // record). A session stream returns no records yet, so it reloads the tree.
+        const now = Math.floor(Date.now() / 1000);
+        const recs = report.records || [];
+        if (recs.length && recs.every(r => insertTreeRecord({ cid: r.cid, created_at: now, kind: r.kind, preview: r.preview, linked: r.linked, names: r.names }))) {
+          await loadStats();
+        } else {
+          await Promise.all([loadGraphTree(), loadStats()]);
+        }
       } finally {
         go.disabled = false; go.textContent = "Ingest";
       }
@@ -1667,43 +1289,6 @@ function openIngestModal() {
 // Pillar A: pull Brave/Opera bookmarks into memory (they become searchable records).
 // bookmarks-sync handled by delegation (data-action="bookmarksSync").
 
-// Scale + translate the graph so its full extent is centered in the viewport.
-function fitView() {
-  const view = byId("graph-view");
-  if (!view) return;
-  const vw = view.clientWidth || 1000, vh = view.clientHeight || 650;
-  const svg = byId("graph");
-  if (svg) svg.setAttribute("viewBox", "0 0 " + vw + " " + vh); // keep units = px after a resize
-  const b = state.graphBounds;
-  if (!b || b.w <= 0 || b.h <= 0) { state.zoom = 1.0; state.pan = { x: 0, y: 0 }; applyZoom(); return; }
-  const margin = 48;
-  const zoom = Math.max(0.1, Math.min(2, Math.min((vw - margin) / b.w, (vh - margin) / b.h)));
-  const cx = b.x + b.w / 2, cy = b.y + b.h / 2;
-  state.zoom = zoom;
-  state.pan = { x: vw / 2 - zoom * cx, y: vh / 2 - zoom * cy };
-  applyZoom();
-}
-
-// Keep the SVG's viewBox locked to the graph panel's pixel size. Without this, any
-// layout change (the side panel removed, the window resized, the tab first shown) leaves
-// a stale viewBox whose aspect ratio no longer matches the element — the default
-// preserveAspectRatio then letterboxes the content, and right-side nodes land in a dead
-// band that swallows clicks. Preserves the current pan/zoom (only the canvas changes).
-function syncGraphViewBox() {
-  const view = byId("graph-view"), svg = byId("graph");
-  if (!view || !svg) return;
-  const vw = view.clientWidth, vh = view.clientHeight;
-  if (vw > 0 && vh > 0) svg.setAttribute("viewBox", "0 0 " + vw + " " + vh);
-}
-(function watchGraphSize() {
-  const view = byId("graph-view");
-  if (!view) return;
-  if (window.ResizeObserver) {
-    new ResizeObserver(() => syncGraphViewBox()).observe(view);
-  } else {
-    window.addEventListener("resize", syncGraphViewBox);
-  }
-})();
 
 // Phase N · Phase H — the Private Network Map: identity hierarchy, networks, this
 // device's scopes + their validity, epoch health, and who is revoked.
@@ -2172,12 +1757,17 @@ async function loadBrainHost() {
     try { const v = await getJson(url); brainStatusCache[key] = v; return v; }
     catch (e) { return brainStatusCache[key] || {}; }
   };
-  const [cc, aider, codex, gemini, cont, meta] = await Promise.all([
+  const [cc, aider, codex, gemini, cont, openclaw, cline, cursor, opendevin, copilot, meta] = await Promise.all([
     fetchStatus("/api/claude-code/status", "cc"),
     fetchStatus("/api/aider/status", "aider"),
     fetchStatus("/api/codex/status", "codex"),
     fetchStatus("/api/gemini/status", "gemini"),
     fetchStatus("/api/continue/status", "continue"),
+    fetchStatus("/api/openclaw/status", "openclaw"),
+    fetchStatus("/api/cline/status", "cline"),
+    fetchStatus("/api/cursor/status", "cursor"),
+    fetchStatus("/api/opendevin/status", "opendevin"),
+    fetchStatus("/api/copilot/status", "copilot"),
     fetchStatus("/api/meta", "meta"),
   ]);
   const host = byId("brain-host");
@@ -2186,13 +1776,13 @@ async function loadBrainHost() {
   // At most HARNESS_CAP harnesses may capture at once — enforced here by greying
   // out the Attach buttons once the cap is reached (detaching one re-enables them).
   const HARNESS_CAP = 2;
-  const capReached = [cc, aider, codex, gemini, cont].filter(s => s && s.attached).length >= HARNESS_CAP;
+  const capReached = [cc, aider, codex, gemini, cont, openclaw, cline, cursor, opendevin, copilot].filter(s => s && s.attached).length >= HARNESS_CAP;
   // One row per detected harness — the Concierge auto-mounts whichever it finds.
   function row(connected, name, detail, toggle) {
     const head = node("div", "model");
     const d = node("span", "dot", "");
-    d.style.background = connected ? "var(--patina)" : "var(--faint)";
-    d.style.boxShadow = connected ? "0 0 8px var(--patina)" : "none";
+    d.style.background = connected ? "var(--led)" : "var(--faint)";
+    d.style.boxShadow = connected ? "0 0 8px var(--led)" : "none";
     head.append(d, node("span", "", name));
     if (toggle) head.append(toggle);
     const det = node("div", "eyebrow", detail);
@@ -2260,6 +1850,11 @@ async function loadBrainHost() {
   harnessRow(codex, "codex", "Codex");
   harnessRow(gemini, "gemini", "Gemini");
   harnessRow(cont, "continue", "Continue");
+  harnessRow(openclaw, "openclaw", "OpenClaw");
+  harnessRow(cline, "cline", "Cline");
+  harnessRow(cursor, "cursor", "Cursor");
+  harnessRow(opendevin, "opendevin", "OpenDevin");
+  harnessRow(copilot, "copilot", "Copilot");
 }
 async function loadBrainMetrics() {
   loadBrainHost();
@@ -2268,8 +1863,8 @@ async function loadBrainMetrics() {
   // Panel A — engine status card: connection dot + engine name + base_url.
   const dot = document.querySelector("#brain-engine .dot");
   if (dot) {
-    dot.style.background = baseline.up ? "var(--patina)" : "rgb(var(--vermilion-rgb))";
-    dot.style.boxShadow = baseline.up ? "0 0 8px var(--patina)" : "none";
+    dot.style.background = baseline.up ? "var(--led)" : "rgb(var(--vermilion-rgb))";
+    dot.style.boxShadow = baseline.up ? "0 0 8px var(--led)" : "none";
   }
   byId("brain-engine-name").textContent = baseline.up
     ? (baseline.engine || "engine") + " · connected"

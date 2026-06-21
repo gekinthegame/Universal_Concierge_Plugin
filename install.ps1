@@ -2,8 +2,8 @@
 #
 #   irm https://github.com/gekinthegame/Universal_Concierge_Plugin/releases/latest/download/install.ps1 | iex
 #
-# Downloads the prebuilt concierge-plugin.exe from the latest GitHub Release,
-# verifies its checksum, and installs it to %LOCALAPPDATA%\Programs\concierge-plugin
+# Downloads the prebuilt Concierge binaries from the latest GitHub Release,
+# verifies the checksum, and installs them to %LOCALAPPDATA%\Programs\concierge-plugin
 # (added to your user PATH). No separate mem, database, or cloud; Kubo/IPFS is
 # optional (only for publishing / the Sidekick).
 
@@ -64,9 +64,13 @@ try {
 
   Expand-Archive -Path $zip -DestinationPath $tmp -Force
   $exe = Join-Path $tmp "$asset\concierge-plugin.exe"
+  $kernelExe = Join-Path $tmp "$asset\concierge-kernel.exe"
   if (-not (Test-Path $exe)) { throw "concierge-plugin.exe not found in the archive." }
+  if (-not (Test-Path $kernelExe)) { throw "concierge-kernel.exe not found in the archive." }
   Copy-Item $exe (Join-Path $dest "concierge-plugin.exe") -Force
+  Copy-Item $kernelExe (Join-Path $dest "concierge-kernel.exe") -Force
   Write-Host "Installed -> $dest\concierge-plugin.exe"
+  Write-Host "Installed -> $dest\concierge-kernel.exe"
 
   # Connect to Claude Code as an MCP server (best-effort).
   Write-Host ""

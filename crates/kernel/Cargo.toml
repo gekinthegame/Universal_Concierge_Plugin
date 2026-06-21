@@ -1,0 +1,46 @@
+[package]
+name = "concierge-kernel"
+description = "Concierge kernel — the stable memory daemon (store + warm index) served over a local IPC socket."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "concierge-kernel"
+path = "src/main.rs"
+
+[dependencies]
+# semantic-embed bakes the in-process on-node embedder (fastembed/ONNX → Nomic) into the
+# binary; it only *activates* when the Sidekick/Kubo node is enabled (MemCli::librarian_embedder).
+concierge-core = { path = "../core", features = ["semantic-embed"] }
+# The dependency-light client library (wire protocol, framing, client, path helpers).
+# The daemon builds on these; the crate re-exports them as `concierge_kernel::*`.
+concierge-kernel-client = { path = "../kernel-client" }
+# Shared data-route handlers (store reads → JSON) — one implementation, used by
+# both the kernel and the GUI so the routes can't drift between them.
+concierge-routes = { path = "../routes" }
+concierge-net = { path = "../net" }
+concierge-adapter-claude-code = { path = "../adapter-claude-code" }
+concierge-adapter-aider = { path = "../adapter-aider" }
+concierge-adapter-codex = { path = "../adapter-codex" }
+concierge-adapter-gemini = { path = "../adapter-gemini" }
+concierge-adapter-continue = { path = "../adapter-continue" }
+concierge-adapter-antigravity = { path = "../adapter-antigravity" }
+concierge-adapter-openclaw = { path = "../adapter-openclaw" }
+concierge-adapter-cline = { path = "../adapter-cline" }
+concierge-adapter-cursor = { path = "../adapter-cursor" }
+concierge-adapter-opendevin = { path = "../adapter-opendevin" }
+concierge-adapter-copilot = { path = "../adapter-copilot" }
+libc = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+url = { workspace = true }
+
+# AF_UNIX listener/stream on Windows 10+, so the daemon's serve loop is the same
+# code path as on Unix (std provides Unix sockets only on Unix).
+[target.'cfg(windows)'.dependencies]
+uds_windows = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

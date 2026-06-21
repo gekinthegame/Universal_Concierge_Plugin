@@ -1,7 +1,7 @@
 name: Release
 
-# Evergreen release: EVERY push to `main` rebuilds the self-contained
-# `concierge-plugin` binary for each OS/arch and overwrites the single mutable
+# Evergreen release: EVERY push to `main` rebuilds the Concierge binaries for
+# each OS/arch and overwrites the single mutable
 # `v0.1.3` release that `install.sh` / `install.ps1` download. No tag command —
 # pushing your commits is all it takes; the page is never stale relative to main.
 # (A failed build leaves the prior assets up — watch the Actions tab for a red X.)
@@ -82,7 +82,7 @@ jobs:
           PY
 
       - name: Build (release)
-        run: cargo build --release --locked -p concierge-plugin --target ${{ matrix.target }}
+        run: cargo build --release --locked -p concierge-plugin -p concierge-kernel --target ${{ matrix.target }}
 
       - name: Package (unix)
         if: runner.os != 'Windows'
@@ -91,6 +91,7 @@ jobs:
           stage="${{ matrix.asset }}"
           mkdir -p "$stage"
           cp "target/${{ matrix.target }}/release/concierge-plugin" "$stage/"
+          cp "target/${{ matrix.target }}/release/concierge-kernel" "$stage/"
           cp README.md "$stage/" 2>/dev/null || true
           tar -czf "${{ matrix.asset }}.tar.gz" "$stage"
 
@@ -101,6 +102,7 @@ jobs:
           stage="${{ matrix.asset }}"
           mkdir -p "$stage"
           cp "target/${{ matrix.target }}/release/concierge-plugin.exe" "$stage/"
+          cp "target/${{ matrix.target }}/release/concierge-kernel.exe" "$stage/"
           cp README.md "$stage/" 2>/dev/null || true
           7z a "${{ matrix.asset }}.zip" "$stage" >/dev/null
 
@@ -134,7 +136,10 @@ jobs:
           lipo -create -output concierge-plugin \
             concierge-plugin-macos-arm64/concierge-plugin \
             concierge-plugin-macos-x64/concierge-plugin
-          bash packaging/macos/build-dmg.sh concierge-plugin crates/gui/src/logo.png "Universal-Concierge-macos.dmg"
+          lipo -create -output concierge-kernel \
+            concierge-plugin-macos-arm64/concierge-kernel \
+            concierge-plugin-macos-x64/concierge-kernel
+          bash packaging/macos/build-dmg.sh concierge-plugin crates/gui/src/logo.png "Universal-Concierge-macos.dmg" concierge-kernel
 
       - uses: actions/upload-artifact@v4
         with:
@@ -161,6 +166,7 @@ jobs:
           $stage = "win-stage"
           New-Item -ItemType Directory -Force -Path $stage | Out-Null
           Copy-Item "unpacked/concierge-plugin-windows-x64/concierge-plugin.exe" "$stage/"
+          Copy-Item "unpacked/concierge-plugin-windows-x64/concierge-kernel.exe" "$stage/"
           Copy-Item "packaging/windows/concierge.iss" "$stage/"
           Copy-Item "packaging/windows/launch.vbs" "$stage/"
 
@@ -254,7 +260,7 @@ jobs:
           body: |
             ## Universal Concierge Plugin — v0.1.3 (evergreen · built from `${{ github.sha }}`)
 
-            A self-contained binary: no separate `mem`, database, or cloud. Kubo/IPFS
+            A self-contained install: no separate `mem`, database, or cloud. Kubo/IPFS
             is optional (only for publishing/the Sidekick). The app captures and
             explores a harness's activity — it is inert without one.
 

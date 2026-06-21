@@ -10,7 +10,7 @@
 //! logging (passwords never touch logs). Password verification rate-limiting
 //! lives in the core (`verify_password`).
 
-use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
+use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::process::Command;
@@ -18,10 +18,11 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use concierge_core::deploy::SiteDeployPlan;
+#[cfg(test)]
+use concierge_core::CidOrName;
 use concierge_core::{
-    cid_from_link, verify_capability, verify_membership, Cid, CidOrName, CoreBinding, Depth,
-    EgressOperation, EgressPlan, Error, Librarian, MemCli, PrivateSharePlan, Record,
-    Result as CoreResult, SharedEmbedder, UserId,
+    verify_capability, verify_membership, Cid, CoreBinding, EgressOperation, EgressPlan, Error,
+    MemCli, PrivateSharePlan, Result as CoreResult, UserId,
 };
 use concierge_net::{
     ed25519_hex_from_peer_id, peer_id_from_ed25519_hex, peer_id_in, store_provider, ConciergeNode,
@@ -45,24 +46,32 @@ use canvas::{
     mutation_canvas_write, mutation_save_checkpoint, parse_canvas_signal, parse_contact_card,
     queue_canvas_signal, record_site_checkpoint, site_checkpoint_response, site_checkpoints_json,
 };
+#[cfg(test)]
+use concierge_routes::node_and_links_from_record;
+use concierge_routes::session_of;
+use concierge_routes::PrivacyOverlay;
 use mutations::{
     body_str, contacts_json, deploy_status_json, handle_mutation, mcp_status_json,
     oauth_status_json, parse_body, pin_status_json, profile_json, reachability_json, requests_json,
-    resolve_response, sites_json, valid_site_name, wallet_json, wallet_proposals_json,
-    youtube_receipts_json, youtube_status_json, youtube_upload_status_json,
+    sites_json, valid_site_name, wallet_json, wallet_proposals_json, youtube_receipts_json,
+    youtube_status_json, youtube_upload_status_json,
 };
 use read_routes::{
-    activity_response, blob_response, checkpoints_json, egress_plan_response, graph_response,
-    me_response, meta_json, names_json, network_json, peers_response, privacy_response,
-    record_response, rooms_json, search_response, session_of, stats_response, thread_response,
+    activity_response, blob_response, checkpoints_response, egress_plan_response, graph_response,
+    hot_pins_response, me_response, meta_response, names_response, network_json, peers_response,
+    privacy_response, record_response, resolve_response, rooms_json, search_response,
+    stats_response, thread_response,
 };
-#[cfg(test)]
-use read_routes::{node_and_links_from_record, PrivacyOverlay};
 use server::{
-    aider_ingest, aider_status_json, claude_code_ingest, claude_code_status_json, codex_ingest,
-    codex_status_json, continue_ingest, continue_status_json, gemini_ingest, gemini_status_json,
-    mutation_aider_attach, mutation_claude_code_attach, mutation_codex_attach,
-    mutation_continue_attach, mutation_gemini_attach, mutation_sidekick, sidekick_status_json,
+    aider_ingest, aider_status_json, antigravity_ingest, antigravity_status_json,
+    claude_code_ingest, claude_code_status_json, cline_ingest, cline_status_json, codex_ingest,
+    codex_status_json, continue_ingest, continue_status_json, copilot_ingest, copilot_status_json,
+    cursor_ingest, cursor_status_json, gemini_ingest, gemini_status_json, mutation_aider_attach,
+    mutation_antigravity_attach, mutation_claude_code_attach, mutation_cline_attach,
+    mutation_codex_attach, mutation_continue_attach, mutation_copilot_attach,
+    mutation_cursor_attach, mutation_gemini_attach, mutation_openclaw_attach,
+    mutation_opendevin_attach, mutation_sidekick, openclaw_ingest, openclaw_status_json,
+    opendevin_ingest, opendevin_status_json, sidekick_status_json,
 };
 pub use server::{
     brave_path, open_app, open_browser, opera_path, pick_free_port, running_gui_port, serve,
@@ -90,7 +99,6 @@ const MAX_BODY_BYTES: usize = 16 * 1024;
 /// Ingest and Site publishing get a much larger body budget than small control mutations.
 const MAX_LARGE_BODY_BYTES: usize = 100 * 1024 * 1024;
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(3);
-const GRAPH_NODE_LIMIT: usize = 500;
 const MUTATION_RATE_WINDOW: Duration = Duration::from_secs(10);
 const MUTATION_RATE_MAX: usize = 60;
 const REVIEW_TOKEN_TTL: Duration = Duration::from_secs(300);
@@ -194,11 +202,6 @@ pub struct GuiOptions {
     pub csrf_token: String,
     mutation_limiter: Arc<Mutex<MutationRateLimiter>>,
     review_cache: Arc<Mutex<HashMap<String, CachedReview>>>,
-    /// Lazily-built, cached Librarian index for the semantic-search bar (Phase 8
-    /// §1). The embedder is built once (semantic model if the `semantic-embed`
-    /// feature is on, else lexical) and reused; the index is rebuilt on a short
-    /// TTL so search reflects fresh capture without re-indexing every keystroke.
-    librarian: Arc<Mutex<LibrarianState>>,
     /// The lazily-spawned libp2p chat node (private peer messaging). `None` until
     /// the first send or `/api/me`, then shared across all connection threads.
     chat: Arc<Mutex<Option<ChatNode>>>,
@@ -220,9 +223,9 @@ pub struct GuiOptions {
     activity: Arc<Mutex<ActivityLog>>,
     /// Open GUI windows. Each window heartbeats `/api/heartbeat` while it's open and
     /// beacons `/api/closing` on unload; the lifecycle watchdog (only when this process
-    /// opened a browser) shuts the whole server down — stopping the detached Kubo node —
-    /// once the last window closes, so hitting the GUI's X fully exits with no orphaned
-    /// background processes. Maps window-id → last seen; `seen_any` guards the startup race.
+    /// opened a browser) shuts the GUI server down once the last window closes.
+    /// Kernel/Sidekick lifecycle is owned by the kernel in Phase 5. Maps window-id
+    /// → last seen; `seen_any` guards the startup race.
     clients: Arc<Mutex<ClientPresence>>,
 }
 
@@ -310,30 +313,6 @@ impl ActivityLog {
     }
 }
 
-/// The Data Platter's retrieval state: the shared embedder (built once) and a
-/// cached index (rebuilt on a TTL). Lazily initialised on first search.
-struct LibrarianState {
-    embedder: Option<SharedEmbedder>,
-    cache: Option<LibrarianCache>,
-}
-
-struct LibrarianCache {
-    librarian: Librarian<SharedEmbedder>,
-    built_at: Instant,
-}
-
-impl std::fmt::Debug for LibrarianState {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("LibrarianState")
-            .field("indexed", &self.cache.as_ref().map(|c| c.librarian.len()))
-            .finish()
-    }
-}
-
-/// How long a built search index is reused before a rebuild (capture is
-/// continuous, so a short staleness window is fine).
-const LIBRARIAN_TTL: Duration = Duration::from_secs(30);
-
 #[derive(Debug)]
 struct MutationRateLimiter {
     attempts: VecDeque<Instant>,
@@ -381,10 +360,6 @@ impl Default for GuiOptions {
                 attempts: VecDeque::new(),
             })),
             review_cache: Arc::new(Mutex::new(HashMap::new())),
-            librarian: Arc::new(Mutex::new(LibrarianState {
-                embedder: None,
-                cache: None,
-            })),
             chat: Arc::new(Mutex::new(None)),
             canvas: Arc::new(Mutex::new(HashMap::new())),
             preview_dirs: Arc::new(Mutex::new(HashMap::new())),
@@ -679,7 +654,7 @@ pub fn handle_with_options(
         "/api/swarm.png" => Response::new(200, "image/png", SWARM_PNG.to_vec()),
         "/api/yarax.png" => Response::new(200, "image/png", YARAX_PNG.to_vec()),
         "/api/impeccable.png" => Response::new(200, "image/png", IMPECCABLE_PNG.to_vec()),
-        "/api/meta" => to_response(meta_json(mem, options)),
+        "/api/meta" => meta_response(mem, options),
         "/api/me" => me_response(mem, options),
         "/api/sites" => to_response(sites_json(mem)),
         "/api/publish/reachability" => to_response(reachability_json(mem)),
@@ -696,20 +671,17 @@ pub fn handle_with_options(
         "/api/contacts" => to_response(contacts_json(mem)),
         "/api/profile" => to_response(profile_json(mem)),
         "/api/resolve" => resolve_response(mem, query),
-        "/api/names" => to_response(names_json(mem)),
+        "/api/names" => names_response(mem),
         "/api/record" => record_response(mem, query),
         "/api/blob" => blob_response(mem, query),
-        "/api/checkpoints" => to_response(checkpoints_json(mem)),
+        "/api/checkpoints" => checkpoints_response(mem),
         "/api/graph" => graph_response(mem, query),
         "/api/stats" => stats_response(mem, options, query),
         "/api/activity" => activity_response(mem, options, query),
         "/api/rooms" => to_response(rooms_json(mem)),
         "/api/network" => to_response(network_json(mem)),
         "/api/peers" => peers_response(mem, options),
-        "/api/hot-pins" => match mem.hot_pins() {
-            Ok(pins) => Response::json(serde_json::json!({ "pins": pins }).to_string()),
-            Err(error) => Response::error(error.to_string()),
-        },
+        "/api/hot-pins" => hot_pins_response(mem),
         "/api/thread" => thread_response(mem, query),
         "/api/privacy" => privacy_response(mem, query),
         "/api/search" => search_response(mem, options, query),
@@ -719,6 +691,12 @@ pub fn handle_with_options(
         "/api/codex/status" => to_response(codex_status_json(mem)),
         "/api/gemini/status" => to_response(gemini_status_json(mem)),
         "/api/continue/status" => to_response(continue_status_json(mem)),
+        "/api/antigravity/status" => to_response(antigravity_status_json(mem)),
+        "/api/openclaw/status" => to_response(openclaw_status_json(mem)),
+        "/api/cline/status" => to_response(cline_status_json(mem)),
+        "/api/cursor/status" => to_response(cursor_status_json(mem)),
+        "/api/opendevin/status" => to_response(opendevin_status_json(mem)),
+        "/api/copilot/status" => to_response(copilot_status_json(mem)),
         "/api/update/status" => to_response(update_status_json(mem)),
         "/api/brain/metrics" => to_response(brain_metrics_json(mem)),
         "/api/deploy/credentials" => to_response(deploy_status_json(mem)),
@@ -1149,193 +1127,10 @@ fn ensure_chat_node(mem: &MemCli, options: &GuiOptions) -> Result<(), String> {
 /// has discovered or connected to. Brings the chat node online (so discovery is
 /// actually running) before reading the registry. Discovered-but-stale peers
 /// (located, never connected, not seen in 10 min) are pruned from the view.
-fn query_key(params: &HashMap<String, String>) -> Option<CidOrName> {
-    params
-        .get("cid")
-        .filter(|cid| !cid.is_empty())
-        .map(|cid| CidOrName::Cid(Cid(cid.clone())))
-        .or_else(|| {
-            params
-                .get("name")
-                .filter(|name| !name.is_empty())
-                .map(|name| CidOrName::Name(name.clone()))
-        })
-}
-
-fn resolve_target(mem: &MemCli, params: &HashMap<String, String>) -> CoreResult<Cid> {
-    if let Some(cid) = params
-        .get("cid")
-        .or_else(|| params.get("root"))
-        .filter(|cid| !cid.is_empty())
-    {
-        return Ok(Cid(cid.clone()));
-    }
-    if let Some(name) = params.get("name").filter(|name| !name.is_empty()) {
-        return mem.resolve(name);
-    }
-    mem.resolve("latest").or_else(|_| {
-        mem.names()?
-            .into_iter()
-            .next()
-            .map(|(_, cid)| cid)
-            .ok_or_else(|| Error::NameUnbound("store has no named roots".to_string()))
-    })
-}
-
 fn parse_query(query: &str) -> HashMap<String, String> {
     url::form_urlencoded::parse(query.as_bytes())
         .into_owned()
         .collect()
-}
-
-fn link_details(record: &serde_json::Value, outbound_links: Vec<Cid>) -> Vec<(String, Cid)> {
-    let mut details: Vec<(String, Cid)> = Vec::new();
-    let body = record.get("body").unwrap_or(&serde_json::Value::Null);
-    let kind = body
-        .get("type")
-        .and_then(|value| value.as_str())
-        .unwrap_or("");
-
-    let mut push = |relation: &str, value: Option<&serde_json::Value>| {
-        if let Some(cid) = value.and_then(decode_link) {
-            details.push((normalize_relation(relation), cid));
-        }
-    };
-
-    match kind {
-        "checkpoint" => {
-            push("checkpoint_root", body.get("root"));
-            push("checkpoint_parent", body.get("parent"));
-        }
-        "file_ref" => push("content", body.get("content")),
-        "plan" => push("spec", body.get("spec")),
-        "task" => push("parent", body.get("parent")),
-        "skill" => push("supersedes", body.get("supersedes")),
-        "directory_manifest" => {
-            if let Some(entries) = body.get("entries").and_then(|value| value.as_array()) {
-                for entry in entries {
-                    push("file_ref", entry.get("file_ref"));
-                }
-            }
-        }
-        "ingest_run" => push("manifest", body.get("manifest")),
-        "conversation" => {
-            if let Some(turns) = body.get("turns").and_then(|value| value.as_array()) {
-                for turn in turns {
-                    push("turn", Some(turn));
-                }
-            }
-            push("parent", body.get("parent"));
-        }
-        _ => {}
-    }
-
-    if let Some(edges) = record.get("edges").and_then(|value| value.as_array()) {
-        for edge in edges {
-            let relation = edge
-                .get("rel")
-                .and_then(relation_name)
-                .unwrap_or_else(|| "links_to".to_string());
-            push(&relation, edge.get("to"));
-        }
-    }
-
-    if record
-        .get("source")
-        .and_then(|source| source.get("kind"))
-        .and_then(|value| value.as_str())
-        == Some("derived")
-    {
-        if let Some(from) = record
-            .get("source")
-            .and_then(|source| source.get("from"))
-            .and_then(|value| value.as_array())
-        {
-            for source in from {
-                push("derived_from", Some(source));
-            }
-        }
-    }
-
-    for cid in outbound_links {
-        if !details.iter().any(|(_, existing)| existing == &cid) {
-            details.push(("links_to".to_string(), cid));
-        }
-    }
-    details.sort();
-    details.dedup();
-    details
-}
-
-fn relation_name(value: &serde_json::Value) -> Option<String> {
-    value
-        .as_str()
-        .map(str::to_string)
-        .or_else(|| {
-            value
-                .get("type")
-                .and_then(|kind| kind.as_str())
-                .map(str::to_string)
-        })
-        .or_else(|| {
-            value
-                .get("kind")
-                .and_then(|kind| kind.as_str())
-                .map(str::to_string)
-        })
-}
-
-fn normalize_relation(relation: &str) -> String {
-    match relation.to_ascii_lowercase().replace('-', "_").as_str() {
-        "checkpoint_root" | "root" => "checkpoint_root",
-        "checkpoint_parent" => "checkpoint_parent",
-        "content" => "content",
-        "spec" => "spec",
-        "parent" => "parent",
-        "turn" | "turns" => "turn",
-        "supersedes" => "supersedes",
-        "file_ref" => "file_ref",
-        "manifest" => "manifest",
-        "derived_from" => "derived_from",
-        _ => "links_to",
-    }
-    .to_string()
-}
-
-fn decode_link(value: &serde_json::Value) -> Option<Cid> {
-    if value.is_null() {
-        return None;
-    }
-    cid_from_link(value).ok()
-}
-
-fn record_preview(record: &serde_json::Value) -> String {
-    let body = record.get("body").unwrap_or(record);
-    for key in [
-        "text",
-        "path",
-        "label",
-        "title",
-        "question",
-        "tool",
-        "name",
-        "root_path",
-    ] {
-        if let Some(value) = body.get(key).and_then(|value| value.as_str()) {
-            return truncate(value, 100);
-        }
-    }
-    truncate(&body.to_string(), 100)
-}
-
-fn truncate(value: &str, max_chars: usize) -> String {
-    let mut chars = value.chars();
-    let prefix: String = chars.by_ref().take(max_chars).collect();
-    if chars.next().is_some() {
-        format!("{prefix}...")
-    } else {
-        prefix
-    }
 }
 
 // ---------------------------------------------------------------------------

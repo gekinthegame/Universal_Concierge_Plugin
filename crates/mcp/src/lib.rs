@@ -12,9 +12,7 @@
 
 use std::io::{BufRead, Write};
 
-use concierge_core::{
-    default_embedder, design, Cid, CidOrName, CoreBinding, Depth, Librarian, MemCli, Node, Record,
-};
+use concierge_core::{design, Cid, CidOrName, CoreBinding, MemCli, Node, Record};
 use serde_json::{json, Value};
 
 // ── Bundled, self-contained media toolkit (Decision: build on proven work) ──
@@ -710,7 +708,60 @@ fn tool_get(mem: &MemCli, args: &Value) -> Result<String, String> {
     Ok(record_text(&record))
 }
 
-fn tool_retrieve(mem: &MemCli, args: &Value) -> Result<String, String> {
+/// Render a kernel `/api/search` JSON result in the same text shape `tool_retrieve`
+/// produces locally, so routing through the kernel is output-identical.
+fn format_retrieve_text(value: &Value, query: &str) -> String {
+    let items = value
+        .get("items")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+    let indexed = value.get("indexed").and_then(|v| v.as_u64()).unwrap_or(0);
+    if items.is_empty() {
+        if indexed == 0 {
+            return "nothing indexed yet — capture or ingest some sessions first".to_string();
+        }
+        return format!("no matches for '{query}' over {indexed} indexed node(s)");
+    }
+    let used = value
+        .get("used_tokens")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    let budget = value
+        .get("budget_tokens")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    let mut out = format!(
+        "{} hit(s) over {} indexed node(s) · {}/{} tokens:\n",
+        items.len(),
+        indexed,
+        used,
+        budget
+    );
+    for hit in &items {
+        let hop = hit.get("hop").and_then(|v| v.as_u64()).unwrap_or(0);
+        let related = if hop > 0 {
+            format!(" (related, hop {hop})")
+        } else {
+            String::new()
+        };
+        out.push_str(&format!(
+            "\n[score {:.3} · sim {:.3} · gravity {:.3}] {} {}{}\n{}\n",
+            hit.get("score").and_then(|v| v.as_f64()).unwrap_or(0.0),
+            hit.get("similarity")
+                .and_then(|v| v.as_f64())
+                .unwrap_or(0.0),
+            hit.get("gravity").and_then(|v| v.as_f64()).unwrap_or(0.0),
+            hit.get("kind").and_then(|v| v.as_str()).unwrap_or(""),
+            hit.get("cid").and_then(|v| v.as_str()).unwrap_or(""),
+            related,
+            hit.get("preview").and_then(|v| v.as_str()).unwrap_or(""),
+        ));
+    }
+    out
+}
+
+fn tool_retrieve(_mem: &MemCli, args: &Value) -> Result<String, String> {
     let query = arg(args, "query")?;
     let budget = args
         .get("budget")
@@ -719,38 +770,31 @@ fn tool_retrieve(mem: &MemCli, args: &Value) -> Result<String, String> {
                 .or_else(|| v.as_str().and_then(|s| s.parse().ok()))
         })
         .unwrap_or(2000) as usize;
-    let config = mem.config().map_err(|e| e.to_string())?;
-    let embedder = default_embedder(&config.librarian);
-    let librarian = Librarian::index_all_persistent(mem, embedder).map_err(|e| e.to_string())?;
-    if librarian.is_empty() {
-        return Ok("nothing indexed yet — capture or ingest some sessions first".to_string());
+    // Phase 5: route through the kernel's shared warm index, auto-spawning it or
+    // auto-restarting it if it crashed. MCP has no standalone flag; the AI's
+    // retrieve path is intentionally the same shared warm index as GUI/CLI.
+    #[cfg(any(unix, windows))]
+    {
+        match concierge_kernel_client::client::search_supervised(query, budget, "summary", 0, None)
+        {
+            Ok((resp, lifecycle)) if resp.ok => {
+                let value: Value = serde_json::from_str(&resp.body).unwrap_or(Value::Null);
+                let mut out = String::new();
+                if let Some(notice) = lifecycle.index_notice() {
+                    out.push_str(notice);
+                    out.push('\n');
+                }
+                out.push_str(&format_retrieve_text(&value, query));
+                Ok(out)
+            }
+            Ok((resp, _)) => Err(resp.body),
+            Err(error) => Err(format!("kernel retrieve failed: {error}")),
+        }
     }
-    let result = librarian.retrieve(query, budget, &[], Depth::Summary);
-    if result.items.is_empty() {
-        return Ok(format!(
-            "no matches for '{query}' over {} indexed node(s)",
-            librarian.len()
-        ));
+    #[cfg(not(any(unix, windows)))]
+    {
+        Err("kernel retrieve requires a local AF_UNIX socket (Unix or Windows 10+)".to_string())
     }
-    let mut out = format!(
-        "{} hit(s) over {} indexed node(s) · {}/{} tokens:\n",
-        result.items.len(),
-        librarian.len(),
-        result.used_tokens,
-        result.budget_tokens
-    );
-    for hit in &result.items {
-        let related = if hit.hop > 0 {
-            format!(" (related, hop {})", hit.hop)
-        } else {
-            String::new()
-        };
-        out.push_str(&format!(
-            "\n[score {:.3} · sim {:.3} · gravity {:.3}] {} {}{}\n{}\n",
-            hit.score, hit.similarity, hit.gravity, hit.kind, hit.cid, related, hit.preview
-        ));
-    }
-    Ok(out)
 }
 
 fn tool_put_node(mem: &MemCli, args: &Value) -> Result<String, String> {

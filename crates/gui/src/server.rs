@@ -5,7 +5,7 @@ static SHUTDOWN_REQUESTED: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
 
 /// Async-signal-safe handler: just flag the request. A poller thread does the real
-/// (non-signal-safe) shutdown work — stopping the detached Kubo node, then exiting.
+/// (non-signal-safe) shutdown work, then exits.
 #[cfg(unix)]
 extern "C" fn handle_term_signal(_sig: libc::c_int) {
     SHUTDOWN_REQUESTED.store(true, std::sync::atomic::Ordering::SeqCst);
@@ -38,8 +38,7 @@ extern "system" {
 }
 
 /// OS-invoked on Ctrl-C / Ctrl-Break / console-close / logoff / shutdown. Returning
-/// is moot — we stop the detached Kubo node, drop the lock, and exit from here so the
-/// daemon can never outlive the app.
+/// is moot — we drop the GUI lock and exit from here.
 #[cfg(windows)]
 unsafe extern "system" fn handle_console_ctrl(_ctrl_type: u32) -> i32 {
     if let Some(mem) = SHUTDOWN_MEM.get() {
@@ -70,12 +69,11 @@ fn pid_is_alive_windows(pid: u32) -> bool {
     }
 }
 
-/// Stop background processes and exit. The single exit seam for **every** shutdown path —
-/// window-close (heartbeat watchdog), watched-PID death, and Ctrl-C/SIGTERM — so none of them
-/// can leak the **detached** private Kubo daemon (it outlives this process unless told to stop).
-/// `process::exit` tears down all in-process work (chat node, embedder, server threads).
+/// Stop the GUI process. The single exit seam for **every** shutdown path —
+/// window-close (heartbeat watchdog), watched-PID death, and Ctrl-C/SIGTERM.
+/// Phase 5 moves the shared kernel and private Kubo lifecycle out of the GUI;
+/// `process::exit` only tears down in-process GUI work (chat node, server threads).
 fn shutdown(mem: &MemCli) -> ! {
-    let _ = mem.stop_sidekick_node();
     remove_gui_lock(mem);
     std::process::exit(0);
 }
@@ -122,17 +120,18 @@ pub fn serve_with_options(mem: MemCli, addr: &str, options: GuiOptions) -> CoreR
             #[cfg(not(any(unix, windows)))]
             let alive = true;
             if !alive {
-                shutdown(&mem_watch); // stop the detached Kubo node too, not just this process
+                shutdown(&mem_watch);
             }
         });
     }
 
-    // Hitting the GUI window's X must close the Concierge AND its background processes. Each
-    // window heartbeats `/api/heartbeat` while open and beacons `/api/closing` on unload; when
-    // the last window is gone (after at least one connected), shut the whole server down. Only
-    // the process that owns a window does this — a headless `--no-open` server is governed by
-    // watch_pid instead. A generous STALE tolerates background-tab timer throttling (the beacon
-    // catches real closes fast); GRACE outlives a page reload before deciding the window is gone.
+    // Hitting the GUI window's X closes this GUI server. Each window heartbeats
+    // `/api/heartbeat` while open and beacons `/api/closing` on unload; when the
+    // last window is gone (after at least one connected), shut the server down.
+    // Only the process that owns a window does this — a headless `--no-open`
+    // server is governed by watch_pid instead. A generous STALE tolerates
+    // background-tab timer throttling (the beacon catches real closes fast);
+    // GRACE outlives a page reload before deciding the window is gone.
     if options.open_browser {
         let mem_life = mem.clone();
         let clients = options.clients.clone();
@@ -168,8 +167,8 @@ pub fn serve_with_options(mem: MemCli, addr: &str, options: GuiOptions) -> CoreR
         });
     }
 
-    // Ctrl-C / SIGTERM in a terminal must also stop the detached Kubo node, not just this
-    // process. The handler only flags; this poller does the real shutdown work.
+    // Ctrl-C / SIGTERM in a terminal exits through the same shutdown seam. The
+    // handler only flags; this poller does the real shutdown work.
     #[cfg(unix)]
     {
         let handler = handle_term_signal as *const () as libc::sighandler_t;
@@ -187,8 +186,7 @@ pub fn serve_with_options(mem: MemCli, addr: &str, options: GuiOptions) -> CoreR
     }
 
     // Windows equivalent: register a console-control handler so Ctrl-C / Ctrl-Break /
-    // console-close / logoff / shutdown all reach the same `shutdown()` seam and stop
-    // the detached Kubo node instead of orphaning it.
+    // console-close / logoff / shutdown all reach the same `shutdown()` seam.
     #[cfg(windows)]
     {
         let _ = SHUTDOWN_MEM.set(mem.clone());
@@ -197,24 +195,20 @@ pub fn serve_with_options(mem: MemCli, addr: &str, options: GuiOptions) -> CoreR
         }
     }
 
-    // We stop the detached Kubo daemon on window-close, so if the Sidekick was left enabled,
-    // relaunch its node here (idempotent — `enable_sidekick` only launches if not running).
+    // Phase 5: the memory kernel owns capture + the warm shared index. Ensure it
+    // is running off the startup path so a slow kernel launch never delays the
+    // window or the first HTTP response. AF_UNIX socket on Unix and Windows 10+.
+    #[cfg(any(unix, windows))]
     {
-        let mem_node = mem.clone();
         std::thread::spawn(move || {
-            if mem_node.sidekick_status().enabled {
-                let _ = mem_node.enable_sidekick();
+            if std::env::var_os("CONCIERGE_NO_KERNEL").is_none() {
+                let _ = concierge_kernel::client::ensure_running();
             }
         });
     }
 
-    // Phase C: while the app is open, continuously capture Claude Code sessions —
-    // but only once the user has explicitly attached (consent-gated, opt-in).
-    spawn_claude_code_capture(mem.clone());
-    spawn_aider_capture(mem.clone());
-    spawn_codex_capture(mem.clone());
-    spawn_gemini_capture(mem.clone());
-    spawn_continue_capture(mem.clone());
+    // The search index is kernel-owned in Phase 5. The GUI does not build or cache
+    // its own retrieval index.
 
     // Maintenance: silently compact the store (GC superseded blocks) once a day — a
     // first pass two minutes after launch (so startup isn't slowed), then every 24h.
@@ -328,25 +322,6 @@ pub(super) fn aider_status_json(mem: &MemCli) -> CoreResult<String> {
     .map_err(|e| Error::Io(format!("serialize aider status: {e}")))
 }
 
-/// Background capture: while attached, re-ingest any changed Aider transcript on a
-/// short interval (cheap stat per file; idempotent by CID). Mirrors the Claude loop.
-fn spawn_aider_capture(mem: MemCli) {
-    use concierge_adapter_aider::{capture_once, seed_lens};
-    let base = mem.working_dir().to_path_buf();
-    std::thread::spawn(move || {
-        let mut lens: std::collections::HashMap<std::path::PathBuf, u64> =
-            std::collections::HashMap::new();
-        // Seed current sizes so loading does NOT backfill prior history.
-        seed_lens(&mut lens);
-        loop {
-            if aider_attached(&mem) {
-                let _ = capture_once(&mut lens, &mem, &base);
-            }
-            std::thread::sleep(std::time::Duration::from_secs(5));
-        }
-    });
-}
-
 /// Manual full backfill of Aider transcripts (the "Ingest" button) — runs in the
 /// background so the request returns immediately.
 pub(super) fn aider_ingest(mem: &MemCli) -> Response {
@@ -359,14 +334,12 @@ pub(super) fn aider_ingest(mem: &MemCli) -> Response {
 }
 
 // ── Additional file-based harnesses (Codex, Gemini, Continue) ────────────────
-// Each reads the harness's own on-disk session files and re-ingests changed ones
-// (CID-dedup makes the re-read idempotent), gated by a per-harness consent
-// sentinel — exactly the Claude Code / Aider shape. One macro generates the
-// attach sentinel helpers, the status JSON, and the background capture loop.
+// The GUI owns status, attach consent, and manual historical ingest buttons.
+// Continuous changed-file capture is kernel-owned in Phase 5. One macro generates
+// the attach sentinel helpers, status JSON, and manual ingest endpoint.
 macro_rules! harness_capture {
-    ($flag:literal, $attached:ident, $set:ident, $status:ident, $spawn:ident,
-     $disc:path, $cap:path, $label:literal, $stagger:expr,
-     $seed:path, $ingest:ident, $ingest_all:path) => {
+    ($flag:literal, $attached:ident, $set:ident, $status:ident,
+     $disc:path, $label:literal, $ingest:ident, $ingest_all:path) => {
         pub(super) fn $attached(mem: &MemCli) -> bool {
             mem.store_dir()
                 .ok()
@@ -404,29 +377,6 @@ macro_rules! harness_capture {
             .map_err(|e| Error::Io(format!("serialize {} status: {}", $label, e)))
         }
 
-        fn $spawn(mem: MemCli) {
-            let base = mem.working_dir().to_path_buf();
-            std::thread::spawn(move || {
-                // Stagger startup so the harness loops don't all backfill at once
-                // (a simultaneous burst across loops can starve the web server).
-                std::thread::sleep(std::time::Duration::from_secs($stagger));
-                let mut lens: std::collections::HashMap<std::path::PathBuf, u64> =
-                    std::collections::HashMap::new();
-                // Seed current sizes so attaching/loading does NOT backfill all prior
-                // history — only growth from here is auto-captured. Use the Ingest
-                // button for a one-time full backfill.
-                $seed(&mut lens);
-                loop {
-                    if $attached(&mem) {
-                        let _ = $cap(&mut lens, &mem, &base);
-                    }
-                    // Capture is not real-time and re-ingesting changed files is heavy,
-                    // so poll gently — this keeps the HTTP server responsive.
-                    std::thread::sleep(std::time::Duration::from_secs(20));
-                }
-            });
-        }
-
         /// Manual full backfill (the "Ingest" button): runs the historical ingest in
         /// a background thread so the request returns immediately and the UI stays
         /// responsive while the System Console fills with progress.
@@ -446,12 +396,8 @@ harness_capture!(
     codex_attached,
     set_codex_attached,
     codex_status_json,
-    spawn_codex_capture,
     concierge_adapter_codex::discovery,
-    concierge_adapter_codex::capture_once,
     "codex",
-    4,
-    concierge_adapter_codex::seed_lens,
     codex_ingest,
     concierge_adapter_codex::ingest_all
 );
@@ -460,12 +406,8 @@ harness_capture!(
     gemini_attached,
     set_gemini_attached,
     gemini_status_json,
-    spawn_gemini_capture,
     concierge_adapter_gemini::discovery,
-    concierge_adapter_gemini::capture_once,
     "gemini",
-    10,
-    concierge_adapter_gemini::seed_lens,
     gemini_ingest,
     concierge_adapter_gemini::ingest_all
 );
@@ -474,24 +416,82 @@ harness_capture!(
     continue_attached,
     set_continue_attached,
     continue_status_json,
-    spawn_continue_capture,
     concierge_adapter_continue::discovery,
-    concierge_adapter_continue::capture_once,
     "continue",
-    16,
-    concierge_adapter_continue::seed_lens,
     continue_ingest,
     concierge_adapter_continue::ingest_all
+);
+harness_capture!(
+    "capture-antigravity",
+    antigravity_attached,
+    set_antigravity_attached,
+    antigravity_status_json,
+    concierge_adapter_antigravity::discovery,
+    "antigravity",
+    antigravity_ingest,
+    concierge_adapter_antigravity::ingest_all
+);
+harness_capture!(
+    "capture-openclaw",
+    openclaw_attached,
+    set_openclaw_attached,
+    openclaw_status_json,
+    concierge_adapter_openclaw::discovery,
+    "openclaw",
+    openclaw_ingest,
+    concierge_adapter_openclaw::ingest_all
+);
+harness_capture!(
+    "capture-cline",
+    cline_attached,
+    set_cline_attached,
+    cline_status_json,
+    concierge_adapter_cline::discovery,
+    "cline",
+    cline_ingest,
+    concierge_adapter_cline::ingest_all
+);
+harness_capture!(
+    "capture-cursor",
+    cursor_attached,
+    set_cursor_attached,
+    cursor_status_json,
+    concierge_adapter_cursor::discovery,
+    "cursor",
+    cursor_ingest,
+    concierge_adapter_cursor::ingest_all
+);
+harness_capture!(
+    "capture-opendevin",
+    opendevin_attached,
+    set_opendevin_attached,
+    opendevin_status_json,
+    concierge_adapter_opendevin::discovery,
+    "opendevin",
+    opendevin_ingest,
+    concierge_adapter_opendevin::ingest_all
+);
+harness_capture!(
+    "capture-copilot",
+    copilot_attached,
+    set_copilot_attached,
+    copilot_status_json,
+    concierge_adapter_copilot::discovery,
+    "copilot",
+    copilot_ingest,
+    concierge_adapter_copilot::ingest_all
 );
 
 /// Where per-file ingest offsets are persisted across relaunches, so a restart
 /// resumes the tail instead of re-scanning every session from byte 0.
+#[cfg(test)]
 fn capture_offsets_path(mem: &MemCli) -> Option<std::path::PathBuf> {
     mem.store_dir()
         .ok()
         .map(|dir| dir.join("capture-offsets.json"))
 }
 
+#[cfg(test)]
 pub(super) fn load_capture_offsets(
     mem: &MemCli,
 ) -> std::collections::HashMap<std::path::PathBuf, u64> {
@@ -510,6 +510,7 @@ pub(super) fn load_capture_offsets(
         .unwrap_or_default()
 }
 
+#[cfg(test)]
 pub(super) fn save_capture_offsets(
     mem: &MemCli,
     offsets: &std::collections::HashMap<std::path::PathBuf, u64>,
@@ -527,35 +528,6 @@ pub(super) fn save_capture_offsets(
         }
         let _ = atomic_local_write(&path, text.as_bytes());
     }
-}
-
-/// Spawn the continuous capture loop. No-op if `~/.claude/projects` can't be
-/// resolved. Ticks every few seconds; does work only while attached, so an
-/// un-attached node costs a stat per tick and nothing else. Per-file offsets are
-/// loaded at start and persisted whenever they advance, so a relaunch resumes the
-/// tail rather than re-scanning the whole history.
-fn spawn_claude_code_capture(mem: MemCli) {
-    use concierge_adapter_claude_code::{capture_once, discovery, seed_offsets};
-    let Some(projects_dir) = discovery::claude_projects_dir() else {
-        return;
-    };
-    let base = mem.working_dir().to_path_buf();
-    std::thread::spawn(move || {
-        let mut offsets = load_capture_offsets(&mem);
-        // Seed any not-yet-tracked session to its end so a first attach does NOT
-        // backfill all prior history (already-tracked sessions keep their position).
-        seed_offsets(&projects_dir, &mut offsets);
-        save_capture_offsets(&mem, &offsets);
-        loop {
-            if claude_code_attached(&mem) {
-                let ingested = capture_once(&projects_dir, &mut offsets, &mem, &base);
-                if ingested > 0 {
-                    save_capture_offsets(&mem, &offsets);
-                }
-            }
-            std::thread::sleep(std::time::Duration::from_secs(3));
-        }
-    });
 }
 
 /// Manual full backfill of Claude Code sessions (the "Ingest" button) — re-reads
@@ -676,6 +648,68 @@ pub(super) fn mutation_continue_attach(mem: &MemCli, attached: bool) -> Response
         return Response::error(format!("could not update continue capture state: {error}"));
     }
     match continue_status_json(mem) {
+        Ok(body) => Response::json(body),
+        Err(error) => Response::error(error.to_string()),
+    }
+}
+
+pub(super) fn mutation_antigravity_attach(mem: &MemCli, attached: bool) -> Response {
+    if let Err(error) = set_antigravity_attached(mem, attached) {
+        return Response::error(format!(
+            "could not update antigravity capture state: {error}"
+        ));
+    }
+    match antigravity_status_json(mem) {
+        Ok(body) => Response::json(body),
+        Err(error) => Response::error(error.to_string()),
+    }
+}
+
+pub(super) fn mutation_openclaw_attach(mem: &MemCli, attached: bool) -> Response {
+    if let Err(error) = set_openclaw_attached(mem, attached) {
+        return Response::error(format!("could not update openclaw capture state: {error}"));
+    }
+    match openclaw_status_json(mem) {
+        Ok(body) => Response::json(body),
+        Err(error) => Response::error(error.to_string()),
+    }
+}
+
+pub(super) fn mutation_cline_attach(mem: &MemCli, attached: bool) -> Response {
+    if let Err(error) = set_cline_attached(mem, attached) {
+        return Response::error(format!("could not update cline capture state: {error}"));
+    }
+    match cline_status_json(mem) {
+        Ok(body) => Response::json(body),
+        Err(error) => Response::error(error.to_string()),
+    }
+}
+
+pub(super) fn mutation_cursor_attach(mem: &MemCli, attached: bool) -> Response {
+    if let Err(error) = set_cursor_attached(mem, attached) {
+        return Response::error(format!("could not update cursor capture state: {error}"));
+    }
+    match cursor_status_json(mem) {
+        Ok(body) => Response::json(body),
+        Err(error) => Response::error(error.to_string()),
+    }
+}
+
+pub(super) fn mutation_opendevin_attach(mem: &MemCli, attached: bool) -> Response {
+    if let Err(error) = set_opendevin_attached(mem, attached) {
+        return Response::error(format!("could not update opendevin capture state: {error}"));
+    }
+    match opendevin_status_json(mem) {
+        Ok(body) => Response::json(body),
+        Err(error) => Response::error(error.to_string()),
+    }
+}
+
+pub(super) fn mutation_copilot_attach(mem: &MemCli, attached: bool) -> Response {
+    if let Err(error) = set_copilot_attached(mem, attached) {
+        return Response::error(format!("could not update copilot capture state: {error}"));
+    }
+    match copilot_status_json(mem) {
         Ok(body) => Response::json(body),
         Err(error) => Response::error(error.to_string()),
     }

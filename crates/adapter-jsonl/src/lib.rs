@@ -262,6 +262,9 @@ pub struct IngestReport {
     pub events: usize,
     /// IPLD nodes written (prompts, responses, tool results, file refs, decisions).
     pub nodes_written: usize,
+    /// Content/checkpoint record CIDs written during this ingest, in write order.
+    /// Kernel capture uses these for event-driven index appends.
+    pub record_cids: Vec<Cid>,
     /// Checkpoints created.
     pub checkpoints: usize,
     /// Name → CID bindings written (scoped names + `latest`).
@@ -415,6 +418,7 @@ fn handle<B: CoreBinding>(
             if let Some(start_marker) = state.pending_session_start_marker.take() {
                 bind_event_marker(binding, state, &start_marker, &cid, report)?;
             }
+            report.record_cids.push(cid);
             report.nodes_written += 1;
         }
         Event::ModelResponse { text } => {
@@ -433,6 +437,7 @@ fn handle<B: CoreBinding>(
             if let Some(start_marker) = state.pending_session_start_marker.take() {
                 bind_event_marker(binding, state, &start_marker, &cid, report)?;
             }
+            report.record_cids.push(cid);
             report.nodes_written += 1;
         }
         Event::ToolCallStarted { tool, args_json } => {
@@ -470,6 +475,7 @@ fn handle<B: CoreBinding>(
             if let Some(start_marker) = state.pending_session_start_marker.take() {
                 bind_event_marker(binding, state, &start_marker, &cid, report)?;
             }
+            report.record_cids.push(cid);
             report.nodes_written += 1;
         }
         Event::FileRead { path } | Event::FileWritten { path } => {
@@ -494,6 +500,7 @@ fn handle<B: CoreBinding>(
             if let Some(start_marker) = state.pending_session_start_marker.take() {
                 bind_event_marker(binding, state, &start_marker, &cid, report)?;
             }
+            report.record_cids.push(cid);
             report.nodes_written += 1;
         }
         Event::DecisionRecorded { text } => {
@@ -512,6 +519,7 @@ fn handle<B: CoreBinding>(
             if let Some(start_marker) = state.pending_session_start_marker.take() {
                 bind_event_marker(binding, state, &start_marker, &cid, report)?;
             }
+            report.record_cids.push(cid);
             report.nodes_written += 1;
         }
         Event::MemoryRecorded { text } => {
@@ -530,6 +538,7 @@ fn handle<B: CoreBinding>(
             if let Some(start_marker) = state.pending_session_start_marker.take() {
                 bind_event_marker(binding, state, &start_marker, &cid, report)?;
             }
+            report.record_cids.push(cid);
             report.nodes_written += 1;
         }
         Event::CheckpointRequested { label } => {
@@ -665,6 +674,7 @@ fn checkpoint<B: CoreBinding>(
         .checkpoint(label, &head, parent.as_ref())
         .map_err(|e| e.to_string())?;
     report.checkpoints += 1;
+    report.record_cids.push(cp.clone());
 
     for name in scoped_names(env, label) {
         binding.bind(&name, &cp).map_err(|e| e.to_string())?;
@@ -861,6 +871,11 @@ mod tests {
         assert_eq!(report.events, 5, "five well-formed events");
         assert_eq!(report.nodes_written, 3, "prompt + response + decision");
         assert_eq!(report.checkpoints, 1, "session_ended writes one checkpoint");
+        assert_eq!(
+            report.record_cids.len(),
+            4,
+            "kernel capture receives prompt + response + decision + checkpoint CIDs"
+        );
         assert!(
             report.skipped.is_empty(),
             "nothing should be skipped: {:?}",

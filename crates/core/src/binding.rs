@@ -1090,6 +1090,26 @@ impl MemCli {
         Ok(out)
     }
 
+    /// The union of every CID reachable from `roots`, computed at the block level
+    /// with a SINGLE store open (no per-node re-open). This is the cheap path the
+    /// `store_stats` rail uses, exposed for the search indexer: calling `walk` per
+    /// root re-opens the store (and re-parses `names.json`) for every node, which
+    /// is O(nodes) store opens — minutes on a large store. This is one open total.
+    pub fn reachable_union(&self, roots: &[Cid]) -> Result<std::collections::HashSet<String>> {
+        let store = self.open_store()?;
+        let mut out = std::collections::HashSet::new();
+        for root in roots {
+            if let Ok(parsed) = root.0.parse::<mem::cid::Cid>() {
+                if let Ok(blocks) = store.reachable(&parsed) {
+                    for block in blocks {
+                        out.insert(block.to_string());
+                    }
+                }
+            }
+        }
+        Ok(out)
+    }
+
     /// Store / DAG metrics for the explorer's stats rail.
     pub fn store_stats(&self) -> Result<StoreStats> {
         let names = self.names()?;

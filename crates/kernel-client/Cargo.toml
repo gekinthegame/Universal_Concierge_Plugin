@@ -1,0 +1,23 @@
+[package]
+name = "concierge-kernel-client"
+description = "Concierge kernel client — wire protocol, framing transport, and the client used to talk to a running kernel daemon. Dependency-light so MCP/CLI can link it without the daemon's deps."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+url = { workspace = true }
+
+[target.'cfg(unix)'.dependencies]
+libc = { workspace = true }
+
+# Windows 10+ has AF_UNIX, but std exposes Unix sockets only on Unix; this crate
+# provides the same UnixStream/UnixListener API on Windows so the socket code path
+# stays unified across platforms.
+[target.'cfg(windows)'.dependencies]
+uds_windows = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

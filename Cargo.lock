@@ -836,6 +836,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "concierge-adapter-antigravity"
+version = "0.1.0"
+dependencies = [
+ "concierge-adapter-jsonl",
+ "concierge-core",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "url",
+]
+
+[[package]]
 name = "concierge-adapter-claude-code"
 version = "0.1.0"
 dependencies = [
@@ -844,6 +856,18 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
+]
+
+[[package]]
+name = "concierge-adapter-cline"
+version = "0.1.0"
+dependencies = [
+ "concierge-adapter-jsonl",
+ "concierge-core",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "url",
 ]
 
 [[package]]
@@ -864,6 +888,31 @@ dependencies = [
  "concierge-core",
  "serde_json",
  "tempfile",
+]
+
+[[package]]
+name = "concierge-adapter-copilot"
+version = "0.1.0"
+dependencies = [
+ "concierge-adapter-jsonl",
+ "concierge-core",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "url",
+]
+
+[[package]]
+name = "concierge-adapter-cursor"
+version = "0.1.0"
+dependencies = [
+ "concierge-adapter-jsonl",
+ "concierge-core",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "url",
 ]
 
 [[package]]
@@ -896,6 +945,30 @@ dependencies = [
  "serde_json",
  "sha2",
  "tempfile",
+]
+
+[[package]]
+name = "concierge-adapter-openclaw"
+version = "0.1.0"
+dependencies = [
+ "concierge-adapter-jsonl",
+ "concierge-core",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "url",
+]
+
+[[package]]
+name = "concierge-adapter-opendevin"
+version = "0.1.0"
+dependencies = [
+ "concierge-adapter-jsonl",
+ "concierge-core",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "url",
 ]
 
 [[package]]
@@ -958,13 +1031,21 @@ version = "0.1.0"
 dependencies = [
  "cid",
  "concierge-adapter-aider",
+ "concierge-adapter-antigravity",
  "concierge-adapter-claude-code",
+ "concierge-adapter-cline",
  "concierge-adapter-codex",
  "concierge-adapter-continue",
+ "concierge-adapter-copilot",
+ "concierge-adapter-cursor",
  "concierge-adapter-gemini",
  "concierge-adapter-jsonl",
+ "concierge-adapter-openclaw",
+ "concierge-adapter-opendevin",
  "concierge-core",
+ "concierge-kernel",
  "concierge-net",
+ "concierge-routes",
  "flate2",
  "libc",
  "maxminddb",
@@ -978,10 +1059,51 @@ dependencies = [
 ]
 
 [[package]]
+name = "concierge-kernel"
+version = "0.1.0"
+dependencies = [
+ "concierge-adapter-aider",
+ "concierge-adapter-antigravity",
+ "concierge-adapter-claude-code",
+ "concierge-adapter-cline",
+ "concierge-adapter-codex",
+ "concierge-adapter-continue",
+ "concierge-adapter-copilot",
+ "concierge-adapter-cursor",
+ "concierge-adapter-gemini",
+ "concierge-adapter-openclaw",
+ "concierge-adapter-opendevin",
+ "concierge-core",
+ "concierge-kernel-client",
+ "concierge-net",
+ "concierge-routes",
+ "libc",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "uds_windows",
+ "url",
+]
+
+[[package]]
+name = "concierge-kernel-client"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "uds_windows",
+ "url",
+]
+
+[[package]]
 name = "concierge-mcp"
 version = "0.1.0"
 dependencies = [
  "concierge-core",
+ "concierge-kernel-client",
  "serde_json",
  "tempfile",
 ]
@@ -1009,6 +1131,7 @@ dependencies = [
  "concierge-adapter-jsonl",
  "concierge-core",
  "concierge-gui",
+ "concierge-kernel-client",
  "concierge-mcp",
  "concierge-net",
  "notify",
@@ -1016,6 +1139,16 @@ dependencies = [
  "serde_json",
  "tokio",
  "toml",
+]
+
+[[package]]
+name = "concierge-routes"
+version = "0.1.0"
+dependencies = [
+ "concierge-core",
+ "serde_json",
+ "tempfile",
+ "url",
 ]
 
 [[package]]
@@ -1843,6 +1976,12 @@ name = "fallible-iterator"
 version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2acce4a10f12dc2fb14a218589d4f1f62ef011b2d0cc4b3cb1bba8e94da14649"
+
+[[package]]
+name = "fallible-streaming-iterator"
+version = "0.1.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7360491ce676a36bf9bb3c56c1aa791658183a54d2744120f27285738d90465a"
 
 [[package]]
 name = "fastembed"
@@ -3595,6 +3734,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "libsqlite3-sys"
+version = "0.28.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0c10584274047cb335c23d3e61bcef8e323adae7c5c8c760540f73610177fc3f"
+dependencies = [
+ "cc",
+ "pkg-config",
+ "vcpkg",
+]
+
+[[package]]
 name = "linux-raw-sys"
 version = "0.4.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3838,6 +3988,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "714098028fe011992e1c3962653c96b2d578c4b4bce9036e15ff220319b1e0e3"
 dependencies = [
  "libc",
+]
+
+[[package]]
+name = "memoffset"
+version = "0.9.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "488016bfae457b036d996092f6cb448677611ce4449e970ceaf42695203f218a"
+dependencies = [
+ "autocfg",
 ]
 
 [[package]]
@@ -5373,6 +5532,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "rusqlite"
+version = "0.31.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b838eba278d213a8beaf485bd313fd580ca4505a00d5871caeb1457c55322cae"
+dependencies = [
+ "bitflags 2.12.1",
+ "fallible-iterator",
+ "fallible-streaming-iterator",
+ "hashlink 0.9.1",
+ "libsqlite3-sys",
+ "smallvec",
+]
+
+[[package]]
 name = "rustc-hash"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6412,6 +6585,17 @@ name = "typenum"
 version = "1.20.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b6f5e870be6c3b371b77fe0ee0bafb859fa4964b4404c27de1d380043c4dda20"
+
+[[package]]
+name = "uds_windows"
+version = "1.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f2f6fb2847f6742cd76af783a2a2c49e9375d0a111c7bef6f71cd9e738c72d6e"
+dependencies = [
+ "memoffset",
+ "tempfile",
+ "windows-sys 0.61.2",
+]
 
 [[package]]
 name = "uint"

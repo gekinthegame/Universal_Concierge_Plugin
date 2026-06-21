@@ -10,12 +10,24 @@ libc = { workspace = true }
 cid = { workspace = true }
 concierge-core = { path = "../core" }
 concierge-net = { path = "../net" }
+# Talk to the kernel daemon for the shared warm index. Only the lightweight
+# protocol/client is used here — no core re-entry for GUI search.
+concierge-kernel = { path = "../kernel" }
+# Shared data-route handlers (store reads → JSON) — one implementation, used by
+# both the GUI and the kernel so the routes can't drift between them.
+concierge-routes = { path = "../routes" }
 concierge-adapter-jsonl = { path = "../adapter-jsonl" }
 concierge-adapter-claude-code = { path = "../adapter-claude-code" }
 concierge-adapter-aider = { path = "../adapter-aider" }
 concierge-adapter-codex = { path = "../adapter-codex" }
 concierge-adapter-gemini = { path = "../adapter-gemini" }
 concierge-adapter-continue = { path = "../adapter-continue" }
+concierge-adapter-antigravity = { path = "../adapter-antigravity" }
+concierge-adapter-openclaw = { path = "../adapter-openclaw" }
+concierge-adapter-cline = { path = "../adapter-cline" }
+concierge-adapter-cursor = { path = "../adapter-cursor" }
+concierge-adapter-opendevin = { path = "../adapter-opendevin" }
+concierge-adapter-copilot = { path = "../adapter-copilot" }
 tokio = { workspace = true }
 rand_core = { workspace = true }
 serde = { workspace = true }
@@ -29,4 +41,3 @@ flate2 = "1"
 
 [dev-dependencies]
 tempfile = { workspace = true }
-

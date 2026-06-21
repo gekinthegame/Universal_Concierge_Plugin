@@ -1,13 +1,14 @@
 #!/bin/bash
-# Assemble Concierge.app (from a built `concierge-plugin` binary + a logo) and
+# Assemble Concierge.app (from built Concierge binaries + a logo) and
 # package it as a drag-to-Applications .dmg. macOS only (uses sips/iconutil/hdiutil).
 #
-#   packaging/macos/build-dmg.sh <binary> <logo.png> <out.dmg>
+#   packaging/macos/build-dmg.sh <plugin-binary> <logo.png> <out.dmg> [kernel-binary]
 set -euo pipefail
 
-BIN="${1:?usage: build-dmg.sh <binary> <logo.png> <out.dmg>}"
+BIN="${1:?usage: build-dmg.sh <plugin-binary> <logo.png> <out.dmg> [kernel-binary]}"
 LOGO="${2:?missing logo png}"
 OUT="${3:?missing output .dmg}"
+KERNEL="${4:-}"
 HERE="$(cd "$(dirname "$0")" && pwd)"
 
 APP="Concierge.app"
@@ -22,6 +23,10 @@ cp "$HERE/launcher.sh" "$APP/Contents/MacOS/Concierge"
 chmod +x "$APP/Contents/MacOS/Concierge"
 cp "$BIN" "$APP/Contents/MacOS/concierge-plugin"
 chmod +x "$APP/Contents/MacOS/concierge-plugin"
+if [ -n "$KERNEL" ]; then
+  cp "$KERNEL" "$APP/Contents/MacOS/concierge-kernel"
+  chmod +x "$APP/Contents/MacOS/concierge-kernel"
+fi
 
 # ── icon (from the logo) ─────────────────────────────────────────────────────
 mkdir -p "$ICONSET"

@@ -1,8 +1,8 @@
 ; Universal Concierge — Windows installer (Inno Setup).
 ; Per-user install (no admin), Start Menu + optional desktop icon. The shortcuts
 ; point at launch.vbs so clicking them opens the explorer with no console window.
-; Build:  ISCC.exe concierge.iss   (with concierge-plugin.exe, icon.ico, launch.vbs
-; staged next to this script).
+; Build:  ISCC.exe concierge.iss   (with concierge-plugin.exe, concierge-kernel.exe,
+; icon.ico, and launch.vbs staged next to this script).
 
 #define AppName "Universal Concierge"
 #define AppVer "0.1.0"
@@ -29,6 +29,7 @@ Name: "desktopicon"; Description: "Create a &desktop icon"; GroupDescription: "A
 
 [Files]
 Source: "concierge-plugin.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "concierge-kernel.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "icon.ico";             DestDir: "{app}"; Flags: ignoreversion
 Source: "launch.vbs";           DestDir: "{app}"; Flags: ignoreversion
 

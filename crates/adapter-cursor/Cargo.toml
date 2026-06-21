@@ -1,0 +1,17 @@
+[package]
+name = "concierge-adapter-cursor"
+description = "Layer 3 — Cursor harness adapter. Discovers and translates Cursor state.vscdb into Concierge envelopes."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+concierge-core = { path = "../core" }
+concierge-adapter-jsonl = { path = "../adapter-jsonl" }
+rusqlite = { workspace = true }
+serde_json = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+url = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

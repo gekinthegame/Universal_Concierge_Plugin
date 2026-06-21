@@ -90,23 +90,32 @@ async function walletLoadState() {
     const row = node("div", "wallet-link-row");
     row.append(node("span", "mono", walletShort(l.address)));
     row.append(node("span", "eyebrow", " · " + (l.chain || "evm")));
-    const rm = node("button", "tool-button", "Unlink");
-    rm.addEventListener("click", () => safely(async () => {
-      await postJson("/api/wallet/unlink", { address: l.address });
-      await walletLoadState();
-    }));
-    row.append(rm);
     wrap.append(row);
   });
   if (!(st.links || []).length) wrap.append(node("div", "eyebrow", "No wallet linked yet."));
+  // One Link/Unlink toggle that reflects whether the *currently connected* wallet is linked.
+  const acct = (WALLET.account || "").toLowerCase();
+  const linked = !!acct && (st.links || []).some(l => (l.address || "").toLowerCase() === acct);
+  const linkBtn = byId("wallet-link");
+  if (linkBtn) { linkBtn.textContent = linked ? "Unlink" : "Link"; linkBtn.dataset.linked = linked ? "1" : ""; }
   const s = st.settings || {};
   byId("wallet-agent").checked = !!s.agent_access;
   byId("wallet-cap").value = s.spend_cap || "";
   byId("wallet-allow").value = (s.allowlist || []).join("\n");
+  walletUpdateAllowCount();
   if (s.preferred_chain) byId("wallet-chain").value = s.preferred_chain;
 }
 async function walletLink() {
   if (!WALLET.provider || !WALLET.account) { notice("Connect your wallet first."); return; }
+  // Same button unlinks when the current wallet is already linked.
+  const linkBtn = byId("wallet-link");
+  if (linkBtn && linkBtn.dataset.linked) {
+    await postJson("/api/wallet/unlink", { address: WALLET.account });
+    notice("Unlinked " + walletShort(WALLET.account) + ".");
+    logSystem("wallet · unlinked " + walletShort(WALLET.account), "ok");
+    await walletLoadState();
+    return;
+  }
   if (!WALLET.agentId) { notice("Your AgentID isn't ready yet."); return; }
   const msg = "Link this wallet to my Concierge identity (AgentID): " + WALLET.agentId;
   const sig = await WALLET.provider.request({ method: "personal_sign", params: [msg, WALLET.account] });
@@ -181,8 +190,18 @@ byId("wallet-recheck").addEventListener("click", () => safely(walletInit));
 byId("wallet-panel").addEventListener("click", () => safely(walletPanel));
 byId("wallet-link").addEventListener("click", () => safely(walletLink));
 byId("wallet-save").addEventListener("click", () => safely(walletSaveSettings));
+// Allowed recipients live in a popup; the button shows the current count. The list is
+// persisted by "Save settings" (it reads the textarea), same as before.
+function walletUpdateAllowCount() {
+  const n = (byId("wallet-allow").value || "").split("\n").map(s => s.trim()).filter(Boolean).length;
+  const b = byId("wallet-allow-open");
+  if (b) b.textContent = n ? ("Allowed recipients (" + n + ")") : "Allowed recipients…";
+}
+byId("wallet-allow-open").addEventListener("click", () => { byId("wallet-allow-modal").style.display = "flex"; });
+byId("wallet-allow-done").addEventListener("click", () => { byId("wallet-allow-modal").style.display = "none"; walletUpdateAllowCount(); });
+byId("wallet-allow-modal").addEventListener("click", e => { if (e.target.id === "wallet-allow-modal") { byId("wallet-allow-modal").style.display = "none"; walletUpdateAllowCount(); } });
 byId("wallet-chain").addEventListener("change", () => safely(() => walletSwitchChain(byId("wallet-chain").value)));
-byId("search-form").addEventListener("submit", event => { event.preventDefault(); safely(runSearch); });
+byId("search-form").addEventListener("submit", event => { event.preventDefault(); quietly(runSearch); });
 document.querySelectorAll("[data-command]").forEach(button => button.addEventListener("click", () => {
   if (button.dataset.command === "Ingest") { openIngestModal(); return; }
   commandHelp(button.dataset.command);

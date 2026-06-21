@@ -19,7 +19,7 @@
 use std::path::{Path, PathBuf};
 
 use concierge_adapter_jsonl::{ingest_envelopes, IngestReport};
-use concierge_core::{CoreBinding, Envelope, Event, ImportedFrom};
+use concierge_core::{Cid, CoreBinding, Envelope, Event, ImportedFrom};
 
 pub mod discovery;
 
@@ -247,13 +247,13 @@ pub fn ingest_file<B: CoreBinding>(
 /// One incremental capture pass: discover every Aider transcript and re-ingest
 /// any whose byte length changed since last pass (cheap stat; CID-dedup makes the
 /// re-read idempotent). `lens` tracks per-file length across calls. Returns the
-/// number of new events ingested.
+/// CIDs of new records ingested.
 pub fn capture_once<B: CoreBinding>(
     lens: &mut std::collections::HashMap<PathBuf, u64>,
     binding: &B,
     base_dir: &Path,
-) -> usize {
-    let mut total = 0usize;
+) -> Vec<Cid> {
+    let mut captured = Vec::new();
     for transcript in discovery::discover() {
         let len = std::fs::metadata(&transcript.file)
             .map(|m| m.len())
@@ -262,11 +262,11 @@ pub fn capture_once<B: CoreBinding>(
             continue; // unchanged
         }
         if let Ok(report) = ingest_file(&transcript.file, binding, base_dir) {
-            total += report.events;
+            captured.extend(report.record_cids);
         }
         lens.insert(transcript.file, len);
     }
-    total
+    captured
 }
 
 /// Record the current size of every discovered transcript WITHOUT ingesting, so

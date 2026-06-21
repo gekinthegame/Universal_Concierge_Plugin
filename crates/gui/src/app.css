@@ -1,11 +1,18 @@
   :root {
-    --black: #050510; --deep: #0a0b1a; --raised: #131429; --graphite: #1c1d38;
-    --gold: #b54ac3; --deep-gold: #772184; --pale-gold: #d18bdd; --patina: #22b8c8;
-    --vermilion: #d94b64; --ink: #cbd2eb; --muted: #858daf; --faint: #4d547a;
-    --synapse: #8d65c7;
-    --gold-rgb: 181, 74, 195; --deep-gold-rgb: 119, 33, 132; --pale-gold-rgb: 209, 139, 221;
-    --patina-rgb: 34, 184, 200; --vermilion-rgb: 217, 75, 100;
-    --line: rgba(var(--gold-rgb), .16); --strong-line: rgba(var(--gold-rgb), .32);
+    /* Tuxedo — black jacket, ivory shirt, champagne-gold accent (the cufflinks/brass).
+       Neutral greys carry the structure; gold appears only on accents, active states,
+       live glows and the hairline seams. A muted terracotta is the lone alert tone. */
+    --black: #060607; --deep: #0b0b0d; --raised: #151517; --graphite: #212124;
+    --gold: #c9a227; --deep-gold: #8a6f17; --pale-gold: #e0c875; --patina: #d8b44a;
+    --vermilion: #bd6a52; --ink: #f1f1ee; --muted: #9b9b9e; --faint: #5f5f63;
+    --synapse: #d8b44a;
+    /* Status LEDs (Brain-tab harnesses, the Kubo node, the system console) read green. */
+    --led: #34d17e;
+    /* Chat bubble fills — light enough to feel friendly on the black base. */
+    --bubble-them: #2e2e34; --bubble-mine: #3a3421;
+    --gold-rgb: 201, 162, 39; --deep-gold-rgb: 138, 111, 23; --pale-gold-rgb: 224, 200, 117;
+    --patina-rgb: 216, 180, 74; --vermilion-rgb: 189, 106, 82;
+    --line: rgba(var(--gold-rgb), .16); --strong-line: rgba(var(--gold-rgb), .30);
     --display: "Avenir Next", "Helvetica Neue", sans-serif;
     --body: "Avenir Next", "Helvetica Neue", sans-serif;
     --mono: "SFMono-Regular", Consolas, monospace;
@@ -13,11 +20,11 @@
   * { box-sizing: border-box; }
   body { margin: 0; height: 100vh; overflow: hidden; display: flex; flex-direction: column; color: var(--ink); background:
     radial-gradient(circle at 46% -20%, rgba(var(--gold-rgb),.09), transparent 35%),
-    linear-gradient(135deg, #070715, var(--black) 58%); font: 13px/1.45 var(--body); }
+    linear-gradient(135deg, #101013, var(--black) 58%); font: 13px/1.45 var(--body); }
   button, input, select { font: inherit; }
   button { cursor: pointer; }
   header { min-height: 68px; flex: 0 0 auto; position: relative; z-index: 10; display: flex; align-items: stretch;
-    background: rgba(8,9,7,.92); border-bottom: 1px solid var(--line); }
+    background: rgba(10,10,12,.92); border-bottom: 1px solid var(--line); }
   .brand-area { display: none; }
   /* Mounted-model block now also holds the Kubo-sidekick toggle + Claude capture control. */
   .mounted { border-right: 1px solid var(--line); padding: 2px 18px; display: flex; flex-direction: row; align-items: center; gap: 16px; flex: 0 0 auto; }
@@ -28,6 +35,7 @@
   .eyebrow { color: var(--faint); font: 9px var(--mono); letter-spacing: .16em; text-transform: uppercase; }
   .model { margin-top: 5px; display: flex; align-items: center; gap: 8px; color: var(--ink); font: 11px var(--mono); }
   .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--patina); box-shadow: 0 0 8px var(--patina); }
+  #brain-view .dot { background: var(--led); box-shadow: 0 0 8px var(--led); }
   /* Node control bar (inside the Mounted-model block): Kubo-sidekick toggle + Claude capture. */
   .control-bar { display: flex; align-items: center; gap: 10px; padding: 0; }
   .control-bar .ctl { display: flex; align-items: center; gap: 8px; }
@@ -36,7 +44,7 @@
   .node-toggle:hover { border-color: var(--strong-line); color: var(--ink); }
   .node-toggle .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--graphite); flex: 0 0 auto; }
   .node-toggle.on { border-color: var(--patina); color: var(--ink); }
-  .node-toggle.on .dot { background: var(--patina); box-shadow: 0 0 8px var(--patina); }
+  .node-toggle.on .dot { background: var(--led); box-shadow: 0 0 8px var(--led); }
   .node-toggle.warn { border-color: var(--gold); color: var(--pale-gold); }
   .node-toggle.warn .dot { background: var(--gold); box-shadow: 0 0 7px var(--gold); }
   .control-bar .cc-cap { font: 10px var(--mono); color: var(--muted); letter-spacing: .03em; }
@@ -68,15 +76,15 @@
   .hdr-btn { flex: 0 0 auto; padding: 6px 9px; border: 1px solid var(--line); border-radius: 4px; background: var(--graphite); color: var(--muted); font: 9px var(--mono); letter-spacing: .04em; text-transform: uppercase; cursor: pointer; white-space: nowrap; transition: .15s; }
   .hdr-btn:hover { color: var(--black); background: var(--gold); border-color: var(--pale-gold); }
   /* Minimized System Console in the header: a one-line status that expands to the log. */
-  .console-mini { position: relative; flex: 0 1 auto; min-width: 0; display: flex; align-items: center; gap: 7px; padding: 6px 10px; border: 1px solid var(--line); border-radius: 4px; background: #04050a; cursor: pointer; max-width: 340px; }
+  .console-mini { position: relative; flex: 0 1 auto; min-width: 0; display: flex; align-items: center; gap: 7px; padding: 6px 10px; border: 1px solid var(--line); border-radius: 4px; background: #070709; cursor: pointer; max-width: 340px; }
   .console-mini .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--faint); flex: 0 0 auto; }
-  body.node-live .console-mini .dot { background: var(--synapse); box-shadow: 0 0 6px var(--synapse); }
+  body.node-live .console-mini .dot { background: var(--led); box-shadow: 0 0 6px var(--led); }
   .console-mini-line { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); font: 10px var(--mono); }
   .console-mini-caret { flex: 0 0 auto; color: var(--faint); font: 9px var(--mono); transition: transform .15s; }
   .console-mini.open .console-mini-caret { transform: rotate(180deg); }
-  .console-pop { position: absolute; top: 100%; right: 0; margin-top: 6px; width: 460px; max-width: 70vw; background: rgba(22,23,19,.98); border: 1px solid var(--line); border-radius: 7px; padding: 10px 11px; z-index: 200; box-shadow: 0 8px 24px rgba(0,0,0,.6); cursor: default; }
+  .console-pop { position: absolute; top: 100%; right: 0; margin-top: 6px; width: 460px; max-width: 70vw; background: rgba(20,20,23,.98); border: 1px solid var(--line); border-radius: 7px; padding: 10px 11px; z-index: 200; box-shadow: 0 8px 24px rgba(0,0,0,.6); cursor: default; }
   .console-pop .system-console { flex: none; height: 300px; min-height: 0; }
-  .panel, .rail { background: rgba(22,23,19,.92); border: 1px solid var(--line); border-radius: 7px; overflow: hidden; }
+  .panel, .rail { background: rgba(20,20,23,.92); border: 1px solid var(--line); border-radius: 7px; overflow: hidden; }
   .rail { padding: 8px; overflow-y: auto; display: flex; flex-direction: column; gap: 6px; }
   .rail button { min-height: 42px; border: 1px solid transparent; border-radius: 4px; background: var(--graphite); color: var(--muted);
     font: 9px var(--mono); letter-spacing: .08em; text-transform: uppercase; }
@@ -84,18 +92,21 @@
   .rail .rule { height: 1px; background: var(--line); margin: 3px 0; }
   .center { display: grid; grid-template-rows: minmax(0,1fr) auto; min-width: 0; min-height: 0; }
   .chat-bar { display: flex; gap: 8px; align-items: center; padding: 8px 10px; border-top: 1px solid var(--line); background: rgba(0,0,0,.24); }
-  .chat-incoming { flex: 1 1 0; display: flex; align-items: center; gap: 7px; min-width: 0; padding: 0 9px; height: 34px; border: 1px solid var(--line); border-left: 2px solid var(--patina); border-radius: 4px; background: rgba(var(--patina-rgb),.045); cursor: pointer; }
-  .chat-incoming .ci-from { flex: 0 0 auto; color: var(--patina); font: 9px var(--mono); letter-spacing: .04em; }
+  .chat-incoming { flex: 1 1 0; display: flex; align-items: center; gap: 7px; min-width: 0; padding: 0 13px; height: 34px; border: 0; border-radius: 20px; background: var(--bubble-them); cursor: pointer; }
+  .chat-incoming .ci-from { flex: 0 0 auto; color: var(--muted); font: 9px var(--mono); letter-spacing: .04em; }
   .chat-incoming .ci-text { flex: 1 1 auto; min-width: 0; color: var(--ink); font: 11px var(--body); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .chat-bar .chat-to { flex: 0 0 168px; }
   .chat-bar .chat-msg { flex: 1 1 auto; min-width: 0; }
-  .chat-bar .chat-send { flex: 0 0 auto; min-height: 34px; padding: 0 16px; border: 1px solid var(--patina); border-radius: 4px; background: var(--patina); color: var(--black); font: 10px var(--mono); letter-spacing: .08em; text-transform: uppercase; }
+  /* Composer fields take the chat-bubble look: borderless, lighter fill, pill-rounded. */
+  .chat-bar .input { border: 0; border-radius: 20px; background: var(--bubble-them); color: var(--ink); }
+  .chat-bar .input::placeholder { color: var(--muted); }
+  .chat-bar .chat-send { flex: 0 0 auto; min-height: 34px; padding: 0 18px; border: 0; border-radius: 20px; background: var(--patina); color: var(--black); font: 10px var(--mono); letter-spacing: .08em; text-transform: uppercase; }
   .chat-bar .chat-send:hover { box-shadow: 0 0 9px var(--patina); }
   .chat-lock { flex: 0 0 auto; color: var(--patina); font: 12px var(--mono); opacity: .8; }
-  .chat-id { flex: 0 0 auto; display: flex; align-items: center; gap: 6px; cursor: pointer; padding: 5px 9px; border: 1px solid var(--line); border-radius: 4px; background: var(--deep); font: 9px var(--mono); color: var(--muted); letter-spacing: .04em; }
+  .chat-id { flex: 0 0 auto; display: flex; align-items: center; gap: 6px; cursor: pointer; padding: 6px 12px; border: 0; border-radius: 20px; background: var(--bubble-mine); font: 9px var(--mono); color: var(--ink); letter-spacing: .04em; }
   .chat-id:hover { border-color: var(--patina); color: var(--ink); }
   .chat-id .id-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--graphite); flex: 0 0 auto; }
-  .chat-id.online .id-dot { background: var(--patina); box-shadow: 0 0 7px var(--patina); }
+  .chat-id.online .id-dot { background: var(--led); box-shadow: 0 0 7px var(--led); }
   .requests { display: flex; flex-direction: column; gap: 7px; margin-bottom: 14px; }
   .request-card { display: flex; align-items: center; gap: 10px; padding: 9px 11px; border: 1px solid var(--gold); border-radius: 6px; background: rgba(var(--gold-rgb),.045); }
   .request-card .req-main { flex: 1; min-width: 0; }
@@ -108,7 +119,7 @@
   .msg-section { font: 9px var(--mono); letter-spacing: .16em; text-transform: uppercase; color: var(--muted); margin: 16px 0 6px; }
   .contacts { display: flex; flex-direction: column; gap: 6px; margin-bottom: 8px; }
   .contact-card { display: flex; align-items: center; gap: 10px; padding: 8px 11px; border: 1px solid var(--line); border-radius: 6px; background: var(--deep); }
-  .contact-card .c-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--patina); box-shadow: 0 0 6px var(--patina); flex: 0 0 auto; }
+  .contact-card .c-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--led); box-shadow: 0 0 6px var(--led); flex: 0 0 auto; }
   .contact-card .c-user { flex: 1; min-width: 0; font: 11px var(--mono); color: var(--ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: pointer; }
   .contact-card .c-user:hover { color: var(--gold); }
   .contact-card .c-remove { border: 1px solid var(--line); background: transparent; color: var(--faint); border-radius: 4px; padding: 5px 11px; font: 9px var(--mono); text-transform: uppercase; letter-spacing: .06em; cursor: pointer; flex: 0 0 auto; }
@@ -144,7 +155,9 @@
   .reach-list li b { font: 12px var(--mono); color: var(--ink); }
   .reach-list .eyebrow { margin-top: 3px; }
   /* Concierge Wallet tab (Pillar C) — the UX lives here; the browser holds the keys. */
-  .wallet-card { border: 1px solid var(--line); border-radius: 8px; background: var(--deep); padding: 12px 14px; margin: 6px 0 12px; display: flex; flex-direction: column; gap: 9px; }
+  /* Panels in Brain / Wallet / Updates take the chat-bubble look: borderless, the
+     lighter bubble fill, and rounded — so the whole app feels of a piece. */
+  .wallet-card { border: 0; border-radius: 16px; background: var(--bubble-them); padding: 14px 16px; margin: 6px 0 12px; display: flex; flex-direction: column; gap: 9px; }
   .wallet-row { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
   .wallet-k { font: 11px var(--mono); color: var(--muted); }
   .wallet-v { font: 13px var(--mono); color: var(--ink); }
@@ -157,6 +170,32 @@
      which otherwise stretches the select + cap input to fill the card). */
   .wallet-field .input, .wallet-field select, .wallet-field textarea { flex: none; width: 100%; box-sizing: border-box; }
   .wallet-field select { height: 36px; }
+  /* Controls inside the panels go borderless too. Fields take a recessed darker fill so
+     they stay legible against the lighter card; buttons keep their fill, just no outline. */
+  .wallet-card .input, .wallet-card select, .wallet-card textarea { border: 0; border-radius: 12px; background: var(--deep); }
+  .wallet-card .tool-button, .wallet-card button { border: 0; }
+  /* Brain tab: Host harness (left) | Sovereign LLM + model (right); Embedder spans both
+     below, end to end. Condenses the long single column into a tighter two-up view. */
+  #brain-view > .content.brain-grid { max-width: none; display: grid; grid-template-columns: 1fr 1fr; gap: 6px 18px; align-items: start; }
+  .brain-col { min-width: 0; }
+  .brain-embedder-full { grid-column: 1 / -1; min-width: 0; }
+  #brain-view .msg-section { margin-top: 8px; }
+  @media (max-width: 1000px) { #brain-view > .content.brain-grid { grid-template-columns: 1fr; } }
+  /* Wallet tab: the top three (status + Your wallet + Linked) merged into one left
+     panel; proposals + settings on the right. */
+  #wallet-view > .content { max-width: none; }
+  .wallet-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; align-items: stretch; }
+  .wallet-col, .wallet-combined { min-width: 0; }
+  .wallet-col { display: flex; flex-direction: column; }
+  .wallet-col > .wallet-card { flex: 1 1 auto; }
+  .wallet-grid .wallet-card, .wallet-grid .msg-section { margin-top: 0; }
+  .wallet-combined .wallet-sep { height: 1px; background: var(--line); margin: 4px 0; }
+  .wallet-subhead { color: var(--muted); font: 11px var(--body); letter-spacing: .01em; }
+  /* Wallet actions on one row: create/connect · open portfolio · link/unlink (+ small refresh). */
+  .wallet-actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: stretch; }
+  .wallet-actions .tool-button { flex: 1 1 0; min-width: 0; text-align: center; white-space: nowrap; }
+  .wallet-actions .wallet-refresh { flex: 0 0 auto; width: 42px; }
+  @media (max-width: 1000px) { .wallet-grid { grid-template-columns: 1fr; } }
   .profile-did { width: 100%; font: 9px var(--mono); color: var(--faint); letter-spacing: .02em; }
   #sites { display: flex; flex-direction: column; gap: 8px; margin-top: 6px; }
   .site-card { display: flex; align-items: center; gap: 12px; padding: 11px 13px; border: 1px solid var(--line); border-radius: 7px; background: var(--deep); }
@@ -166,7 +205,7 @@
   .site-card .site-url:hover { text-decoration: underline; }
   .site-card .site-meta { font: 10px var(--mono); color: var(--faint); }
   .canvas-status { font: 10px var(--mono); color: var(--muted); padding: 4px 10px; border: 1px solid var(--line); border-radius: 4px; }
-  .canvas-preview { flex: 1.7 1 0; min-width: 0; border: 1px solid var(--line); border-radius: 6px; background: #a4a7b0; }
+  .canvas-preview { flex: 1.7 1 0; min-width: 0; border: 1px solid var(--line); border-radius: 6px; background: #a6a6a4; }
   /* Expanded preview: blow the iframe up to a near-fullscreen overlay for testing. */
   .cv-backdrop { position: fixed; inset: 0; z-index: 40; background: rgba(3,3,8,.8); backdrop-filter: blur(3px); display: none; }
   .cv-backdrop.on { display: block; }
@@ -174,13 +213,12 @@
      width/height (auto would collapse to its intrinsic ~300x150). */
   .canvas-preview.big { position: fixed; top: 26px; left: 26px; width: calc(100vw - 52px); height: calc(100vh - 52px); flex: none; z-index: 45; border-radius: 10px; box-shadow: 0 30px 90px rgba(0,0,0,.7), 0 0 60px rgba(var(--gold-rgb),.15); }
   /* Expand/minimize toggle, pinned to the canvas preview's top-right corner. */
-  #cv-expand { position: absolute; top: 10px; right: 10px; z-index: 6; width: 30px; height: 30px; padding: 0; line-height: 28px; text-align: center; font-size: 15px; border-radius: 6px; background: rgba(8,12,24,.82); border: 1px solid var(--strong-line); color: var(--muted); cursor: pointer; backdrop-filter: blur(2px); }
+  #cv-expand { position: absolute; top: 10px; right: 10px; z-index: 6; width: 30px; height: 30px; padding: 0; line-height: 28px; text-align: center; font-size: 15px; border-radius: 6px; background: rgba(12,12,15,.82); border: 1px solid var(--strong-line); color: var(--muted); cursor: pointer; backdrop-filter: blur(2px); }
   #cv-expand:hover { color: #fff; border-color: var(--patina); }
   /* When expanded the preview is fixed/fullscreen — keep the button fixed at ITS top-right, above it. */
   #cv-expand.on { position: fixed; top: 34px; right: 34px; z-index: 46; background: var(--gold); color: var(--black); border-color: var(--pale-gold); }
   .cv-title { display: flex; align-items: center; gap: 9px; margin: 1px 2px 0; padding-bottom: 3px; border-bottom: 1px solid var(--line); }
-  .cv-new { flex: 0 0 auto; padding: 5px 12px; font-size: 9px; border-color: var(--deep-gold); color: var(--gold); }
-  .cv-new:hover { background: var(--gold); color: var(--black); border-color: var(--pale-gold); }
+  .cv-new { flex: 0 0 auto; padding: 5px 12px; font-size: 9px; }
   /* New-project chooser: two big choice tiles. */
   .new-choices { display: flex; flex-wrap: wrap; gap: 10px; margin: 4px 0; }
   .new-choice { flex: 1 1 130px; display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 18px 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--deep); color: var(--ink); cursor: pointer; transition: .15s; }
@@ -309,6 +347,8 @@
   .cv-files .cv-file.cv-dir { color: var(--muted); font-weight: 600; }
   .cv-files .cv-file.active { background: var(--line); color: var(--ink); }
   .cv-files .empty { color: var(--faint); font: 11px var(--body); padding: 4px; }
+  /* Studio file tree + HTML code panel in borderless bubble style. */
+  #cv-files, #cv-src { background: var(--bubble-them); border: 0; border-radius: 16px; }
   .panel-head { display: flex; align-items: center; gap: 8px; padding: 0 14px; border-bottom: 1px solid var(--line); background: rgba(0,0,0,.18); }
   .panel-title { margin-right: auto; color: var(--muted); font: 10px var(--mono); letter-spacing: .18em; text-transform: uppercase; }
   .tab { border: 0; border-bottom: 2px solid transparent; padding: 14px 8px 11px; color: var(--faint); background: transparent; font: 9px var(--mono); text-transform: uppercase; }
@@ -319,15 +359,14 @@
   .reset-btn { border: 1px solid var(--line); border-radius: 3px; padding: 6px 12px; margin-right: 6px; color: var(--ink); background: var(--graphite); font: 9px var(--mono); letter-spacing: .06em; text-transform: uppercase; cursor: pointer; }
   .reset-btn:hover { color: var(--gold); border-color: var(--gold); }
   /* Minimized Reset View, floating at the top-center of the graph canvas. */
-  .reset-mini { position: absolute; top: 10px; left: 50%; transform: translateX(-50%); z-index: 4; padding: 5px 12px; border: 1px solid var(--line); border-radius: 14px; background: rgba(22,23,19,.82); color: var(--muted); font: 9px var(--mono); letter-spacing: .08em; text-transform: uppercase; cursor: pointer; opacity: .68; transition: .15s; }
+  .reset-mini { position: absolute; top: 10px; left: 50%; transform: translateX(-50%); z-index: 4; padding: 5px 12px; border: 1px solid var(--line); border-radius: 14px; background: rgba(20,20,23,.82); color: var(--muted); font: 9px var(--mono); letter-spacing: .08em; text-transform: uppercase; cursor: pointer; opacity: .68; transition: .15s; }
   /* Centered graph toolbar holding Reset view + Ingest side by side. */
   .graph-toolbar { position: absolute; top: 10px; left: 50%; transform: translateX(-50%); z-index: 4; display: flex; gap: 8px; }
   .graph-toolbar .reset-mini { position: static; top: auto; left: auto; transform: none; }
   .reset-mini:hover { opacity: 1; color: var(--black); background: var(--gold); border-color: var(--pale-gold); }
   .view { display: none; height: 100%; overflow: auto; }
   .view.active { display: block; }
-  #graph-view { position: relative; overflow: auto; background-image: linear-gradient(var(--graphite) 1px,transparent 1px),linear-gradient(90deg,var(--graphite) 1px,transparent 1px);
-    background-size: 22px 22px; }
+  #graph-view { position: relative; overflow: auto; }
   /* The graph is a pan/zoom canvas, not selectable text — dragging must not
      highlight the node labels. */
   #graph-view, #graph, #graph * { user-select: none; -webkit-user-select: none; }
@@ -403,29 +442,29 @@
   .discovery-layout > .discovery-wrap { flex: 1 1 auto; min-width: 0; margin: 0; }
   /* Left-hand roster of discovered Concierge nodes — click one to start a DM,
      same as clicking its brain on the map. */
-  .disc-concierge-list { flex: 0 0 188px; max-width: 188px; min-height: 460px; max-height: 76vh; overflow-y: auto; border: 1px solid rgba(60,110,210,.28); border-radius: 8px; background: #050813; padding: 8px; display: flex; flex-direction: column; gap: 5px; }
-  .disc-concierge-list .dcl-title { font: 10px var(--mono); text-transform: uppercase; letter-spacing: .08em; color: var(--faint); padding: 2px 4px 6px; }
-  .disc-concierge-list .dcl-empty { font: 10px var(--mono); color: var(--faint); padding: 4px; line-height: 1.5; }
-  .disc-cn { display: flex; align-items: center; gap: 7px; text-align: left; width: 100%; border: 1px solid var(--line); border-radius: 5px; background: var(--deep); color: var(--ink); padding: 7px 8px; cursor: pointer; font: 11px var(--mono); }
-  .disc-cn:hover:not(:disabled) { border-color: var(--patina); color: #fff; }
+  .disc-concierge-list { flex: 0 0 188px; max-width: 188px; min-height: 460px; max-height: 76vh; overflow-y: auto; border: 0; border-radius: 16px; background: var(--bubble-them); padding: 10px; display: flex; flex-direction: column; gap: 5px; }
+  .disc-concierge-list .dcl-title { font: 10px var(--mono); text-transform: uppercase; letter-spacing: .08em; color: var(--muted); padding: 2px 4px 6px; }
+  .disc-concierge-list .dcl-empty { font: 10px var(--mono); color: var(--muted); padding: 4px; line-height: 1.5; }
+  .disc-cn { display: flex; align-items: center; gap: 7px; text-align: left; width: 100%; border: 0; border-radius: 11px; background: var(--deep); color: var(--ink); padding: 8px 9px; cursor: pointer; font: 11px var(--mono); }
+  .disc-cn:hover:not(:disabled) { background: var(--graphite); color: var(--ink); }
   .disc-cn .dcl-dot { width: 7px; height: 7px; border-radius: 50%; flex: 0 0 auto; }
   .disc-cn .dcl-name { flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .disc-cn .dcl-meta { flex: 0 0 auto; font-size: 9px; color: var(--faint); }
   .disc-cn.no-dm { opacity: .55; cursor: default; }
-  .discovery-wrap { position: relative; margin: 6px 0 16px; border: 1px solid rgba(60,110,210,.28); border-radius: 8px; background: radial-gradient(130% 130% at 50% 30%, rgba(40,90,190,.10), transparent 70%), #050813; padding: 6px 6px 10px; }
+  .discovery-wrap { position: relative; margin: 6px 0 16px; border: 0; border-radius: 16px; background: var(--bubble-them); padding: 6px 6px 10px; }
   #discovery-svg { width: 100%; height: auto; max-height: 76vh; min-height: 460px; display: block; touch-action: none; cursor: grab; }
   #discovery-svg.disc-panning { cursor: grabbing; }
   .discovery-stat { text-align: center; margin-top: 2px; }
   /* Zoom/maximize controls, overlaid top-right of the map. */
   .disc-controls { position: absolute; top: 12px; right: 12px; z-index: 3; display: flex; flex-direction: column; gap: 6px; }
-  .disc-ctl { width: 30px; height: 30px; line-height: 28px; text-align: center; font-size: 16px; color: var(--muted); background: rgba(8,12,24,.78); border: 1px solid rgba(60,110,210,.4); border-radius: 6px; cursor: pointer; padding: 0; backdrop-filter: blur(2px); transition: color .12s, border-color .12s; }
-  .disc-ctl:hover { color: #fff; border-color: var(--patina); }
+  .disc-ctl { width: 30px; height: 30px; line-height: 30px; text-align: center; font-size: 16px; color: var(--muted); background: rgba(11,11,13,.82); border: 0; border-radius: 9px; cursor: pointer; padding: 0; backdrop-filter: blur(2px); transition: color .12s; }
+  .disc-ctl:hover { color: var(--gold); }
   /* Maximized: the map fills the viewport as a fixed overlay. */
   .discovery-wrap.maximized { position: fixed; inset: 12px; margin: 0; z-index: 80; padding: 10px; box-shadow: 0 12px 48px rgba(0,0,0,.7); display: flex; flex-direction: column; }
   .discovery-wrap.maximized #discovery-svg { max-height: none; min-height: 0; flex: 1 1 auto; height: 100%; }
   /* World map backdrop — blue HUD coastlines/borders on a faint grid */
-  .disc-grid line { stroke: rgba(70,120,220,.11); stroke-width: .5; }
-  .disc-land { fill: none; stroke: rgba(64,140,255,.55); stroke-width: .45; stroke-linejoin: round; pointer-events: none; }
+  .disc-grid { display: none; }
+  .disc-land { fill: none; stroke: rgba(255,255,255,.55); stroke-width: .65; stroke-linejoin: round; pointer-events: none; }
   /* Generic network node = a plain white dot. No glow halo and no per-element
      twinkle animation — at hundreds of nodes those were the map's main render
      cost. A single static circle keeps the map cheap to draw and repaint. */
@@ -435,11 +474,11 @@
   .disc-node.discovered .disc-halo { fill: var(--muted); }
   .disc-self .disc-halo { fill: var(--gold); animation-duration: 1.4s; }
   @keyframes disc-pulse { 0%, 100% { opacity: .10; } 50% { opacity: .46; } }
-  .disc-brain { filter: drop-shadow(0 0 3px rgba(0,0,0,.55)); }
+  .disc-brain { filter: drop-shadow(0 0 2px rgba(0,0,0,.45)); }
   .disc-dm { cursor: pointer; }
   .disc-dm:hover .disc-brain { filter: drop-shadow(0 0 5px var(--patina)); }
   .disc-dm:hover .disc-label { fill: var(--patina); }
-  .disc-label { fill: var(--muted); font: 9px var(--mono); pointer-events: none; }
+  .disc-label { fill: #16161c; font: 9px var(--mono); pointer-events: none; }
   .disc-label.self { fill: var(--gold); font-weight: 700; font-size: 11px; }
   /* Pairing wizard */
   .pair-head { display: flex; align-items: center; justify-content: space-between; }
@@ -499,6 +538,8 @@
   .names-tree { display: flex; flex-direction: column; gap: 8px; }
   /* Graph tab as a file tree: Month ▸ Day ▸ Session ▸ Record (indented explorer). */
   .file-tree { display: block; font: 11px var(--mono); padding: 4px 2px 24px; overflow-y: auto; }
+  /* IPMDAG file tree sits in a borderless bubble panel (matches the other tabs). */
+  #graph-tree { background: var(--bubble-them); border: 0; border-radius: 16px; padding: 12px 14px 18px; margin-top: 8px; }
   .file-tree .ft-group { display: block; }
   .file-tree .ft-indent { margin-left: 14px; border-left: 1px solid var(--line); padding-left: 4px; }
   .file-tree .ft-body { display: block; }
@@ -551,14 +592,16 @@
   .event-cid { color: var(--faint); font: 8px var(--mono); white-space: nowrap; }
   .messenger-tools { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 14px; }
   .search-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 14px; }
-  /* Records action buttons: uniform width + centered so they line up tidily. */
   .rec-tool { min-width: 140px; text-align: center; }
-  /* Records toolbar: give every control the same height so buttons + fields align. */
-  #names-view .messenger-tools .tool-button, #names-view .messenger-tools .input { height: 36px; box-sizing: border-box; }
-  #names-view .messenger-tools .tool-button { display: inline-flex; align-items: center; justify-content: center; }
-  /* The search form is nested in the toolbar — drop its own bottom margin so its controls
-     sit on the same line as the action buttons (the margin was offsetting them upward). */
-  #names-view .messenger-tools .search-tools { margin-bottom: 0; }
+  /* The Merkle-DAG toolbar: keep the top-tab look on its buttons (transparent,
+     uppercase, gold underline on hover) — just fix the layout so they sit in one
+     tidy row. The search form fills; the action buttons line up after it. */
+  #graph-view .messenger-tools { justify-content: flex-start; gap: 4px; align-items: center; }
+  #graph-view .search-tools { flex: 1 1 340px; margin-bottom: 0; margin-right: 10px; }
+  #graph-view .messenger-tools .rec-tool { min-width: 0; }
+  #graph-view .messenger-tools .input { height: 34px; box-sizing: border-box; }
+  /* Search field + Summary select in chat-bubble style: borderless, lighter fill. */
+  #search-q, #search-depth { border: 0; background: var(--bubble-them); border-radius: 12px; }
   /* Keep the "synced bookmarks" status on its own line so it never shifts the buttons. */
   #bookmarks-status { flex-basis: 100%; }
   #bookmarks-status:empty { display: none; }
@@ -569,7 +612,7 @@
   .thread-picker .thread-pick:hover { border-color: var(--patina); color: #fff; }
   .thread-picker .thread-pick.active { border-color: var(--gold); color: var(--gold); }
   .thread-picker .thread-del { flex: 0 0 auto; width: 32px; border: 1px solid var(--line); border-radius: 4px; background: var(--deep); color: var(--faint); cursor: pointer; font: 11px var(--mono); }
-  .thread-picker .thread-del:hover { border-color: #c0556a; color: #ff8095; }
+  .thread-picker .thread-del:hover { border-color: var(--strong-line); color: var(--ink); }
   .thread-picker .empty { padding: 8px 10px; }
   .search-hit { padding: 9px 11px; margin-bottom: 7px; border: 1px solid var(--line); border-radius: 4px; background: var(--deep); cursor: pointer; }
   .search-hit:hover { border-color: var(--gold); }
@@ -611,15 +654,21 @@
   .moderator-badge .mod-muted { color: var(--vermilion); }
   .message { padding: 11px; margin: 7px 0; }
   .message-head { display: flex; gap: 8px; align-items: center; color: var(--muted); font: 9px var(--mono); flex-wrap: wrap; }
-  .message-head button { border: 0; color: var(--patina); background: transparent; font: 9px var(--mono); }
+  .message-head button { border: 0; color: var(--muted); background: transparent; font: 9px var(--mono); cursor: pointer; transition: color .15s; }
+  .message-head button:hover { color: var(--gold); }
   .message p { margin: 7px 0 0; white-space: pre-wrap; }
   /* Staggered thread: your messages on the right, received on the left, distinct colours. */
   #thread { display: flex; flex-direction: column; }
-  #thread .message { width: auto; max-width: 74%; }
-  #thread .message.mine { align-self: flex-end; border-color: rgba(var(--patina-rgb),.3); background: rgba(var(--patina-rgb),.045); }
-  #thread .message.theirs { align-self: flex-start; border-color: rgba(var(--pale-gold-rgb),.3); background: rgba(var(--pale-gold-rgb),.04); }
-  #thread .message.mine p { color: var(--patina); }
-  #thread .message.theirs p { color: var(--pale-gold); }
+  #thread .message { width: auto; max-width: 74%; position: relative; border: 0; border-radius: 20px; }
+  #thread .message.mine { align-self: flex-end; background: var(--bubble-mine); }
+  #thread .message.theirs { align-self: flex-start; background: var(--bubble-them); }
+  #thread .message.mine p { color: var(--ink); }
+  #thread .message.theirs p { color: var(--ink); }
+  /* Tails merge into the bubble's bottom edge — same fill, no border, 1px overlap up — so
+     they read as part of the bubble instead of a detached triangle floating below it. */
+  #thread .message::after { content: ""; position: absolute; top: 100%; margin-top: -1px; width: 0; height: 0; border: 8px solid transparent; border-bottom: 0; }
+  #thread .message.mine::after { right: 22px; border-top-color: var(--bubble-mine); }
+  #thread .message.theirs::after { left: 22px; border-top-color: var(--bubble-them); }
   #thread .moderator-badge, #thread .empty { align-self: stretch; }
   .stats { height: 100%; padding: 14px; overflow-y: auto; display: flex; flex-direction: column; min-height: 0; }
   /* Compact stat chips — the numbers are a glance, not the focus. */
@@ -631,10 +680,10 @@
   /* System console: a live terminal of everything the concierge does. */
   .console-head { display: flex; align-items: center; gap: 7px; margin: 11px 0 5px; }
   .console-head .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--faint); }
-  body.node-live .console-head .dot { background: var(--synapse); box-shadow: 0 0 6px var(--synapse); }
+  body.node-live .console-head .dot { background: var(--led); box-shadow: 0 0 6px var(--led); }
   .console-head .lbl { color: var(--muted); font: 9px var(--mono); letter-spacing: .16em; text-transform: uppercase; }
   #sys-embedder { margin-left: auto; font: 9px var(--mono); color: var(--faint); letter-spacing: .04em; max-width: 60%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .system-console { flex: 1 1 auto; min-height: 150px; overflow-y: auto; background: #04050a; border: 1px solid var(--strong-line); border-radius: 5px; padding: 8px 9px; font: 10px/1.55 var(--mono); }
+  .system-console { flex: 1 1 auto; min-height: 150px; overflow-y: auto; background: #070709; border: 1px solid var(--strong-line); border-radius: 5px; padding: 8px 9px; font: 10px/1.55 var(--mono); }
   .system-console .ln { white-space: pre-wrap; word-break: break-all; }
   .system-console .t { color: var(--faint); }
   .system-console .ok { color: var(--patina); }

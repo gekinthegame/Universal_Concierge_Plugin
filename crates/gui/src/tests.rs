@@ -4,6 +4,9 @@ mod tests {
     use concierge_core::{cid_link, naming::ContactCard, CoreBinding, GcPolicy, Identity, Node};
     use std::io::{Read, Write};
     use std::path::Path;
+    use std::sync::Mutex;
+
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     fn store() -> (tempfile::TempDir, MemCli) {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -30,6 +33,71 @@ mod tests {
             .expect("put");
         mem.bind(name, &cid).expect("bind");
         cid
+    }
+
+    #[cfg(unix)]
+    fn with_kernel_env<R>(workdir: &Path, f: impl FnOnce() -> R) -> R {
+        let _guard = ENV_LOCK.lock().unwrap();
+        // Routing to the kernel is on by default now (opt out via CONCIERGE_NO_KERNEL),
+        // so making the fake kernel reachable is just a matter of pointing
+        // `socket_path()` at its socket dir via CONCIERGE_WORKDIR.
+        let old_workdir = std::env::var_os("CONCIERGE_WORKDIR");
+        let old_no_kernel = std::env::var_os("CONCIERGE_NO_KERNEL");
+        std::env::set_var("CONCIERGE_WORKDIR", workdir);
+        std::env::remove_var("CONCIERGE_NO_KERNEL");
+        let result = f();
+        match old_workdir {
+            Some(value) => std::env::set_var("CONCIERGE_WORKDIR", value),
+            None => std::env::remove_var("CONCIERGE_WORKDIR"),
+        }
+        match old_no_kernel {
+            Some(value) => std::env::set_var("CONCIERGE_NO_KERNEL", value),
+            None => std::env::remove_var("CONCIERGE_NO_KERNEL"),
+        }
+        result
+    }
+
+    #[cfg(unix)]
+    fn with_kernel_disabled<R>(workdir: &Path, f: impl FnOnce() -> R) -> R {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let old_workdir = std::env::var_os("CONCIERGE_WORKDIR");
+        let old_no_kernel = std::env::var_os("CONCIERGE_NO_KERNEL");
+        std::env::set_var("CONCIERGE_WORKDIR", workdir);
+        std::env::set_var("CONCIERGE_NO_KERNEL", "1");
+        let result = f();
+        match old_workdir {
+            Some(value) => std::env::set_var("CONCIERGE_WORKDIR", value),
+            None => std::env::remove_var("CONCIERGE_WORKDIR"),
+        }
+        match old_no_kernel {
+            Some(value) => std::env::set_var("CONCIERGE_NO_KERNEL", value),
+            None => std::env::remove_var("CONCIERGE_NO_KERNEL"),
+        }
+        result
+    }
+
+    #[cfg(unix)]
+    fn spawn_fake_kernel(
+        workdir: &Path,
+        body: serde_json::Value,
+    ) -> std::thread::JoinHandle<concierge_kernel::protocol::Request> {
+        use std::os::unix::net::UnixListener;
+
+        let sock = workdir.join(".concierge/kernel.sock");
+        std::fs::create_dir_all(sock.parent().unwrap()).unwrap();
+        let _ = std::fs::remove_file(&sock);
+        let listener = UnixListener::bind(&sock).unwrap();
+        std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let frame = concierge_kernel::transport::read_frame(&mut stream)
+                .unwrap()
+                .unwrap();
+            let req: concierge_kernel::protocol::Request = serde_json::from_slice(&frame).unwrap();
+            let response = concierge_kernel::protocol::Response::json(req.id, 200, body.to_string());
+            let bytes = serde_json::to_vec(&response).unwrap();
+            concierge_kernel::transport::write_frame(&mut stream, &bytes).unwrap();
+            req
+        })
     }
 
     fn configure_fake_ipfs_backend(
@@ -1282,35 +1350,210 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     #[test]
     fn semantic_search_returns_ranked_hits_for_a_query() {
-        let (_dir, mem) = store();
-        let rustdoc = put_named(
+        let (dir, mem) = store();
+        let kernel = spawn_fake_kernel(
+            dir.path(),
+            serde_json::json!({
+                "query": "rust ownership",
+                "indexed": 2,
+                "used_tokens": 12,
+                "budget_tokens": 2000,
+                "items": [{
+                    "cid": "kernel-ranked-cid",
+                    "kind": "memory",
+                    "preview": "from kernel",
+                    "score": 1.0,
+                    "similarity": 1.0,
+                    "gravity": 0.0,
+                    "tokens": 12,
+                    "hop": 0
+                }]
+            }),
+        );
+        let body = with_kernel_env(dir.path(), || {
+            body(&handle(
+                &mem,
+                "/api/search",
+                "q=rust%20ownership&budget=2000&depth=summary",
+            ))
+        });
+        let req = kernel.join().unwrap();
+        assert_eq!(req.path, "/api/search");
+        assert!(body.contains("\"indexed\":"), "reports index size");
+        assert!(body.contains("\"items\":"), "returns a ranked item list");
+        assert!(
+            body.contains("kernel-ranked-cid"),
+            "the GUI returns the kernel-ranked item list: {body}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn semantic_search_routes_to_kernel_when_opted_in() {
+        let (dir, mem) = store();
+        let kernel = spawn_fake_kernel(
+            dir.path(),
+            serde_json::json!({
+                "query": "rust ownership",
+                "indexed": 1,
+                "used_tokens": 12,
+                "budget_tokens": 2000,
+                "items": [{
+                    "cid": "kernel-cid",
+                    "kind": "memory",
+                    "preview": "from kernel",
+                    "score": 1.0,
+                    "similarity": 1.0,
+                    "gravity": 0.0,
+                    "tokens": 12,
+                    "hop": 0
+                }]
+            }),
+        );
+        let options = GuiOptions::default();
+        let search_body = with_kernel_env(dir.path(), || {
+            body(&handle_with_options(
+                &mem,
+                &options,
+                "/api/search",
+                "q=rust%20ownership&budget=2000&depth=summary&kinds=memory",
+            ))
+        });
+        let req = kernel.join().unwrap();
+        assert_eq!(req.path, "/api/search");
+        assert!(req.query.contains("q=rust%20ownership"));
+        assert!(req.query.contains("kinds=memory"));
+        assert!(
+            search_body.contains("kernel-cid"),
+            "uses kernel response: {search_body}"
+        );
+        let activity = body(&handle_with_options(&mem, &options, "/api/activity", ""));
+        assert!(
+            activity.contains("retrieve"),
+            "kernel searches still appear in activity feed: {activity}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn semantic_search_returns_unavailable_when_kernel_is_disabled() {
+        let (dir, mem) = store();
+        put_named(
             &mem,
             "rustdoc",
             "the rust borrow checker enforces ownership and lifetimes",
         );
-        put_named(
-            &mem,
-            "cooking",
-            "sourdough fermentation needs a live starter and time",
-        );
-        let body = body(&handle(
-            &mem,
-            "/api/search",
-            "q=rust%20ownership&budget=2000&depth=summary",
-        ));
-        assert!(body.contains("\"indexed\":"), "reports index size");
-        assert!(body.contains("\"items\":"), "returns a ranked item list");
+        let response = with_kernel_disabled(dir.path(), || {
+            handle(
+                &mem,
+                "/api/search",
+                "q=rust%20ownership&budget=2000&depth=summary",
+            )
+        });
+        let search_body = body(&response);
+        assert_eq!(response.status, 503);
         assert!(
-            body.contains(&rustdoc.0),
-            "the rust node is retrieved for a rust query: {body}"
+            search_body.contains("kernel unavailable"),
+            "missing kernel should be explicit, not a GUI-owned index: {search_body}"
         );
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn peers_route_to_kernel_when_opted_in() {
+        let (dir, mem) = store();
+        let kernel = spawn_fake_kernel(
+            dir.path(),
+            serde_json::json!({
+                "self": {
+                    "peer_id": "kernel-peer",
+                    "agent_id": "agent",
+                    "online": true,
+                    "lat": null,
+                    "lon": null
+                },
+                "peers": [{
+                    "peer_id": "generic-ipfs-peer",
+                    "status": "discovered",
+                    "source": "dht",
+                    "relayed": false,
+                    "addresses": [],
+                    "last_seen": 1,
+                    "is_concierge": false,
+                    "username": null,
+                    "lat": null,
+                    "lon": null,
+                    "country": null
+                }],
+                "total": 1,
+                "connected": 0
+            }),
+        );
+        let peers_body = with_kernel_env(dir.path(), || body(&handle(&mem, "/api/peers", "")));
+        let req = kernel.join().unwrap();
+        assert_eq!(req.path, "/api/peers");
+        assert!(
+            peers_body.contains("generic-ipfs-peer")
+                && peers_body.contains("\"is_concierge\":false"),
+            "uses kernel peers response: {peers_body}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn phase3_store_read_routes_use_kernel_when_opted_in() {
+        let (dir, mem) = store();
+        let options = GuiOptions::new(
+            "gui-model".to_string(),
+            "gui-store".to_string(),
+            false,
+            None,
+        );
+        for (path, query, marker) in [
+            ("/api/meta", "", "meta"),
+            ("/api/resolve", "q=alice", "resolve"),
+            ("/api/names", "", "names"),
+            ("/api/record", "name=latest", "record"),
+            ("/api/checkpoints", "", "checkpoints"),
+            ("/api/graph", "name=latest", "graph"),
+            ("/api/stats", "name=latest", "stats"),
+            ("/api/hot-pins", "", "hot-pins"),
+            ("/api/privacy", "name=latest", "privacy"),
+        ] {
+            let kernel = spawn_fake_kernel(
+                dir.path(),
+                serde_json::json!({
+                    "marker": marker,
+                    "mounted_model": "kernel-model",
+                    "store": "kernel-store",
+                    "csrf_token": "kernel-token",
+                }),
+            );
+            let response_body = with_kernel_env(dir.path(), || {
+                body(&handle_with_options(&mem, &options, path, query))
+            });
+            let req = kernel.join().unwrap();
+            assert_eq!(req.path, path);
+            assert_eq!(req.query, query);
+            assert!(
+                response_body.contains(marker),
+                "{path} should return the fake kernel response: {response_body}"
+            );
+            if path == "/api/meta" {
+                assert!(response_body.contains("gui-model"));
+                assert!(response_body.contains("gui-store"));
+                assert!(!response_body.contains("kernel-token"));
+            }
+        }
+    }
+
+    #[cfg(unix)]
     #[test]
     fn system_console_activity_feed_records_what_the_concierge_does() {
-        let (_dir, mem) = store();
+        let (dir, mem) = store();
         put_named(
             &mem,
             "rustdoc",
@@ -1327,26 +1570,47 @@ mod tests {
         );
         assert!(
             initial.contains("\"built\":false"),
-            "no model loaded until the first search: {initial}"
+            "the GUI does not own a loaded search model: {initial}"
+        );
+        assert!(
+            initial.contains("\"owner\":\"kernel\""),
+            "retrieval ownership is reported: {initial}"
         );
 
-        // A search loads the embedder, indexes, and retrieves — each is surfaced.
-        let _ = handle_with_options(
-            &mem,
-            &options,
-            "/api/search",
-            "q=rust%20ownership&budget=2000",
+        let kernel = spawn_fake_kernel(
+            dir.path(),
+            serde_json::json!({
+                "query": "rust ownership",
+                "indexed": 1,
+                "used_tokens": 12,
+                "budget_tokens": 2000,
+                "items": [{
+                    "cid": "kernel-cid",
+                    "kind": "memory",
+                    "preview": "from kernel",
+                    "score": 1.0,
+                    "similarity": 1.0,
+                    "gravity": 0.0,
+                    "tokens": 12,
+                    "hop": 0
+                }]
+            }),
         );
+        let _ = with_kernel_env(dir.path(), || {
+            handle_with_options(
+                &mem,
+                &options,
+                "/api/search",
+                "q=rust%20ownership&budget=2000",
+            )
+        });
+        let req = kernel.join().unwrap();
+        assert_eq!(req.path, "/api/search");
         let after = body(&handle_with_options(&mem, &options, "/api/activity", ""));
-        assert!(
-            after.contains("embedder ready"),
-            "embedder load shown: {after}"
-        );
-        assert!(after.contains("indexed"), "indexing shown: {after}");
         assert!(after.contains("retrieve"), "retrieval shown: {after}");
         assert!(
-            after.contains("\"built\":true"),
-            "embedder now reports as loaded: {after}"
+            after.contains("\"built\":false"),
+            "the GUI still does not report a local loaded model: {after}"
         );
 
         // Incremental polling: ?since=<next_seq> returns only newer lines.
@@ -1971,7 +2235,7 @@ mod tests {
     #[test]
     fn browser_shell_contains_phase_d_secret_and_state_safeguards() {
         let (_dir, mem) = store();
-        let page = ["/", "/app.js", "/wallet.js", "/studio.js"]
+        let page = ["/", "/app.css", "/app.js", "/wallet.js", "/studio.js"]
             .into_iter()
             .map(|path| body(&handle(&mem, path, "")))
             .collect::<Vec<_>>()

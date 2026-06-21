@@ -6,8 +6,12 @@ impl MemCli {
     /// name) becomes a `memory`/`reference` node filed into the day calendar so it
     /// shows in Records. Read-only on the browser's side; ingested content is an
     /// **untrusted source** — retrievable, never auto-injected. Returns count added.
-    pub fn sync_browser_bookmarks(&self) -> Result<usize> {
-        let mut added = 0;
+    /// Sync browser bookmarks, returning the **new** records appended as
+    /// `(cid, bind_name, preview)`. Returning the appended nodes (not just a count)
+    /// lets the UI insert exactly those rows — leveraging IPLD's append-only nature
+    /// instead of re-deriving the whole view for one write.
+    pub fn sync_browser_bookmarks(&self) -> Result<Vec<(Cid, String, String)>> {
+        let mut added = Vec::new();
         for bm in crate::browser::read_bookmarks() {
             let key = crate::browser::url_key(&bm.url);
             let dedup_name = format!("bookmark:{key}");
@@ -25,6 +29,7 @@ impl MemCli {
                 format!("\n(in {})", bm.folder)
             };
             let text = format!("Bookmark — {}\n{}{}", bm.title, bm.url, location);
+            let preview = text.clone();
             let node = Node {
                 kind: "memory".to_string(),
                 fields_json: serde_json::json!({ "kind": "reference", "text": text }).to_string(),
@@ -32,7 +37,7 @@ impl MemCli {
             let cid = self.put_node(&node)?;
             self.bind(&dedup_name, &cid)?;
             let _ = self.record_event_in_day(&utc_date(ts), &format!("bookmark-{key}"), &cid);
-            added += 1;
+            added.push((cid, dedup_name, preview));
         }
         Ok(added)
     }

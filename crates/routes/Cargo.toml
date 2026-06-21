@@ -1,0 +1,14 @@
+[package]
+name = "concierge-routes"
+description = "Shared data-route handlers (store reads → JSON) used by both the GUI host and the kernel, so there is one implementation and no drift."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+concierge-core = { path = "../core" }
+serde_json = { workspace = true }
+url = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

@@ -20,7 +20,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use concierge_adapter_jsonl::{ingest_envelopes, IngestReport};
-use concierge_core::{CoreBinding, Envelope, Event, ImportedFrom, Reasoning, ReasoningSource};
+use concierge_core::{Cid, CoreBinding, Envelope, Event, ImportedFrom, Reasoning, ReasoningSource};
 use serde_json::Value;
 
 pub mod discovery;
@@ -280,13 +280,14 @@ pub fn ingest_file<B: CoreBinding>(
     ))
 }
 
-/// One incremental capture pass: re-ingest any changed Gemini session.
+/// One incremental capture pass: re-ingest changed Gemini sessions and return
+/// the CIDs written by this pass.
 pub fn capture_once<B: CoreBinding>(
     lens: &mut HashMap<PathBuf, u64>,
     binding: &B,
     base_dir: &Path,
-) -> usize {
-    let mut total = 0usize;
+) -> Vec<Cid> {
+    let mut captured = Vec::new();
     for session in discovery::discover() {
         let Ok(meta) = std::fs::metadata(&session.file) else {
             continue;
@@ -309,14 +310,14 @@ pub fn capture_once<B: CoreBinding>(
             continue;
         }
         if let Ok(report) = ingest_file(&session.file, binding, base_dir) {
-            total += report.events;
+            captured.extend(report.record_cids);
         }
         lens.insert(session.file, len);
         // Yield between files so a backfill of many sessions can't monopolise the
         // CPU and starve the web server.
         std::thread::sleep(std::time::Duration::from_millis(30));
     }
-    total
+    captured
 }
 
 /// Record the current size of every discovered session WITHOUT ingesting, so
