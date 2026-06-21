@@ -955,8 +955,8 @@ fn spawn_browser_watch(mem: MemCli, mut child: std::process::Child) {
                 }
                 shutdown(&mem); // never returns
             }
-            Ok(None) => continue,    // window still open
-            Err(_) => return,        // can't observe the child — don't risk a spurious exit
+            Ok(None) => continue, // window still open
+            Err(_) => return,     // can't observe the child — don't risk a spurious exit
         }
     });
 }

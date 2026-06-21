@@ -172,6 +172,13 @@ async function updateCheck() {
   notice(release && release.version ? "Update available: " + release.version : "You're on the latest version.");
   await loadUpdateStatus();
 }
+async function updateApply() {
+  const { staged } = await postJson("/api/update/apply", {});
+  notice(staged && staged.version
+    ? "Update " + staged.version + " downloaded — restart the Concierge to finish installing."
+    : "You're already on the latest version.");
+  await loadUpdateStatus();
+}
 async function brainModelApply() {
   const sel = byId("brain-model"); const model = sel ? sel.value : "";
   await postJson("/api/brain/model", { model });
@@ -188,6 +195,7 @@ const ACTIONS = {
   pairJoin: () => safely(pairJoinWizard),
   networkCreate: () => safely(networkCreate),
   updateCheck: () => safely(updateCheck),
+  updateApply: () => safely(updateApply),
   brainModelApply: () => safely(brainModelApply),
 };
 // Studio (studio.js) registers its own actions into this same map.
@@ -1694,9 +1702,12 @@ async function loadUpdateStatus() {
   const card = byId("update-status"); clear(card);
   card.append(updateRow("App version", data.app_version || "—"));
   const appUpdate = data.app_update || {};
-  byId("update-app").textContent = appUpdate.release && appUpdate.release.version
-    ? "Running version " + (data.app_version || "—") + ". Update " + appUpdate.release.version + " is available — it installs automatically on next launch."
+  const hasUpdate = !!(appUpdate.release && appUpdate.release.version);
+  byId("update-app").textContent = hasUpdate
+    ? "Running version " + (data.app_version || "—") + ". Update " + appUpdate.release.version + " is available — download & install it now, or it installs on next launch."
     : "Running version " + (data.app_version || "—") + ". You're on the latest version.";
+  const apply = byId("update-apply");
+  if (apply) apply.style.display = hasUpdate ? "" : "none";
 }
 // update-check handled by delegation (data-action="updateCheck").
 
